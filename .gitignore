@@ -2,3 +2,5 @@ node_modules/
 *.frap-tmp-*
 .DS_Store
 __pycache__/
+.env
+*.env

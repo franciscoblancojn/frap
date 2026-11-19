@@ -13,7 +13,7 @@ const fail = (msg) => { failed++; console.error(`✗ ${msg}`); };
 const ok = (msg) => console.log(`✓ ${msg}`);
 
 // 1. Sintaxis JS
-for (const f of ['src/index.js', 'bridge/frap-bridge.js', 'bridge/ws.js', 'scripts/check.js', 'tests/bridge.test.js']) {
+for (const f of ['src/index.js', 'bridge/frap-bridge.js', 'bridge/ws.js', 'bridge/db.js', 'bridge/frap-db.js', 'scripts/check.js', 'tests/bridge.test.js', 'tests/db.test.js']) {
   try { execFileSync(process.execPath, ['--check', path.join(ROOT, f)], { stdio: 'pipe' }); ok(`sintaxis ${f}`); } catch (e) { fail(`sintaxis ${f}\n${e.stderr}`); }
 }
 

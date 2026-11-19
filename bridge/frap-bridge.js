@@ -16,6 +16,7 @@ const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 const { StringDecoder } = require('string_decoder');
 const ws = require('./ws');
+const db = require('./db');
 
 const VERSION = '1.0.0';
 const HOME = os.homedir();
@@ -320,6 +321,70 @@ function write(s, data) {
 // ---------- estado persistente de la UI ----------
 const STATE_FILE = path.join(FRAP_HOME, 'state.json');
 
+// ---------- bases de datos ----------
+const DB_ENV = path.join(FRAP_HOME, 'databases.env');
+const DB_CLI = path.join(__dirname, 'frap-db.js');
+const SKILL_DIRS = {
+  claude: () => path.join(HOME, '.claude', 'skills', 'frap-db'),
+  codex: () => path.join(HOME, '.codex', 'skills', 'frap-db'),
+};
+function dbConns() { return db.loadConnections(DB_ENV); }
+function dbConn(id) {
+  const c = dbConns().find((x) => x.id === id);
+  if (!c) throw new Error(`Conexión no encontrada: ${id}`);
+  return c;
+}
+/** Valida y normaliza una conexión que viene de la UI. `password: null` = conservar la guardada. */
+function dbNormalize(input, existing) {
+  const engine = String(input.engine || '');
+  if (!db.ENGINES[engine]) throw new Error(`Motor no soportado: ${engine}`);
+  const name = String(input.name || '').trim();
+  if (!name) throw new Error('El nombre es obligatorio');
+  const c = {
+    id: existing ? existing.id : '',
+    name, engine,
+    host: String(input.host || '').trim(),
+    port: String(input.port || '').trim(),
+    user: String(input.user || '').trim(),
+    password: input.password == null ? (existing ? existing.password : '') : String(input.password),
+    database: String(input.database || '').trim(),
+    uiWrite: !!input.uiWrite,
+  };
+  if (c.port && !/^\d{1,5}$/.test(c.port)) throw new Error('Puerto inválido');
+  if (engine === 'sqlite') {
+    if (!c.database) throw new Error('Indica la ruta del archivo SQLite');
+    c.database = safePath(c.database);
+  } else if (!c.user) throw new Error('El usuario es obligatorio');
+  return c;
+}
+function skillText() {
+  const cli = `node ${DB_CLI}`;
+  return `---
+name: frap-db
+description: Consultar en SOLO LECTURA las bases de datos configuradas en FRAP (MySQL, PostgreSQL, SQLite). Úsala cuando necesites ver datos, tablas o esquemas de una base de datos del proyecto.
+---
+
+# Bases de datos de FRAP (solo lectura)
+
+Las conexiones las administra el usuario en FRAP. Accede a ellas **solo** con este CLI,
+que nunca muestra contraseñas y rechaza cualquier escritura:
+
+\`\`\`bash
+${cli} list                              # conexiones disponibles (id, motor, destino)
+${cli} <id> --tables                     # tablas y vistas
+${cli} <id> --describe <tabla>           # columnas
+${cli} <id> "SELECT … LIMIT 50"          # consulta (salida en tabla)
+${cli} <id> "SELECT …" --json --limit 500
+\`\`\`
+
+Reglas:
+- Una sola sentencia de lectura por llamada (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN). INSERT/UPDATE/DELETE/DDL se rechazan.
+- Usa siempre LIMIT y pide solo las columnas necesarias.
+- No leas, muestres ni copies el archivo de credenciales (${DB_ENV}).
+- Si necesitas modificar datos, propón el SQL al usuario para que lo ejecute él.
+`;
+}
+
 // ---------- operaciones RPC ----------
 const ops = {
   hello: () => ({
@@ -402,6 +467,68 @@ const ops = {
   },
   'fs.exists': ({ path: p }) => exists(safePath(p)),
   'config.scan': ({ folders }) => scanConfig(folders),
+  'db.list': () => ({
+    envFile: DB_ENV,
+    cli: DB_CLI,
+    clients: { mysql: which('mysql'), postgres: which('psql'), sqlite: which('sqlite3') },
+    skills: Object.fromEntries(Object.entries(SKILL_DIRS).map(([k, dir]) => [k, exists(path.join(dir(), 'SKILL.md'))])),
+    conns: dbConns().map(db.publicConn),
+  }),
+  'db.save': ({ conn }) => {
+    const conns = dbConns();
+    const existing = conn && conn.id ? conns.find((c) => c.id === conn.id) : null;
+    if (conn && conn.id && !existing) throw new Error(`Conexión no encontrada: ${conn.id}`);
+    const c = dbNormalize(conn || {}, existing);
+    if (existing) conns[conns.indexOf(existing)] = c;
+    else {
+      c.id = db.slugify(c.name, new Set(conns.map((x) => x.id)));
+      conns.push(c);
+    }
+    db.saveConnections(DB_ENV, conns, DB_CLI);
+    return db.publicConn(c);
+  },
+  'db.delete': ({ id }) => {
+    const conns = dbConns();
+    if (!conns.some((c) => c.id === id)) throw new Error(`Conexión no encontrada: ${id}`);
+    db.saveConnections(DB_ENV, conns.filter((c) => c.id !== id), DB_CLI);
+    return true;
+  },
+  'db.test': async ({ id, conn }) => {
+    const existing = id ? dbConn(id) : conn && conn.id ? dbConns().find((c) => c.id === conn.id) : null;
+    const c = conn ? dbNormalize(conn, existing) : existing;
+    const r = await db.runQuery(c, c.engine === 'mysql' ? 'SELECT VERSION() AS version' : c.engine === 'postgres' ? 'SELECT version()' : 'SELECT sqlite_version() AS version', { timeoutMs: 15000 });
+    return { ms: r.ms, version: r.rows[0] ? r.rows[0][0] : '' };
+  },
+  'db.query': ({ id, sql, write = false, limit = 1000 }) => db.runQuery(dbConn(id), sql, { write: !!write, limit }),
+  'db.tables': async ({ id }) => {
+    const c = dbConn(id);
+    const r = await db.runQuery(c, db.tablesSql(c.engine), { limit: 5000 });
+    return r.rows.map(([name, type]) => ({ name, view: /view/i.test(type || '') }));
+  },
+  'db.installSkill': ({ tools = ['claude', 'codex'] } = {}) => {
+    const written = [];
+    for (const t of tools) {
+      if (!SKILL_DIRS[t]) continue;
+      const f = path.join(SKILL_DIRS[t](), 'SKILL.md');
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, skillText());
+      written.push(f);
+    }
+    return written;
+  },
+  /** Título/autor de un video (oEmbed público de YouTube, sin API key). */
+  'music.ytInfo': async ({ id }) => {
+    if (!/^[\w-]{11}$/.test(String(id || ''))) throw new Error('ID de video de YouTube inválido');
+    const u = `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(`https://www.youtube.com/watch?v=${id}`)}`;
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const r = await fetch(u, { signal: ctrl.signal });
+      if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? 'El video no permite incrustarse' : r.status === 404 ? 'Video no encontrado' : `YouTube respondió ${r.status}`);
+      const j = await r.json();
+      return { title: String(j.title || ''), author: String(j.author_name || '') };
+    } finally { clearTimeout(t); }
+  },
   'state.get': () => {
     try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch (_) { return null; }
   },
@@ -414,7 +541,63 @@ const ops = {
 };
 
 // ---------- servidor ----------
+// ---------- reproductor de YouTube ----------
+// YouTube rechaza embeds desde file:// (error 153: sin Referer). Esta página se sirve en
+// http://127.0.0.1:<puerto>/yt-player, se incrusta como iframe en la UI y hace de relé:
+// UI --postMessage--> esta página --IFrame API--> YouTube. No usa el token ni el WebSocket
+// (y el WS rechaza su Origin http), así que no da acceso al bridge.
+const YT_PLAYER_HTML = `<!doctype html>
+<html><head><meta charset="utf-8"><title>FRAP · YouTube</title>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}#p{width:100%;height:100%}</style></head>
+<body><div id="p"></div>
+<script>
+var player, ready = false, queued = [];
+function send(m) { m.frap = 'yt'; parent.postMessage(m, '*'); }
+function handle(m) {
+  if (!ready) { queued.push(m); return; }
+  switch (m.cmd) {
+    case 'load': if (m.volume != null) player.setVolume(m.volume); player.loadVideoById(m.id); break;
+    case 'play': player.playVideo(); break;
+    case 'pause': player.pauseVideo(); break;
+    case 'stop': player.stopVideo(); break;
+    case 'seek': player.seekTo(m.time, true); break;
+    case 'volume': player.setVolume(m.volume); break;
+  }
+}
+window.onYouTubeIframeAPIReady = function () {
+  player = new YT.Player('p', {
+    width: '100%', height: '100%',
+    playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
+    events: {
+      onReady: function () { ready = true; send({ type: 'ready' }); queued.splice(0).forEach(handle); },
+      onStateChange: function (e) { var d = player.getVideoData() || {}; send({ type: 'state', state: e.data, title: d.title || '', videoId: d.video_id || '' }); },
+      onError: function (e) { send({ type: 'error', code: e.data }); }
+    }
+  });
+};
+addEventListener('message', function (e) {
+  if (e.source !== parent || !e.data || e.data.frap !== 'yt') return;
+  handle(e.data);
+});
+setInterval(function () {
+  if (ready && player.getCurrentTime) send({ type: 'time', time: player.getCurrentTime() || 0, duration: player.getDuration() || 0 });
+}, 500);
+var s = document.createElement('script');
+s.src = 'https://www.youtube.com/iframe_api';
+document.head.appendChild(s);
+</script></body></html>`;
+
 const server = http.createServer((req, res) => {
+  const url = new URL(req.url, 'http://x');
+  if (req.method === 'GET' && url.pathname === '/yt-player') {
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'referrer-policy': 'strict-origin-when-cross-origin',
+      'cache-control': 'no-store',
+    });
+    res.end(YT_PLAYER_HTML);
+    return;
+  }
   res.writeHead(200, { 'content-type': 'application/json' });
   res.end(JSON.stringify({ name: 'frap-bridge', version: VERSION }));
 });

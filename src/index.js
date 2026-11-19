@@ -91,8 +91,14 @@
     activeSid: null,
     prompts: DEFAULT_PROMPTS.map((p) => ({ id: uid(), ...p })),
     actions: [], // {id, name, cmd, cwd, ready} comandos con nombre que se encienden/apagan
+    pages: [], // {id, name, url, mode: 'default'|'tab'|'iframe'} accesos a páginas web
+    openPages: [], // ids de páginas abiertas como pestaña interna (iframe)
+    db: { open: false, connId: null, sql: '', limit: 500, history: [] }, // pestaña DB del panel central
+    // música: tracks = [{id, type: 'file'|'youtube', title, videoId?, duration?}]; los archivos viven en IndexedDB
+    music: { tracks: [], current: null, loop: 'all', shuffle: false, volume: 80 },
     settings: {
       fontSize: 13,
+      pageMode: 'tab', // cómo se abren las páginas por defecto: 'tab' (navegador) | 'iframe' (pestaña interna)
       launchers: {
         claude: { cmd: 'claude', addDir: '--add-dir' },
         codex: { cmd: 'codex', addDir: '--add-dir' },
@@ -113,17 +119,23 @@
         launchers: { ...base.settings.launchers, ...((saved.settings || {}).launchers || {}) },
       },
       ui: { ...base.ui, ...(saved.ui || {}) },
+      db: { ...base.db, ...(saved.db || {}) },
+      music: { ...base.music, ...(saved.music || {}) },
     };
   }
 
   let state = mergeState(DEFAULT_STATE(), storeGet('frap.state', null));
 
-  const persist = debounce(() => {
-    state.savedAt = Date.now();
-    storeSet('frap.state', state);
+  // localStorage se escribe al instante (recargar justo después de un cambio no lo pierde);
+  // la copia en el bridge (~/.config/frap/state.json) va con debounce.
+  const persistRemote = debounce(() => {
     if (Bridge.ready) Bridge.call('state.set', { state }).catch(() => {});
   }, 300);
-  function save() { persist(); }
+  function save() {
+    state.savedAt = Date.now();
+    storeSet('frap.state', state);
+    persistRemote();
+  }
 
   // Conexión: token/puerto llegan en el hash (#port=..&token=..) la primera vez.
   const conn = storeGet('frap.conn', { port: 7681, token: '' });
@@ -347,7 +359,7 @@
       ensureTerm(info);
     }
     for (const sid of [...terms.keys()]) if (!seen.has(sid) && terms.get(sid).info.alive !== false) disposeTerm(sid);
-    if (state.activeSid && !terms.has(state.activeSid)) state.activeSid = null;
+    if (state.activeSid && !isViewSid(state.activeSid) && !terms.has(state.activeSid)) state.activeSid = null;
     if (!state.activeSid) {
       const first = sessionsOf(state.activeProject)[0];
       if (first) state.activeSid = first.sid;
@@ -611,15 +623,43 @@
       h('span.tname', termTitle(t)),
       h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeTerm(t.sid); } }, '✕')));
     }
+    for (const id of state.openPages) {
+      const pg = pageById(id);
+      if (!pg) continue;
+      const vid = PAGE_PREFIX + id;
+      tabs.append(h(`div.tab.page-tab${vid === state.activeSid ? '.active' : ''}`, {
+        dataset: { sid: vid },
+        title: pg.url,
+        onclick: () => openPageIframe(pg),
+        onauxclick: (e) => { if (e.button === 1) closePageView(id); },
+      },
+      h('span.tname', `🌐 ${pg.name}`),
+      h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closePageView(id); } }, '✕')));
+    }
+    if (state.db.open) {
+      tabs.append(h(`div.tab.db-tab${state.activeSid === DB_VIEW ? '.active' : ''}`, {
+        dataset: { sid: DB_VIEW }, title: 'Consultas SQL (Alt+Shift+D)',
+        onclick: () => openDbView(),
+        onauxclick: (e) => { if (e.button === 1) closeDbView(); },
+      },
+      h('span.tname', '🗄 DB'),
+      h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeDbView(); } }, '✕')));
+    }
   }
 
   function renderPanes() {
     for (const t of terms.values()) t.pane.style.visibility = t.sid === state.activeSid ? 'visible' : 'hidden';
+    const pg = isPageView(state.activeSid) ? pageById(state.activeSid.slice(PAGE_PREFIX.length)) : null;
+    if (pg) ensurePagePane(pg);
+    for (const [id, pane] of pagePanes) pane.classList.toggle('hidden', !pg || pg.id !== id);
+    const dbActive = state.activeSid === DB_VIEW;
+    if (dbActive) ensureDbPane();
+    if (dbPane) dbPane.root.classList.toggle('hidden', !dbActive);
     const p = project();
-    $('#empty').classList.toggle('hidden', !!activeTerm());
+    $('#empty').classList.toggle('hidden', !!activeTerm() || !!pg || dbActive);
     $('#st-project').textContent = p ? p.name : '—';
     const t = activeTerm();
-    $('#st-cwd').textContent = t ? tilde((t.info.meta || {}).cwd || '') : p ? p.folders.map(tilde).join('  +  ') : '';
+    $('#st-cwd').textContent = dbActive ? dbStatusLine() : pg ? pg.url : t ? tilde((t.info.meta || {}).cwd || '') : p ? p.folders.map(tilde).join('  +  ') : '';
     renderStatusActions();
   }
 
@@ -707,11 +747,12 @@
           const res = await Bridge.call('fs.list', { path: p, hidden: hidden.checked });
           current = res.path;
           input.value = current;
-          list.replaceChildren(
+          list.replaceChildren(...[
             res.parent ? h('div.picker-item.up', { onclick: () => go(res.parent) }, '↑ ..') : null,
             ...res.entries.map((e) => h('div.picker-item', {
               onclick: () => go(`${current}/${e.name}`.replace(/\/\//g, '/')),
-            }, `📁 ${e.name}`)));
+            }, `📁 ${e.name}`)),
+          ].filter(Boolean));
           list.scrollTop = 0;
         } catch (e) { toast(e.message, 'err'); }
       }
@@ -789,6 +830,9 @@
     procs: renderProcs,
     prompts: renderPrompts,
     actions: renderActions,
+    pages: renderPages,
+    dbs: renderDbs,
+    music: renderMusic,
     agents: () => renderConfigList('agents'),
     skills: () => renderConfigList('skills'),
     commands: () => renderConfigList('commands'),
@@ -801,7 +845,9 @@
     for (const b of $$('#rtabs button')) b.classList.toggle('active', b.dataset.rtab === name);
     renderRight();
     if (name === 'procs') pollProcs();
-    else if (name !== 'prompts' && name !== 'actions') loadConfig();
+    else if (name !== 'prompts' && name !== 'actions' && name !== 'pages' && name !== 'dbs' && name !== 'music') loadConfig();
+    if (name === 'dbs') loadDbs();
+    updateDock();
   }
   function renderRight() {
     const fn = RTABS[state.ui.rtab] || renderProcs;
@@ -1170,6 +1216,1022 @@
     renderAll();
   }
 
+  // ---------- páginas: accesos a URLs (pestaña del navegador o pestaña interna con iframe) ----------
+  const PAGE_PREFIX = 'page:';
+  const isPageView = (sid) => typeof sid === 'string' && sid.startsWith(PAGE_PREFIX);
+  const pageById = (id) => state.pages.find((p) => p.id === id) || null;
+  /** id de página -> div.page-pane (iframe + barra). Se crean al activarse por primera vez. */
+  const pagePanes = new Map();
+  const PAGE_MODE_LABEL = { tab: 'navegador', iframe: 'interna' };
+  const pageMode = (pg) => (pg.mode === 'tab' || pg.mode === 'iframe' ? pg.mode : state.settings.pageMode || 'tab');
+
+  /** "localhost:3000" -> "http://localhost:3000", "ejemplo.com" -> "https://ejemplo.com". */
+  function normalizeUrl(raw) {
+    const u = String(raw || '').trim();
+    if (!u) return '';
+    if (/^[a-z][a-z0-9+.-]*:/i.test(u) && !/^(localhost|[\d.]+):\d/i.test(u)) return u;
+    const local = /^(localhost|127\.|0\.0\.0\.0|\[::1\]|192\.168\.|10\.)/i.test(u);
+    return `${local ? 'http' : 'https'}://${u}`;
+  }
+  function validUrl(u) {
+    try { const x = new URL(u); return ['http:', 'https:', 'file:'].includes(x.protocol); } catch (_) { return false; }
+  }
+
+  function openPage(pg, mode = pageMode(pg)) {
+    if (mode === 'iframe') openPageIframe(pg);
+    else openPageTab(pg);
+  }
+  function openPageTab(pg) {
+    // con 'noopener' window.open siempre devuelve null; se corta opener a mano para poder detectar bloqueos
+    const w = window.open(pg.url, '_blank');
+    if (w) w.opener = null;
+    else toast('El navegador bloqueó la ventana emergente', 'err');
+  }
+  function openPageIframe(pg) {
+    if (!state.openPages.includes(pg.id)) state.openPages.push(pg.id);
+    state.activeSid = PAGE_PREFIX + pg.id;
+    save();
+    renderAll();
+  }
+  function closePageView(id) {
+    state.openPages = state.openPages.filter((x) => x !== id);
+    const pane = pagePanes.get(id);
+    if (pane) { pane.remove(); pagePanes.delete(id); }
+    if (state.activeSid === PAGE_PREFIX + id) {
+      const list = sessionsOf(state.activeProject);
+      const next = state.openPages[state.openPages.length - 1];
+      state.activeSid = list.length ? list[list.length - 1].sid : next ? PAGE_PREFIX + next : null;
+    }
+    save();
+    renderAll();
+  }
+
+  function ensurePagePane(pg) {
+    let pane = pagePanes.get(pg.id);
+    if (pane && pane.dataset.url === pg.url) return pane;
+    if (pane) pane.remove();
+    const frame = h('iframe', {
+      src: pg.url,
+      title: pg.name,
+      referrerpolicy: 'no-referrer',
+      // sin allow-top-navigation: la página no puede sacar a FRAP de la pestaña
+      sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads',
+      allow: 'clipboard-read; clipboard-write; fullscreen',
+    });
+    pane = h('div.page-pane', { dataset: { url: pg.url } },
+      h('div.page-bar',
+        h('span.page-url', pg.url),
+        h('span.muted', '¿En blanco? Ese sitio no permite iframes → ábrelo en el navegador'),
+        h('button.icon.mini', { title: 'Recargar', onclick: () => { frame.src = pg.url; } }, '⟳'),
+        h('button.icon.mini', { title: 'Abrir en pestaña del navegador', onclick: () => openPageTab(pg) }, '↗')),
+      frame);
+    pagePanes.set(pg.id, pane);
+    $('#term-host').append(pane);
+    return pane;
+  }
+
+  function renderPages() {
+    const mode = state.settings.pageMode || 'tab';
+    const head = section('Páginas',
+      h('button.mini', {
+        title: 'Cambiar cómo se abren por defecto (también en Ajustes)',
+        onclick: () => { state.settings.pageMode = mode === 'tab' ? 'iframe' : 'tab'; save(); renderRight(); },
+      }, `Por defecto: ${PAGE_MODE_LABEL[mode]}`),
+      h('button.mini.primary', { onclick: () => editPage() }, '+ Nueva'));
+    const hint = h('p.muted', { style: 'margin:0 2px 8px;font-size:11px' },
+      'Clic = abrir según su modo · ↗ pestaña del navegador · ▣ pestaña interna (iframe). Muchos sitios públicos bloquean los iframes; los servidores locales suelen funcionar.');
+    if (!state.pages.length) return [head, hint, h('p.muted', 'Aún no hay páginas. Pulsa "+ Nueva" y agrega un nombre y una URL.')];
+    return [head, hint, ...state.pages.map((pg) => {
+      const m = pageMode(pg);
+      const open = state.openPages.includes(pg.id);
+      return h(`div.card.clickable${open ? '.page-open' : ''}`, { title: `Abrir (${PAGE_MODE_LABEL[m]})`, onclick: () => openPage(pg) },
+        h('div.title',
+          h('span.name', `🌐 ${pg.name}`),
+          h('span.badge', { title: pg.mode === 'default' || !pg.mode ? 'Usa el modo por defecto' : '' },
+            PAGE_MODE_LABEL[m] + (pg.mode === 'tab' || pg.mode === 'iframe' ? '' : ' *')),
+          h('button.icon.mini', { title: 'Abrir en pestaña del navegador', onclick: (e) => { e.stopPropagation(); openPage(pg, 'tab'); } }, '↗'),
+          h('button.icon.mini', { title: 'Abrir como pestaña interna (iframe)', onclick: (e) => { e.stopPropagation(); openPage(pg, 'iframe'); } }, '▣'),
+          h('button.icon.mini', { title: 'Editar', onclick: (e) => { e.stopPropagation(); editPage(pg); } }, '✎'),
+          h('button.icon.mini', { title: 'Eliminar', onclick: (e) => { e.stopPropagation(); deletePage(pg); } }, '✕')),
+        h('div.path', pg.url));
+    })];
+  }
+
+  function editPage(pg) {
+    const isNew = !pg;
+    const name = h('input', { value: pg ? pg.name : '', placeholder: 'Mi página' });
+    const url = h('input.mono', { value: pg ? pg.url : '', placeholder: 'https://ejemplo.com o localhost:3000' });
+    const mode = h('select',
+      h('option', { value: 'default' }, `Por defecto (${PAGE_MODE_LABEL[state.settings.pageMode || 'tab']})`),
+      h('option', { value: 'tab' }, 'Pestaña del navegador'),
+      h('option', { value: 'iframe' }, 'Pestaña interna (iframe)'));
+    mode.value = pg && pg.mode ? pg.mode : 'default';
+    const doSave = () => {
+      const u = normalizeUrl(url.value);
+      if (!name.value.trim() || !u) { toast('Nombre y URL son obligatorios', 'err'); return; }
+      if (!validUrl(u)) { toast('URL inválida (usa http, https o file)', 'err'); return; }
+      if (isNew) { pg = { id: uid() }; state.pages.push(pg); }
+      pg.name = name.value.trim();
+      pg.url = u;
+      pg.mode = mode.value;
+      save();
+      modalClose(true);
+      renderAll();
+      if (state.ui.rtab === 'pages') renderRight();
+    };
+    [name, url].forEach((el) => el.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSave(); }));
+    openModal({
+      title: isNew ? 'Nueva página' : `Editar página · ${pg.name}`,
+      body: [
+        h('div.field', h('label', 'Nombre'), name),
+        h('div.field', h('label', 'URL'), url),
+        h('div.field', h('label', 'Abrir en'), mode),
+      ],
+      foot: [h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
+    });
+  }
+
+  async function deletePage(pg) {
+    if (!(await confirmBox(`¿Eliminar la página "${pg.name}"?`, pg.url))) return;
+    if (state.openPages.includes(pg.id)) closePageView(pg.id);
+    state.pages = state.pages.filter((x) => x.id !== pg.id);
+    save();
+    renderAll();
+    renderRight();
+  }
+
+  // ---------- bases de datos: conexiones (.env del bridge) + pestaña DB en el centro ----------
+  const DB_VIEW = 'db:main';
+  const isViewSid = (sid) => isPageView(sid) || sid === DB_VIEW;
+  const DB_ENGINES = { mysql: 'MySQL / MariaDB', postgres: 'PostgreSQL', sqlite: 'SQLite' };
+  const DB_PORTS = { mysql: '3306', postgres: '5432' };
+  /** Respuesta de db.list: { envFile, cli, clients, skills, conns } (sin contraseñas). */
+  let dbInfo = null;
+  let dbPane = null;
+  let dbLast = null; // último resultado { columns, rows, … } para exportar
+  const dbConnById = (id) => (dbInfo ? dbInfo.conns.find((c) => c.id === id) : null) || null;
+  const dbTarget = (c) => (c.engine === 'sqlite' ? tilde(c.database) : `${c.user}@${c.host || 'localhost'}:${c.port || DB_PORTS[c.engine]}${c.database ? '/' + c.database : ''}`);
+
+  async function loadDbs() {
+    if (!Bridge.ready) return;
+    try { dbInfo = await Bridge.call('db.list'); } catch (e) { toast(e.message, 'err'); return; }
+    if (state.db.connId && !dbConnById(state.db.connId)) state.db.connId = null;
+    if (!state.db.connId && dbInfo.conns[0]) state.db.connId = dbInfo.conns[0].id;
+    if (state.ui.rtab === 'dbs') renderRight();
+    if (dbPane) { renderDbBar(); loadDbTables(); }
+  }
+
+  // ----- panel derecho -----
+  function renderDbs() {
+    const head = section('Bases de datos',
+      h('button.mini', { title: 'Recargar', onclick: loadDbs }, '↻'),
+      h('button.mini', { title: 'Abrir la pestaña DB (Alt+Shift+D)', onclick: () => openDbView() }, '🗄 Consultar'),
+      h('button.mini.primary', { onclick: () => editDb() }, '+ Nueva'));
+    if (!Bridge.ready) return [head, h('p.muted', 'Bridge desconectado.')];
+    if (!dbInfo) return [head, h('p.muted', 'Cargando…')];
+    const sk = dbInfo.skills || {};
+    const agents = h('div.card.db-agents',
+      h('div.title', h('span.name', '🤖 Acceso para agentes (solo lectura)')),
+      h('div.desc', 'claude, codex y opencode consultan estas bases con el CLI frap-db, que solo permite lecturas y nunca muestra contraseñas.'),
+      h('div.path', { title: dbInfo.envFile }, `credenciales: ${tilde(dbInfo.envFile)} (0600)`),
+      h('div.acts',
+        h('button.mini', { title: 'Escribe la skill frap-db en ~/.claude/skills y ~/.codex/skills', onclick: installDbSkill },
+          sk.claude && sk.codex ? '✓ Skill instalada · reinstalar' : 'Instalar skill (claude + codex)'),
+        h('button.mini', { title: 'Copiar el comando del CLI', onclick: () => { copyText(`node ${dbInfo.cli} list`); toast('Comando copiado', 'ok'); } }, 'Copiar comando')));
+    if (!dbInfo.conns.length) return [head, agents, h('p.muted', 'Aún no hay conexiones. Pulsa "+ Nueva" y agrega host, usuario y contraseña.')];
+    return [head, agents, ...dbInfo.conns.map((c) => {
+      const missing = dbInfo.clients && !dbInfo.clients[c.engine];
+      return h('div.card.clickable', { title: 'Abrir en la pestaña DB', onclick: () => openDbView(c.id) },
+        h('div.title',
+          h('span.name', `🗄 ${c.name}`),
+          h(`span.badge.db-${c.engine}`, c.engine),
+          c.uiWrite ? h('span.badge.st-starting', { title: 'La pestaña DB puede escribir (los agentes no)' }, 'escritura UI') : h('span.badge', '🔒 lectura'),
+          h('button.icon.mini', { title: 'Probar conexión', onclick: (e) => { e.stopPropagation(); testDb({ id: c.id }, c.name); } }, '⚡'),
+          h('button.icon.mini', { title: 'Editar', onclick: (e) => { e.stopPropagation(); editDb(c); } }, '✎'),
+          h('button.icon.mini', { title: 'Eliminar', onclick: (e) => { e.stopPropagation(); deleteDb(c); } }, '✕')),
+        h('div.path', { title: c.id }, `${dbTarget(c)} · id: ${c.id}`),
+        missing ? h('div.desc', { style: 'color:var(--err)' }, `Falta el cliente ${c.engine === 'postgres' ? 'psql' : c.engine === 'sqlite' ? 'sqlite3' : 'mysql'} en el sistema`) : null);
+    })];
+  }
+
+  async function installDbSkill() {
+    try {
+      const files = await Bridge.call('db.installSkill', { tools: ['claude', 'codex'] });
+      toast(`Skill instalada: ${files.map(tilde).join(', ')}`, 'ok');
+      loadDbs();
+      loadConfig(true);
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  async function testDb(args, label) {
+    toast(`Probando ${label || 'conexión'}…`);
+    try {
+      const r = await Bridge.call('db.test', args);
+      toast(`✓ Conecta (${r.ms} ms)${r.version ? ' · ' + String(r.version).slice(0, 60) : ''}`, 'ok');
+      return true;
+    } catch (e) { toast(`✗ ${e.message}`, 'err'); return false; }
+  }
+
+  function editDb(c) {
+    if (!Bridge.ready) { toast('Bridge desconectado', 'err'); return; }
+    const isNew = !c;
+    const name = h('input', { value: c ? c.name : '', placeholder: 'Mi base de datos' });
+    const engine = h('select', Object.entries(DB_ENGINES).map(([k, v]) => h('option', { value: k }, v)));
+    engine.value = c ? c.engine : 'mysql';
+    const host = h('input.mono', { value: c ? c.host : '', placeholder: 'localhost o 10.0.0.5' });
+    const port = h('input.mono', { value: c ? c.port : '', style: 'width:100px' });
+    const user = h('input.mono', { value: c ? c.user : '', placeholder: 'usuario', autocomplete: 'off' });
+    const pass = h('input.mono', { type: 'password', autocomplete: 'new-password', placeholder: c && c.hasPassword ? '•••••• (sin cambios)' : 'contraseña' });
+    const showPass = h('button.icon.mini', { title: 'Mostrar/ocultar', onclick: () => { pass.type = pass.type === 'password' ? 'text' : 'password'; } }, '👁');
+    const database = h('input.mono', { value: c ? c.database : '' });
+    const uiWrite = h('input', { type: 'checkbox' });
+    uiWrite.checked = !!(c && c.uiWrite);
+    const netFields = h('div', { style: 'display:flex;flex-direction:column;gap:8px' },
+      h('div.field-row', h('div.field.grow', h('label', 'Host'), host), h('div.field', h('label', 'Puerto'), port)),
+      h('div.field-row',
+        h('div.field.grow', h('label', 'Usuario'), user),
+        h('div.field.grow', h('label', 'Contraseña'), h('div.field-row', h('span.grow', pass), showPass))));
+    const dbLabel = h('label');
+    const sync = () => {
+      const sqlite = engine.value === 'sqlite';
+      netFields.classList.toggle('hidden', sqlite);
+      dbLabel.textContent = sqlite ? 'Archivo SQLite (ruta completa)' : 'Base de datos (opcional en MySQL)';
+      database.placeholder = sqlite ? '/home/usuario/proyecto/datos.sqlite' : 'nombre_bd';
+      port.placeholder = DB_PORTS[engine.value] || '';
+    };
+    engine.addEventListener('change', sync);
+    sync();
+    pass.style.width = '100%';
+    const collect = () => ({
+      id: c ? c.id : undefined,
+      name: name.value.trim(), engine: engine.value, host: host.value.trim(), port: port.value.trim(),
+      user: user.value.trim(), password: c && !pass.value ? null : pass.value,
+      database: database.value.trim(), uiWrite: uiWrite.checked,
+    });
+    const doSave = async () => {
+      try {
+        const saved = await Bridge.call('db.save', { conn: collect() });
+        modalClose(true);
+        toast(`Guardada en ${tilde(dbInfo ? dbInfo.envFile : '.env')}`, 'ok');
+        if (isNew) state.db.connId = saved.id;
+        save();
+        loadDbs();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    openModal({
+      title: isNew ? 'Nueva base de datos' : `Editar · ${c.name}`,
+      body: [
+        h('div.field-row', h('div.field.grow', h('label', 'Nombre'), name), h('div.field', h('label', 'Motor'), engine)),
+        netFields,
+        h('div.field', dbLabel, database),
+        h('label.muted', uiWrite, ' Permitir escritura desde la pestaña DB (pide confirmación). Los agentes siempre son solo lectura.'),
+        h('p.muted', { style: 'margin:0;font-size:11px' },
+          'Se guarda en el .env del bridge (permisos 0600), no en el navegador. Recomendado: un usuario de BD con permisos solo SELECT.'),
+      ],
+      foot: [
+        h('button', { onclick: () => testDb({ conn: collect() }, name.value || 'conexión') }, '⚡ Probar conexión'),
+        h('span.grow'),
+        h('button', { onclick: () => modalClose(true) }, 'Cancelar'),
+        h('button.primary', { onclick: doSave }, 'Guardar'),
+      ],
+    });
+  }
+
+  async function deleteDb(c) {
+    if (!(await confirmBox(`¿Eliminar la conexión "${c.name}"?`, 'Se borra del .env; los agentes dejarán de verla.'))) return;
+    try {
+      await Bridge.call('db.delete', { id: c.id });
+      if (state.db.connId === c.id) state.db.connId = null;
+      save();
+      loadDbs();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  // ----- pestaña DB (panel central) -----
+  function openDbView(connId) {
+    state.db.open = true;
+    if (connId) state.db.connId = connId;
+    state.activeSid = DB_VIEW;
+    save();
+    renderAll();
+    if (!dbInfo) loadDbs();
+    else { renderDbBar(); loadDbTables(); }
+    requestAnimationFrame(() => dbPane && dbPane.sql.focus());
+  }
+  function closeDbView() {
+    state.db.open = false;
+    if (state.activeSid === DB_VIEW) {
+      const list = sessionsOf(state.activeProject);
+      state.activeSid = list.length ? list[list.length - 1].sid : null;
+    }
+    save();
+    renderAll();
+  }
+  function dbStatusLine() {
+    const c = dbConnById(state.db.connId);
+    return c ? `${c.name} · ${dbTarget(c)}` : 'DB';
+  }
+
+  function quoteIdent(engine, name) {
+    if (engine === 'mysql') return '`' + name.replace(/`/g, '``') + '`';
+    return name.split('.').map((p) => '"' + p.replace(/"/g, '""') + '"').join('.');
+  }
+
+  function ensureDbPane() {
+    if (dbPane) return dbPane;
+    const conn = h('select.db-conn', { title: 'Conexión' });
+    conn.addEventListener('change', () => { state.db.connId = conn.value; save(); renderDbBar(); loadDbTables(); renderPanes(); });
+    const write = h('input', { type: 'checkbox' });
+    const writeLabel = h('label.db-write', { title: 'Permitido en esta conexión. Cada ejecución pide confirmación.' }, write, ' escritura');
+    write.addEventListener('change', () => renderDbBar());
+    const mode = h('span.badge');
+    const limit = h('select', { title: 'Máximo de filas' }, [100, 500, 1000, 5000, 20000].map((n) => h('option', { value: String(n) }, `${n} filas`)));
+    limit.value = String(state.db.limit || 500);
+    limit.addEventListener('change', () => { state.db.limit = Number(limit.value); save(); });
+    const history = h('select', { title: 'Historial' });
+    history.addEventListener('change', () => {
+      if (history.value === '') return;
+      sql.value = state.db.history[Number(history.value)];
+      state.db.sql = sql.value;
+      save();
+      history.value = '';
+      sql.focus();
+    });
+    const run = h('button.primary', { title: 'Ejecutar (Ctrl+Enter). Con texto seleccionado, ejecuta solo la selección.', onclick: () => runDbQuery() }, '▶ Ejecutar');
+    const csv = h('button', { title: 'Descargar el resultado como CSV', onclick: exportDbCsv }, '⇩ CSV');
+    const sql = h('textarea.db-sql', { spellcheck: 'false', placeholder: 'SELECT * FROM tabla LIMIT 100;\n\nCtrl+Enter para ejecutar · con texto seleccionado ejecuta solo la selección' });
+    sql.value = state.db.sql || '';
+    sql.addEventListener('input', debounce(() => { state.db.sql = sql.value; save(); }, 400));
+    sql.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runDbQuery(); }
+      else if (e.key === 'Tab') { e.preventDefault(); sql.setRangeText('  ', sql.selectionStart, sql.selectionEnd, 'end'); }
+    });
+    const filter = h('input.filter', { placeholder: 'Filtrar tablas…' });
+    filter.addEventListener('input', () => {
+      const q = filter.value.toLowerCase();
+      for (const el of $$('.db-table', tableList)) el.classList.toggle('hidden', !el.dataset.name.toLowerCase().includes(q));
+    });
+    const tableList = h('div.db-tables');
+    const result = h('div.db-result', h('p.muted', 'Los resultados aparecen aquí.'));
+    const status = h('span.db-status.muted');
+    const root = h('div.db-pane.hidden',
+      h('div.db-bar', conn, mode, writeLabel, limit, history, h('span.grow'), status, csv, run),
+      h('div.db-main',
+        h('div.db-side', filter, tableList),
+        h('div.db-work', sql, result)));
+    $('#term-host').append(root);
+    dbPane = { root, conn, write, writeLabel, mode, limit, history, run, sql, tableList, filter, result, status };
+    renderDbBar();
+    loadDbTables();
+    return dbPane;
+  }
+
+  function renderDbBar() {
+    if (!dbPane) return;
+    const { conn, write, writeLabel, mode, history } = dbPane;
+    const conns = dbInfo ? dbInfo.conns : [];
+    conn.replaceChildren(...(conns.length
+      ? conns.map((c) => h('option', { value: c.id }, `${c.name} (${c.engine})`))
+      : [h('option', { value: '' }, 'Sin conexiones — agrégalas en el panel derecho')]));
+    conn.value = state.db.connId || '';
+    const c = dbConnById(state.db.connId);
+    writeLabel.classList.toggle('hidden', !(c && c.uiWrite));
+    if (!(c && c.uiWrite)) write.checked = false;
+    mode.className = `badge ${write.checked ? 'st-error' : 'st-on'}`;
+    mode.textContent = write.checked ? '✎ ESCRITURA' : '🔒 solo lectura';
+    history.replaceChildren(h('option', { value: '' }, `🕘 Historial (${state.db.history.length})`),
+      ...state.db.history.map((q, i) => h('option', { value: String(i) }, q.replace(/\s+/g, ' ').slice(0, 80))));
+    dbPane.run.disabled = !c;
+  }
+
+  async function loadDbTables() {
+    if (!dbPane) return;
+    const list = dbPane.tableList;
+    const c = dbConnById(state.db.connId);
+    if (!c || !Bridge.ready) { list.replaceChildren(h('p.muted', c ? 'Bridge desconectado.' : 'Elige una conexión.')); return; }
+    list.replaceChildren(h('p.muted', 'Cargando tablas…'));
+    try {
+      const tables = await Bridge.call('db.tables', { id: c.id });
+      if (state.db.connId !== c.id) return;
+      list.replaceChildren(...(tables.length ? tables.map((t) => h('div.db-table', {
+        dataset: { name: t.name },
+        title: 'Clic: ver 100 filas · doble clic: insertar el nombre',
+        onclick: () => {
+          dbPane.sql.value = `SELECT * FROM ${quoteIdent(c.engine, t.name)} LIMIT 100;`;
+          state.db.sql = dbPane.sql.value;
+          save();
+          runDbQuery();
+        },
+        ondblclick: () => { dbPane.sql.setRangeText(quoteIdent(c.engine, t.name), dbPane.sql.selectionStart, dbPane.sql.selectionEnd, 'end'); dbPane.sql.focus(); },
+      }, `${t.view ? '◫' : '▦'} ${t.name}`)) : [h('p.muted', 'Sin tablas.')]));
+      dbPane.filter.dispatchEvent(new Event('input'));
+    } catch (e) { list.replaceChildren(h('p.muted', { style: 'color:var(--err)' }, e.message)); }
+  }
+
+  async function runDbQuery() {
+    const p = ensureDbPane();
+    const c = dbConnById(state.db.connId);
+    if (!c) { toast('Elige una conexión', 'err'); return; }
+    const { selectionStart: a, selectionEnd: b } = p.sql;
+    const sql = (a !== b ? p.sql.value.slice(a, b) : p.sql.value).trim();
+    if (!sql) { toast('Escribe una consulta', 'err'); return; }
+    const write = p.write.checked;
+    if (write && !(await confirmBox(`¿Ejecutar en modo ESCRITURA en "${c.name}"?`, sql.length > 400 ? sql.slice(0, 400) + '…' : sql))) return;
+    p.run.disabled = true;
+    p.status.textContent = 'Ejecutando…';
+    p.result.classList.add('running');
+    try {
+      const r = await Bridge.call('db.query', { id: c.id, sql, write, limit: state.db.limit || 500 });
+      dbLast = r;
+      renderDbResult(r);
+      p.status.textContent = `${r.rowCount} fila${r.rowCount === 1 ? '' : 's'}${r.truncated ? ' (truncado)' : ''} · ${r.ms} ms`;
+      state.db.history = [sql, ...state.db.history.filter((q) => q !== sql)].slice(0, 30);
+      save();
+      renderDbBar();
+    } catch (e) {
+      dbLast = null;
+      p.result.replaceChildren(h('pre.db-error', e.message));
+      p.status.textContent = 'Error';
+    }
+    p.result.classList.remove('running');
+    p.run.disabled = false;
+  }
+
+  function renderDbResult(r) {
+    const p = dbPane;
+    if (!r.columns.length) { p.result.replaceChildren(h('p.muted', r.message || 'Sin filas.')); return; }
+    const cell = (v) => {
+      if (v === null) return h('td.null', 'NULL');
+      const s = String(v);
+      return h('td', { title: s.length > 60 ? s.slice(0, 2000) : null }, s.length > 300 ? s.slice(0, 300) + '…' : s);
+    };
+    const table = h('table.db-table-res',
+      h('thead', h('tr', h('th.rn', '#'), r.columns.map((c) => h('th', c)))),
+      h('tbody', r.rows.map((row, i) => h('tr', h('td.rn', String(i + 1)), r.columns.map((_, j) => cell(row[j]))))));
+    table.addEventListener('click', (e) => {
+      const td = e.target.closest('td');
+      if (!td || td.classList.contains('rn')) return;
+      const tr = td.parentElement;
+      const ri = [...tr.parentElement.children].indexOf(tr);
+      const ci = [...tr.children].indexOf(td) - 1;
+      const v = r.rows[ri][ci];
+      copyText(v === null ? 'NULL' : String(v));
+      toast('Valor copiado', 'ok');
+    });
+    // replaceChildren(null) insertaría el texto "null": se filtra
+    p.result.replaceChildren(...[
+      r.truncated ? h('div.db-warn', `Resultado truncado a ${r.rowCount} filas: sube el límite o usa LIMIT / WHERE.`) : null,
+      table,
+    ].filter(Boolean));
+    p.result.scrollTop = 0;
+  }
+
+  function exportDbCsv() {
+    if (!dbLast || !dbLast.columns.length) { toast('No hay resultados para exportar', 'err'); return; }
+    const q = (v) => (v === null ? '' : /[",\n\r]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+    const text = [dbLast.columns.map(q).join(','), ...dbLast.rows.map((r) => r.map(q).join(','))].join('\n');
+    const a = h('a', { href: URL.createObjectURL(new Blob([text], { type: 'text/csv' })), download: `${state.db.connId || 'consulta'}.csv` });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  // ---------- música: lista con bucle / aleatorio / arrastrar; archivos (IndexedDB) y YouTube ----------
+  const fmtDur = (s) => {
+    if (!isFinite(s) || s <= 0) return '';
+    s = Math.floor(s);
+    const hh = Math.floor(s / 3600);
+    const mm = Math.floor((s % 3600) / 60);
+    const ss = String(s % 60).padStart(2, '0');
+    return hh ? `${hh}:${String(mm).padStart(2, '0')}:${ss}` : `${mm}:${ss}`;
+  };
+  const AUDIO_EXT = /\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|webm|weba|mp4)$/i;
+  const LOOP_NEXT = { off: 'all', all: 'one', one: 'off' };
+  const LOOP_LABEL = { off: 'Sin repetir', all: 'Repetir lista', one: 'Repetir canción' };
+
+  /** Archivos de audio en IndexedDB (sobreviven a recargas; funciona en file://). */
+  const MusicStore = {
+    db: null,
+    mem: new Map(), // respaldo en memoria si IndexedDB no está disponible
+    open() {
+      if (this.db) return Promise.resolve(this.db);
+      return new Promise((resolve, reject) => {
+        let req;
+        try { req = indexedDB.open('frap-music', 1); } catch (e) { reject(e); return; }
+        req.onupgradeneeded = () => req.result.createObjectStore('files');
+        req.onsuccess = () => { this.db = req.result; resolve(this.db); };
+        req.onerror = () => reject(req.error);
+      });
+    },
+    async tx(mode, fn) {
+      const db = await this.open();
+      return new Promise((resolve, reject) => {
+        const t = db.transaction('files', mode);
+        const r = fn(t.objectStore('files'));
+        t.oncomplete = () => resolve(r && r.result);
+        t.onerror = () => reject(t.error);
+        t.onabort = () => reject(t.error || new Error('IndexedDB abortado'));
+      });
+    },
+    async put(id, blob) {
+      try { await this.tx('readwrite', (st) => st.put(blob, id)); return true; } catch (_) { this.mem.set(id, blob); return false; }
+    },
+    async get(id) {
+      if (this.mem.has(id)) return this.mem.get(id);
+      try { return await this.tx('readonly', (st) => st.get(id)); } catch (_) { return null; }
+    },
+    async del(id) {
+      this.mem.delete(id);
+      try { await this.tx('readwrite', (st) => st.delete(id)); } catch (_) { /* nada */ }
+    },
+  };
+
+  const Player = {
+    audio: null, // <audio> para archivos
+    yt: null, // iframe del relé /yt-player del bridge
+    ytPort: null,
+    ytReady: false,
+    ytQueue: [],
+    kind: null, // 'file' | 'youtube' según la pista actual
+    playing: false,
+    time: 0,
+    duration: 0,
+    objectUrl: null,
+    played: new Set(), // para aleatorio sin repetir hasta completar la vuelta
+    history: [], // para ⏮ en modo aleatorio
+    errors: 0, // errores seguidos (evita saltar en bucle si todo falla)
+  };
+  const M = () => state.music;
+  const trackById = (id) => M().tracks.find((t) => t.id === id) || null;
+  const currentTrack = () => trackById(M().current);
+
+  function parseYouTubeId(raw) {
+    const s = String(raw || '').trim();
+    if (/^[\w-]{11}$/.test(s)) return s;
+    let u;
+    try { u = new URL(/^https?:\/\//i.test(s) ? s : `https://${s}`); } catch (_) { return null; }
+    const host = u.hostname.replace(/^(www|m|music)\./, '');
+    let id = null;
+    if (host === 'youtu.be') id = u.pathname.slice(1).split('/')[0];
+    else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
+      if (u.pathname === '/watch') id = u.searchParams.get('v');
+      else {
+        const m = u.pathname.match(/^\/(embed|shorts|live|v)\/([\w-]{11})/);
+        if (m) id = m[2];
+      }
+    }
+    return id && /^[\w-]{11}$/.test(id) ? id : null;
+  }
+
+  // ----- motores -----
+  function ensureAudio() {
+    if (Player.audio) return Player.audio;
+    const a = new Audio();
+    a.preload = 'auto';
+    a.addEventListener('timeupdate', () => { if (Player.kind === 'file') { Player.time = a.currentTime; updateProgress(); } });
+    a.addEventListener('durationchange', () => {
+      if (Player.kind !== 'file') return;
+      Player.duration = a.duration;
+      const t = currentTrack();
+      if (t && isFinite(a.duration) && t.duration !== a.duration) { t.duration = a.duration; save(); refreshMusicList(); }
+      updateProgress();
+    });
+    a.addEventListener('play', () => { if (Player.kind === 'file') { Player.playing = true; Player.errors = 0; updateDock(); } });
+    a.addEventListener('pause', () => { if (Player.kind === 'file') { Player.playing = false; updateDock(); } });
+    a.addEventListener('ended', () => { if (Player.kind === 'file') onTrackEnded(); });
+    a.addEventListener('error', () => {
+      if (Player.kind !== 'file' || !a.src) return;
+      toast(`No se pudo reproducir "${(currentTrack() || {}).title || 'archivo'}"`, 'err');
+      onTrackError();
+    });
+    a.volume = M().volume / 100;
+    Player.audio = a;
+    return a;
+  }
+
+  function ensureYt() {
+    if (!Bridge.ready) throw new Error('YouTube necesita el bridge conectado (el navegador no permite incrustarlo desde file://)');
+    if (Player.yt && Player.ytPort === conn.port) return Player.yt;
+    if (Player.yt) Player.yt.remove();
+    Player.ytReady = false;
+    Player.ytQueue = [];
+    Player.ytPort = conn.port;
+    Player.yt = h('iframe.yt-frame', {
+      src: `http://127.0.0.1:${conn.port}/yt-player`,
+      title: 'YouTube',
+      // el reproductor de YouTube pide estos permisos; sin delegarlos llena la consola de avisos
+      allow: 'autoplay; encrypted-media; fullscreen; picture-in-picture; accelerometer; gyroscope; clipboard-write; web-share',
+    });
+    $('#music-yt').append(Player.yt);
+    return Player.yt;
+  }
+  function ytSend(m) {
+    if (!Player.yt) return;
+    if (!Player.ytReady) { Player.ytQueue.push(m); return; }
+    Player.yt.contentWindow.postMessage({ ...m, frap: 'yt' }, `http://127.0.0.1:${Player.ytPort}`);
+  }
+  window.addEventListener('message', (e) => {
+    if (!Player.yt || e.source !== Player.yt.contentWindow || e.origin !== `http://127.0.0.1:${Player.ytPort}`) return;
+    const m = e.data;
+    if (!m || m.frap !== 'yt') return;
+    if (m.type === 'ready') {
+      Player.ytReady = true;
+      Player.ytQueue.splice(0).forEach(ytSend);
+      return;
+    }
+    if (Player.kind !== 'youtube') return;
+    if (m.type === 'time') {
+      Player.time = m.time;
+      Player.duration = m.duration;
+      const t = currentTrack();
+      if (t && m.duration > 0 && !t.duration) { t.duration = m.duration; save(); refreshMusicList(); }
+      updateProgress();
+    } else if (m.type === 'state') {
+      // -1 sin empezar · 0 terminó · 1 reproduciendo · 2 pausa · 3 cargando · 5 en cola
+      const t = currentTrack();
+      if (t && m.title && t.videoId === m.videoId && t.title !== m.title && /^YouTube · /.test(t.title)) { t.title = m.title; save(); refreshMusicList(); }
+      if (m.state === 1) { Player.playing = true; Player.errors = 0; }
+      if (m.state === 2 || m.state === 0 || m.state === -1) Player.playing = false;
+      updateDock();
+      if (m.state === 0) onTrackEnded();
+    } else if (m.type === 'error') {
+      const why = { 2: 'ID inválido', 5: 'error del reproductor', 100: 'video no encontrado o privado', 101: 'el autor no permite incrustarlo', 150: 'el autor no permite incrustarlo', 152: 'el autor no permite incrustarlo', 153: 'configuración del reproductor' }[m.code] || `código ${m.code}`;
+      toast(`YouTube: ${why} — "${(currentTrack() || {}).title || ''}"`, 'err');
+      onTrackError();
+    }
+  });
+
+  // ----- control -----
+  function stopEngines(except) {
+    if (except !== 'file' && Player.audio) Player.audio.pause();
+    if (except !== 'youtube' && Player.yt) ytSend({ cmd: 'pause' });
+  }
+
+  async function playTrack(id, { fromHistory = false } = {}) {
+    const t = trackById(id);
+    if (!t) return;
+    if (!fromHistory && M().current && M().current !== id) Player.history.push(M().current);
+    if (Player.history.length > 200) Player.history.shift();
+    M().current = id;
+    Player.played.add(id);
+    Player.time = 0;
+    Player.duration = t.duration || 0;
+    save();
+    if (t.type === 'youtube') {
+      stopEngines('youtube');
+      Player.kind = 'youtube';
+      try { ensureYt(); } catch (e) { toast(e.message, 'err'); Player.playing = false; updateDock(); refreshMusicList(); return; }
+      ytSend({ cmd: 'load', id: t.videoId, volume: M().volume });
+    } else {
+      stopEngines('file');
+      Player.kind = 'file';
+      const blob = await MusicStore.get(t.id);
+      if (!blob) {
+        toast(`"${t.title}" ya no está guardado en este navegador: vuelve a agregarlo`, 'err');
+        Player.playing = false;
+        updateDock();
+        refreshMusicList();
+        return;
+      }
+      const a = ensureAudio();
+      if (Player.objectUrl) URL.revokeObjectURL(Player.objectUrl);
+      Player.objectUrl = URL.createObjectURL(blob);
+      a.src = Player.objectUrl;
+      a.volume = M().volume / 100;
+      try { await a.play(); } catch (e) { if (e.name !== 'AbortError') toast(`No se pudo reproducir: ${e.message}`, 'err'); }
+    }
+    updateMediaSession();
+    updateDock();
+    refreshMusicList();
+  }
+
+  function togglePlay() {
+    const t = currentTrack();
+    if (!t) {
+      const list = M().tracks;
+      if (!list.length) { toast('La lista de música está vacía'); return; }
+      playTrack(M().shuffle ? list[Math.floor(Math.random() * list.length)].id : list[0].id);
+      return;
+    }
+    if (Player.kind !== (t.type === 'youtube' ? 'youtube' : 'file')) { playTrack(t.id); return; }
+    if (t.type === 'youtube') {
+      if (!Player.yt) { playTrack(t.id); return; }
+      ytSend({ cmd: Player.playing ? 'pause' : 'play' });
+    } else {
+      const a = ensureAudio();
+      if (!a.src) { playTrack(t.id); return; }
+      if (a.paused) a.play().catch(() => {}); else a.pause();
+    }
+  }
+
+  function nextTrack(auto = false) {
+    const list = M().tracks;
+    if (!list.length) return;
+    const cur = M().current;
+    let next;
+    if (M().shuffle) {
+      let pool = list.filter((t) => !Player.played.has(t.id));
+      if (!pool.length) {
+        if (auto && M().loop === 'off') { stopPlayback(); return; }
+        Player.played.clear();
+        pool = list.length > 1 ? list.filter((t) => t.id !== cur) : list;
+      }
+      next = pool[Math.floor(Math.random() * pool.length)];
+    } else {
+      const i = list.findIndex((t) => t.id === cur);
+      if (i === list.length - 1) {
+        if (auto && M().loop === 'off') { stopPlayback(); return; }
+        next = list[0];
+      } else next = list[i + 1];
+    }
+    playTrack(next.id);
+  }
+
+  function prevTrack() {
+    if (Player.time > 3) { seekTo(0); return; }
+    const list = M().tracks;
+    if (!list.length) return;
+    if (M().shuffle && Player.history.length) {
+      const id = Player.history.pop();
+      if (trackById(id)) { playTrack(id, { fromHistory: true }); return; }
+    }
+    const i = list.findIndex((t) => t.id === M().current);
+    playTrack(list[(i - 1 + list.length) % list.length].id, { fromHistory: true });
+  }
+
+  function onTrackEnded() {
+    if (M().loop === 'one') {
+      seekTo(0);
+      if (Player.kind === 'file') Player.audio.play().catch(() => {});
+      else ytSend({ cmd: 'play' });
+      return;
+    }
+    nextTrack(true);
+  }
+  function onTrackError() {
+    Player.playing = false;
+    Player.errors++;
+    updateDock();
+    if (Player.errors < M().tracks.length) setTimeout(() => nextTrack(true), 600);
+    else { Player.errors = 0; toast('Ninguna pista se pudo reproducir', 'err'); }
+  }
+
+  function stopPlayback() {
+    stopEngines();
+    Player.playing = false;
+    Player.time = 0;
+    Player.played.clear();
+    updateDock();
+    refreshMusicList();
+  }
+
+  function seekTo(sec) {
+    Player.time = sec;
+    if (Player.kind === 'file' && Player.audio) Player.audio.currentTime = sec;
+    else if (Player.kind === 'youtube') ytSend({ cmd: 'seek', time: sec });
+    updateProgress();
+  }
+  function setVolume(v) {
+    M().volume = Math.max(0, Math.min(100, Math.round(v)));
+    if (Player.audio) Player.audio.volume = M().volume / 100;
+    ytSend({ cmd: 'volume', volume: M().volume });
+    save();
+  }
+  function toggleShuffle() {
+    M().shuffle = !M().shuffle;
+    Player.played.clear();
+    if (M().current) Player.played.add(M().current);
+    save();
+    updateDock();
+    toast(M().shuffle ? 'Aleatorio activado' : 'Aleatorio desactivado');
+  }
+  function cycleLoop() {
+    M().loop = LOOP_NEXT[M().loop] || 'all';
+    save();
+    updateDock();
+    toast(LOOP_LABEL[M().loop]);
+  }
+
+  function updateMediaSession() {
+    if (!('mediaSession' in navigator)) return;
+    const t = currentTrack();
+    try {
+      navigator.mediaSession.metadata = t ? new MediaMetadata({ title: t.title, artist: t.type === 'youtube' ? 'YouTube' : 'FRAP' }) : null;
+      navigator.mediaSession.setActionHandler('play', togglePlay);
+      navigator.mediaSession.setActionHandler('pause', togglePlay);
+      navigator.mediaSession.setActionHandler('nexttrack', () => nextTrack());
+      navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
+    } catch (_) { /* no soportado */ }
+  }
+
+  // ----- agregar / quitar / reordenar -----
+  async function addMusicFiles(files) {
+    const list = [...files].filter((f) => /^(audio|video)\//.test(f.type) || AUDIO_EXT.test(f.name));
+    if (!list.length) { toast('Elige archivos de audio (mp3, m4a, ogg, wav, flac…)', 'err'); return; }
+    let memOnly = 0;
+    for (const f of list) {
+      const id = uid();
+      if (!(await MusicStore.put(id, f))) memOnly++;
+      M().tracks.push({ id, type: 'file', title: f.name.replace(/\.[^.]+$/, ''), size: f.size });
+    }
+    save();
+    renderRight();
+    updateDock();
+    toast(`${list.length} archivo${list.length > 1 ? 's' : ''} agregado${list.length > 1 ? 's' : ''}`, 'ok');
+    if (memOnly) toast(`${memOnly} archivo(s) solo durarán esta sesión (IndexedDB no disponible)`, 'err');
+  }
+  function pickMusicFiles() {
+    const input = h('input', { type: 'file', accept: 'audio/*,.mp3,.m4a,.ogg,.opus,.wav,.flac,.webm', multiple: true });
+    input.onchange = () => addMusicFiles(input.files);
+    input.click();
+  }
+  async function addYoutube(raw) {
+    const videoId = parseYouTubeId(raw);
+    if (!videoId) { toast('Link de YouTube no válido (youtube.com/watch?v=…, youtu.be/…, shorts…)', 'err'); return false; }
+    if (M().tracks.some((t) => t.videoId === videoId)) { toast('Ese video ya está en la lista'); return false; }
+    const t = { id: uid(), type: 'youtube', videoId, title: `YouTube · ${videoId}` };
+    M().tracks.push(t);
+    save();
+    renderRight();
+    updateDock();
+    if (Bridge.ready) {
+      Bridge.call('music.ytInfo', { id: videoId })
+        .then((info) => { if (info.title) { t.title = info.title; t.author = info.author; save(); refreshMusicList(); updateDock(); } })
+        .catch((e) => toast(`YouTube: ${e.message}`, 'err'));
+    }
+    return true;
+  }
+  async function removeTrack(id) {
+    const t = trackById(id);
+    if (!t) return;
+    if (M().current === id) {
+      stopEngines();
+      Player.playing = false;
+      M().current = null;
+      Player.kind = null;
+    }
+    if (t.type === 'file') await MusicStore.del(id);
+    M().tracks = M().tracks.filter((x) => x.id !== id);
+    Player.played.delete(id);
+    save();
+    renderRight();
+    updateDock();
+  }
+  function moveTrack(id, targetId, after) {
+    const list = M().tracks;
+    const from = list.findIndex((t) => t.id === id);
+    if (from === -1 || id === targetId) return;
+    const [t] = list.splice(from, 1);
+    let to = list.findIndex((x) => x.id === targetId);
+    if (to === -1) to = list.length; else if (after) to++;
+    list.splice(to, 0, t);
+    save();
+    renderRight();
+  }
+
+  // ----- panel derecho: lista -----
+  function refreshMusicList() { if (state.ui.rtab === 'music') renderRight(); }
+
+  function renderMusic() {
+    const yt = h('input.grow', { placeholder: 'Pega un link de YouTube y pulsa Enter', spellcheck: 'false' });
+    const addYt = async () => { if (await addYoutube(yt.value)) yt.value = ''; };
+    yt.addEventListener('keydown', (e) => { if (e.key === 'Enter') addYt(); });
+    const head = section('Música',
+      h('button.mini', { title: 'Agregar archivos de audio de tu equipo', onclick: pickMusicFiles }, '📁 Archivo'));
+    const list = h('div.music-list');
+    let dragId = null;
+    const clearMarks = () => $$('.music-row', list).forEach((r) => r.classList.remove('drop-before', 'drop-after', 'dragging'));
+    M().tracks.forEach((t, i) => {
+      const cur = t.id === M().current;
+      const row = h(`div.music-row${cur ? '.current' : ''}${cur && Player.playing ? '.playing' : ''}`, {
+        draggable: 'true',
+        dataset: { id: t.id },
+        title: 'Clic: reproducir · arrastra para reordenar',
+        onclick: () => (cur ? togglePlay() : playTrack(t.id)),
+      },
+      h('span.grip', '⋮⋮'),
+      h('span.num', cur && Player.playing ? h('span.eq', h('i'), h('i'), h('i')) : String(i + 1)),
+      h(`span.src.${t.type}`, { title: t.type === 'youtube' ? 'YouTube' : 'Archivo local' }, t.type === 'youtube' ? '▶' : '♫'),
+      h('span.ttl', { title: t.author ? `${t.title} — ${t.author}` : t.title }, t.title),
+      h('span.dur', fmtDur(t.duration)),
+      h('button.icon.mini', { title: 'Quitar de la lista', onclick: (e) => { e.stopPropagation(); removeTrack(t.id); } }, '✕'));
+      row.addEventListener('dragstart', (e) => {
+        dragId = t.id;
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', t.id);
+        requestAnimationFrame(() => row.classList.add('dragging'));
+      });
+      row.addEventListener('dragend', () => { dragId = null; clearMarks(); });
+      row.addEventListener('dragover', (e) => {
+        if (!dragId) return;
+        e.preventDefault();
+        const r = row.getBoundingClientRect();
+        const after = e.clientY > r.top + r.height / 2;
+        $$('.music-row', list).forEach((x) => x !== row && x.classList.remove('drop-before', 'drop-after'));
+        row.classList.toggle('drop-after', after);
+        row.classList.toggle('drop-before', !after);
+      });
+      row.addEventListener('drop', (e) => {
+        if (!dragId) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const after = row.classList.contains('drop-after');
+        const id = dragId;
+        dragId = null;
+        clearMarks();
+        moveTrack(id, t.id, after);
+      });
+      list.append(row);
+    });
+    // soltar archivos de audio desde el sistema
+    list.addEventListener('dragover', (e) => { if (!dragId && e.dataTransfer.types.includes('Files')) { e.preventDefault(); list.classList.add('drop-files'); } });
+    list.addEventListener('dragleave', () => list.classList.remove('drop-files'));
+    list.addEventListener('drop', (e) => {
+      list.classList.remove('drop-files');
+      if (dragId || !e.dataTransfer.files.length) return;
+      e.preventDefault();
+      addMusicFiles(e.dataTransfer.files);
+    });
+    if (!M().tracks.length) list.append(h('p.muted', { style: 'padding:10px' }, 'Lista vacía. Agrega archivos (📁 o soltándolos aquí) o un link de YouTube.'));
+    return [
+      head,
+      h('div.field-row', { style: 'margin-bottom:8px' }, yt, h('button.mini.primary', { onclick: addYt }, '+ YouTube')),
+      h('p.muted', { style: 'margin:0 2px 8px;font-size:11px' },
+        `${M().tracks.length} pista${M().tracks.length === 1 ? '' : 's'} · arrastra ⋮⋮ para reordenar · los archivos se guardan en este navegador · YouTube requiere el bridge`),
+      list,
+    ];
+  }
+
+  // ----- dock del reproductor (fijo al pie del panel derecho) -----
+  let dock = null;
+  function ensureDock() {
+    if (dock) return dock;
+    const root = $('#music-dock');
+    const title = h('div.md-title');
+    const seek = h('input.md-seek', { type: 'range', min: 0, max: 1000, value: 0, title: 'Posición' });
+    let seeking = false;
+    seek.addEventListener('input', () => { seeking = true; time.textContent = fmtDur((seek.value / 1000) * Player.duration) || '0:00'; });
+    seek.addEventListener('change', () => { seeking = false; if (Player.duration) seekTo((seek.value / 1000) * Player.duration); });
+    const time = h('span.md-time', '0:00');
+    const total = h('span.md-time', '');
+    const btn = (label, title, fn) => h('button.icon.md-btn', { title, onclick: fn }, label);
+    const shuffle = btn('⇄', 'Aleatorio', toggleShuffle);
+    const prev = btn('⏮', 'Anterior', prevTrack);
+    const play = h('button.md-play', { title: 'Reproducir / pausa (Alt+Shift+M)', onclick: togglePlay }, '▶');
+    const next = btn('⏭', 'Siguiente', () => nextTrack());
+    const loop = btn('🔁', 'Repetir', cycleLoop);
+    const vol = h('input.md-vol', { type: 'range', min: 0, max: 100, value: M().volume, title: 'Volumen' });
+    vol.addEventListener('input', () => setVolume(Number(vol.value)));
+    const ytBox = h('div#music-yt');
+    root.append(
+      ytBox,
+      title,
+      h('div.md-progress', time, seek, total),
+      h('div.md-controls', shuffle, prev, play, next, loop, h('span.grow'), h('span.md-volicon', '🔊'), vol));
+    dock = { root, title, seek, time, total, shuffle, play, loop, vol, ytBox, isSeeking: () => seeking };
+    return dock;
+  }
+
+  function updateProgress() {
+    if (!dock || dock.isSeeking()) return;
+    const d = Player.duration || (currentTrack() || {}).duration || 0;
+    dock.seek.value = d ? String(Math.round((Player.time / d) * 1000)) : '0';
+    dock.time.textContent = fmtDur(Player.time) || '0:00';
+    dock.total.textContent = fmtDur(d);
+  }
+
+  function updateDock() {
+    const has = M().tracks.length > 0;
+    const root = $('#music-dock');
+    root.classList.toggle('hidden', !has);
+    renderStatusMusic();
+    if (!has) return;
+    const d = ensureDock();
+    const t = currentTrack();
+    d.title.textContent = t ? t.title : 'Nada sonando — elige una pista';
+    d.title.title = t ? t.title : '';
+    d.play.textContent = Player.playing ? '⏸' : '▶';
+    d.shuffle.classList.toggle('on', !!M().shuffle);
+    d.loop.classList.toggle('on', M().loop !== 'off');
+    d.loop.textContent = M().loop === 'one' ? '🔂' : '🔁';
+    d.loop.title = LOOP_LABEL[M().loop];
+    d.vol.value = String(M().volume);
+    // el video de YouTube se ve en la pestaña Música; en otras queda minimizado pero sigue sonando
+    const showVideo = Player.kind === 'youtube' && t && t.type === 'youtube';
+    d.ytBox.classList.toggle('hidden-video', !showVideo || state.ui.rtab !== 'music');
+    d.ytBox.classList.toggle('gone', !showVideo);
+    updateProgress();
+  }
+
+  function renderStatusMusic() {
+    const el = $('#st-music');
+    if (!el) return;
+    const t = currentTrack();
+    el.replaceChildren(...(t ? [h(`span.st-music${Player.playing ? '.on' : ''}`, {
+      title: `${Player.playing ? 'Sonando' : 'En pausa'}: ${t.title} — clic para ver la lista`,
+      onclick: () => { if (state.ui.hideRight) togglePanel('right'); setRtab('music'); },
+    }, `${Player.playing ? '♪' : '⏸'} ${t.title.length > 32 ? t.title.slice(0, 31) + '…' : t.title}`)] : []));
+  }
+
   // ---------- configuración de agentes (agents/skills/commands/hooks/memory) ----------
   let config = null;
   let configKey = '';
@@ -1367,6 +2429,8 @@
   function openSettings() {
     const s = state.settings;
     const font = h('input', { type: 'number', min: 9, max: 24, value: s.fontSize });
+    const pmode = h('select', h('option', { value: 'tab' }, 'Pestaña del navegador'), h('option', { value: 'iframe' }, 'Pestaña interna (iframe)'));
+    pmode.value = s.pageMode || 'tab';
     const port = h('input', { type: 'number', min: 1, max: 65535, value: conn.port });
     const token = h('input', { type: 'password', value: conn.token, autocomplete: 'off' });
     const launchers = AGENT_TOOLS.map((k) => {
@@ -1375,6 +2439,7 @@
     });
     const doSave = () => {
       s.fontSize = Math.max(9, Math.min(24, Number(font.value) || 13));
+      s.pageMode = pmode.value;
       for (const l of launchers) s.launchers[l.k] = { cmd: l.cmd.value.trim() || l.k, addDir: l.add.value.trim() };
       for (const t of terms.values()) { t.term.options.fontSize = s.fontSize; fitTerm(t); }
       const reconnect = Number(port.value) !== conn.port || token.value !== conn.token;
@@ -1391,6 +2456,7 @@
       body: [
         h('div.field-row', h('div.field.grow', h('label', 'Puerto del bridge'), port), h('div.field', h('label', 'Tamaño de fuente'), font)),
         h('div.field', h('label', 'Token del bridge'), token),
+        h('div.field', h('label', 'Abrir páginas por defecto en'), pmode),
         h('h4', { style: 'margin:8px 0 0' }, 'Lanzadores'),
         h('p.muted', { style: 'margin:0' }, 'Comando que se escribe en una shell nueva. La primera carpeta del proyecto es el cwd; las demás se pasan con el flag de "carpeta extra".'),
         ...launchers.map((l) => h('div.field-row',
@@ -1399,7 +2465,7 @@
           h('div.field', { style: 'width:150px' }, h('label', 'flag carpeta extra'), l.add))),
         h('h4', { style: 'margin:8px 0 0' }, 'Atajos'),
         h('p.muted.mono', { style: 'margin:0;font-size:11px;white-space:pre-line' },
-          'Alt+1…9  ir a pestaña\nAlt+Shift+T  nueva shell   ·   Alt+Shift+C/X/O  claude/codex/opencode\nAlt+Shift+W  cerrar pestaña   ·   Alt+Shift+B / P  ocultar paneles\nCtrl+Shift+C  copiar selección   ·   Ctrl+Shift+V  pegar'),
+          'Alt+1…9  ir a pestaña\nAlt+Shift+T  nueva shell   ·   Alt+Shift+C/X/O  claude/codex/opencode   ·   Alt+Shift+D  DB   ·   Alt+Shift+M  música ⏯\nAlt+Shift+W  cerrar pestaña   ·   Alt+Shift+B / P  ocultar paneles\nCtrl+Shift+C  copiar selección   ·   Ctrl+Shift+V  pegar'),
       ],
       foot: [h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
     });
@@ -1411,7 +2477,7 @@
   function isAppShortcut(e) {
     if (!e.altKey || e.ctrlKey || e.metaKey) return false;
     if (!e.shiftKey && /^Digit[1-9]$/.test(e.code)) return true;
-    return e.shiftKey && ['KeyT', 'KeyW', 'KeyB', 'KeyP', 'KeyC', 'KeyX', 'KeyO'].includes(e.code);
+    return e.shiftKey && ['KeyT', 'KeyW', 'KeyB', 'KeyP', 'KeyC', 'KeyX', 'KeyO', 'KeyD', 'KeyM'].includes(e.code);
   }
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && modalClose) { modalClose(); return; }
@@ -1427,7 +2493,13 @@
       case 'KeyC': launch('claude'); break;
       case 'KeyX': launch('codex'); break;
       case 'KeyO': launch('opencode'); break;
-      case 'KeyW': if (state.activeSid) closeTerm(state.activeSid); break;
+      case 'KeyD': openDbView(); break;
+      case 'KeyM': togglePlay(); break;
+      case 'KeyW':
+        if (state.activeSid === DB_VIEW) closeDbView();
+        else if (isPageView(state.activeSid)) closePageView(state.activeSid.slice(PAGE_PREFIX.length));
+        else if (state.activeSid) closeTerm(state.activeSid);
+        break;
       case 'KeyB': togglePanel('left'); break;
       case 'KeyP': togglePanel('right'); break;
       default: break;
@@ -1456,7 +2528,7 @@
   $('#btn-settings').onclick = openSettings;
   $('#toggle-left').onclick = () => togglePanel('left');
   $('#toggle-right').onclick = () => togglePanel('right');
-  for (const b of $$('#launchers button')) b.onclick = () => launch(b.dataset.launch);
+  for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : launch(b.dataset.launch));
   for (const b of $$('#rtabs button')) b.onclick = () => setRtab(b.dataset.rtab);
   $('#token-input').value = conn.token;
   $('#port-input').value = conn.port;
@@ -1485,6 +2557,7 @@
     } catch (_) { /* sin estado remoto */ }
     await syncSessions();
     loadConfig(true);
+    loadDbs();
     pollProcs();
     renderRight();
   });
@@ -1493,6 +2566,7 @@
 
   applyPanels();
   for (const b of $$('#rtabs button')) b.classList.toggle('active', b.dataset.rtab === state.ui.rtab);
+  updateDock();
   renderAll();
   renderRight();
   Bridge.connect();

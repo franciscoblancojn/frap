@@ -19,6 +19,9 @@
 ## v1.1: pulido
 
 - [x] Acciones: comandos con nombre e interruptor encender/apagar (VPN…), patrón de "lista", log e indicador en la barra de estado
+- [x] Páginas: accesos nombre + URL, abrir en pestaña del navegador (por defecto) o pestaña interna (iframe), modo por página y global
+- [x] Bases de datos: conexiones en `.env` (0600), pestaña DB (tablas, editor, resultados, historial, CSV), CLI `frap-db` de solo lectura para agentes y skill para claude/codex
+- [x] Música: archivos (IndexedDB) y YouTube (relé `/yt-player`), bucle (lista/canción), aleatorio sin repetir, arrastrar para reordenar, dock persistente y teclas multimedia
 - [ ] Paneles redimensionables arrastrando el borde
 - [ ] Buscar en la terminal (xterm addon-search vendorizado)
 - [ ] Notificación del navegador cuando un agente termina o pide atención (pasa de activo a inactivo)
@@ -32,6 +35,8 @@
 - [ ] Leer las sesiones de Claude (`~/.claude/projects/*.jsonl`) para mostrar el historial y reanudar (`claude --resume`)
 - [ ] Mostrar los subagentes y tareas en curso de una sesión de Claude (no solo procesos del SO)
 - [ ] Skills, agentes y comandos de plugins (`~/.claude/plugins`)
+- [ ] DB: autocompletado de tablas y columnas en el editor, varias pestañas DB, SQL Server y MongoDB
+- [ ] Música: importar playlists de YouTube, varias listas, ecualizador
 - [ ] MCP servers: listar y editar (`.mcp.json`, `~/.claude.json`, `~/.codex/config.toml`)
 - [ ] Git por proyecto: rama, cambios y diff en el panel derecho
 - [ ] Lanzar con worktrees: un agente por rama en paralelo

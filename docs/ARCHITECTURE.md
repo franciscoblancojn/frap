@@ -17,6 +17,22 @@ navegador (file://src/index.html)                     máquina local
 - **Acciones:** son sesiones con `meta.kind = 'action'` y `meta.actionId`, lanzadas con `cmd: [$SHELL, '-ic', comando]`, así que la sesión termina cuando termina el comando. Su estado se deriva de la sesión viva y del patrón "lista" buscado en la salida. Para apagar se escribe `\x03` en el PTY: el kernel manda SIGINT al grupo en primer plano, también a procesos root bajo `sudo`. Si no responde en unos 10 s, se mata la sesión.
 - **Entorno de las terminales:** se limpian las variables que marcan una sesión padre de Claude Code o Codex (`CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, …), por si el bridge se lanzó desde una.
 
+## Música
+
+- **Archivos:** se guardan como Blob en IndexedDB (`frap-music/files`) y se reproducen con un `<audio>` global. Funcionan sin bridge y sobreviven a recargas. En `state.music.tracks` solo va la metadata.
+- **YouTube:** rechaza embeds desde `file://` (error 153, sin Referer). Por eso el bridge sirve `GET /yt-player`, un relé en `http://127.0.0.1:<puerto>` que carga la IFrame API de YouTube. La UI lo incrusta y le habla por `postMessage` (`{frap:'yt', cmd:'load'|'play'|'pause'|'seek'|'volume'}`), y recibe de vuelta `ready`, `state`, `time` y `error`. La UI valida `event.source` y `event.origin`, y el relé solo acepta mensajes de su ventana padre. El relé no usa token, y el WebSocket rechaza su Origin http, así que no da acceso al bridge.
+- El reproductor (dock) vive fuera de `#rbody`, así que re-renderizar el panel no corta la música. Fuera de la pestaña Música el video se minimiza, pero sigue sonando.
+
+## Bases de datos
+
+- `bridge/db.js` es el núcleo compartido. Lee y escribe `FRAP_HOME/databases.env` (claves `FRAP_DB_<ID>_{NAME,ENGINE,HOST,PORT,USER,PASSWORD,DATABASE,UI_WRITE}`, archivo 0600), clasifica el SQL y ejecuta con los clientes del sistema. No hay drivers npm.
+  - **MySQL:** `mysql --xml`, para distinguir NULL de `'NULL'`. La contraseña va en un `--defaults-extra-file` temporal 0600, nunca en argv.
+  - **PostgreSQL:** `psql --csv` con un marcador de NULL. La contraseña va en `PGPASSWORD`.
+  - **SQLite:** `sqlite3 -csv -safe`.
+- La UI nunca recibe contraseñas: `db.list` y `db.save` devuelven `publicConn`.
+- `bridge/frap-db.js` es el CLI de los agentes. Llama a `runQuery` sin `write`, así que siempre es solo lectura, sin ningún flag que lo cambie.
+- Lo que hace la pestaña DB de la UI: lee en modo solo lectura por defecto. Escribe solo si la conexión tiene `UI_WRITE=1`, el usuario marca "escritura" y confirma.
+
 ## Protocolo
 
 Cliente → bridge: `{ id?, op, args }`. Con `id` se responde `{ re: id, ok, data | error }`; sin `id` no se responde (se usa para input y resize).
@@ -40,6 +56,14 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `fs.exists` | `{path}` | `bool` |
 | `config.scan` | `{folders}` | `{agents, skills, commands, hooks, memory}` |
 | `state.get` / `state.set` | `{state}` | estado de la UI en `FRAP_HOME/state.json` |
+| `db.list` | — | `{envFile, cli, clients, skills, conns}`; las conexiones van **sin contraseña** (`hasPassword`) |
+| `db.save` | `{conn}` | crea, o edita si viene `id`; `password: null` conserva la guardada |
+| `db.delete` | `{id}` | `true` |
+| `db.test` | `{id}` o `{conn}` | `{ms, version}`; permite probar antes de guardar |
+| `db.query` | `{id, sql, write?, limit?}` | `{columns, rows, rowCount, truncated, ms, readOnly}`; `write` solo si la conexión tiene `uiWrite` |
+| `db.tables` | `{id}` | `[{name, view}]` |
+| `music.ytInfo` | `{id}` | `{title, author}` vía oEmbed público de YouTube |
+| `db.installSkill` | `{tools}` | escribe `~/.claude/skills/frap-db/SKILL.md` y `~/.codex/skills/frap-db/SKILL.md` |
 
 ## Dónde se busca la configuración (`config.scan`)
 

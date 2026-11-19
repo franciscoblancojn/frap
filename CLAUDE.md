@@ -10,7 +10,11 @@ FRAP es una alternativa ligera a Warp que corre en el navegador: 3 paneles (proy
 2. **Cero dependencias npm** en runtime y en tests. El bridge usa solo la librería estándar de Node 18+ y Python 3.
 3. **Nunca `innerHTML`** en `src/index.js`: se muestra contenido de archivos del usuario. Usa `h()` (crea nodos con `textContent`).
 4. **Seguridad del bridge**: escucha solo en `127.0.0.1`, exige token y rechaza Origins `http(s)` (salvo los de `FRAP_ALLOW_ORIGINS`). `fs.*` queda limitado a `FRAP_FS_ROOT` (por defecto `$HOME`) y `proc.kill` solo a descendientes de sesiones FRAP. No relajes esto.
-5. La UI está en español.
+5. **Bases de datos**:
+   - Las contraseñas solo viven en `FRAP_HOME/databases.env` (0600): nunca en el estado de la UI, en localStorage ni en las respuestas del bridge (usa `publicConn`).
+   - `frap-db.js` (agentes) es siempre solo lectura, sin flags para escribir.
+   - No debilites `assertReadOnly` ni las capas del motor: cualquier cambio necesita un test en `tests/db.test.js`.
+6. La UI está en español.
 
 ## Estructura
 
@@ -22,7 +26,10 @@ src/vendor/      xterm.js + addon-fit (no editar)
 bridge/frap-bridge.js  servidor WS: sesiones PTY, fs, ps, escaneo de config, estado
 bridge/ws.js           WebSocket RFC 6455 mínimo (servidor + cliente para tests)
 bridge/frap_pty.py     helper PTY (Python stdlib). NO renombrar a pty.py: tapa el módulo stdlib
+bridge/db.js           conexiones de BD (.env), clasificador de solo lectura, ejecución vía mysql/psql/sqlite3
+bridge/frap-db.js      CLI de SOLO LECTURA para agentes (lo usa la skill frap-db)
 tests/bridge.test.js   tests de integración del bridge (node:test)
+tests/db.test.js       clasificador, parsers, .env, motores y CLI
 scripts/check.js       chequeos estáticos + reglas de arriba
 docs/                  arquitectura, protocolo y roadmap
 ```
@@ -37,6 +44,7 @@ docs/                  arquitectura, protocolo y roadmap
 
 - Una operación nueva del bridge se agrega en `ops` de `frap-bridge.js`, se documenta en `docs/ARCHITECTURE.md` (tabla del protocolo) y se cubre con un test en `tests/bridge.test.js`.
 - Los tests aíslan `HOME`, `FRAP_HOME` y `FRAP_FS_ROOT` en un tmpdir. Nunca dependas del `~/.claude` real.
+- Los tests de SQLite corren siempre. Los de MySQL y PostgreSQL solo si defines `FRAP_TEST_MYSQL` / `FRAP_TEST_PG` con el JSON de la conexión (ver la cabecera de `tests/db.test.js`).
 - El estado de la UI vive en `state` (index.js). Se persiste en localStorage y en `~/.config/frap/state.json` vía `state.set`, y gana el `savedAt` más reciente. Las terminales **no** se persisten en el estado: se derivan de `sessions.list` del bridge (`meta.projectId`).
 - Para cambios visuales, verifica en un navegador real: abre `src/index.html` con el bridge corriendo y revisa la consola.
 - Actualiza `docs/ROADMAP.md` cuando completes o agregues ítems.

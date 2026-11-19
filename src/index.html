@@ -31,6 +31,7 @@
           <button data-launch="claude" class="l-claude">claude</button>
           <button data-launch="codex" class="l-codex">codex</button>
           <button data-launch="opencode" class="l-opencode">opencode</button>
+          <button data-launch="db" class="l-db" title="Consultas SQL (Alt+Shift+D)">db</button>
         </div>
         <button class="icon" id="toggle-right" title="Mostrar/ocultar panel derecho (Alt+P)">⟩</button>
       </div>
@@ -56,6 +57,7 @@
         <span id="st-project"></span>
         <span id="st-cwd" class="muted"></span>
         <span class="grow"></span>
+        <span id="st-music"></span>
         <span id="st-actions"></span>
         <span id="st-host" class="muted"></span>
       </div>
@@ -67,6 +69,9 @@
         <button data-rtab="procs" class="active">Procesos</button>
         <button data-rtab="prompts">Prompts</button>
         <button data-rtab="actions">Acciones</button>
+        <button data-rtab="pages">Páginas</button>
+        <button data-rtab="dbs">Bases de datos</button>
+        <button data-rtab="music">Música</button>
         <button data-rtab="agents">Agentes</button>
         <button data-rtab="skills">Skills</button>
         <button data-rtab="commands">Comandos</button>
@@ -74,6 +79,7 @@
         <button data-rtab="memory">Memoria</button>
       </nav>
       <div id="rbody" class="scroll"></div>
+      <div id="music-dock" class="hidden"></div>
     </aside>
   </div>
 

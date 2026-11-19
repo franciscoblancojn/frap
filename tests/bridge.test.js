@@ -219,3 +219,57 @@ test('acciones: Ctrl+C por el PTY detiene el comando en primer plano (bash -ic)'
   const info = (await client.call('sessions.list')).find((x) => x.sid === s.sid);
   assert.equal(info.meta.actionId, 'a1');
 });
+
+test('db.*: guardar (sin exponer contraseña), probar, consultar, tablas, skill y borrar', async () => {
+  const file = path.join(root, 'proj', 'app.sqlite');
+  require('child_process').execFileSync('sqlite3', [file, 'CREATE TABLE t (x INT); INSERT INTO t VALUES (7);']);
+
+  const saved = await client.call('db.save', { conn: { name: 'App Local', engine: 'sqlite', database: file } });
+  assert.equal(saved.id, 'app_local');
+  assert.equal(saved.password, undefined);
+  const list = await client.call('db.list');
+  assert.equal(list.conns.length, 1);
+  assert.equal(fs.statSync(list.envFile).mode & 0o777, 0o600);
+
+  // editar sin enviar contraseña la conserva (sqlite no guarda contraseña: se prueba con mysql)
+  const my = await client.call('db.save', { conn: { name: 'Remota', engine: 'mysql', host: 'db.ejemplo', user: 'lector', password: 'p4ss-secreta' } });
+  await client.call('db.save', { conn: { id: my.id, name: 'Remota 2', engine: 'mysql', host: 'db.ejemplo', user: 'lector', password: null } });
+  assert.match(fs.readFileSync(list.envFile, 'utf8'), /FRAP_DB_REMOTA_PASSWORD="p4ss-secreta"/);
+  assert.equal(JSON.stringify(await client.call('db.list')).includes('p4ss-secreta'), false);
+  await client.call('db.delete', { id: my.id });
+
+  assert.ok((await client.call('db.test', { id: 'app_local' })).version);
+  const r = await client.call('db.query', { id: 'app_local', sql: 'SELECT x FROM t' });
+  assert.deepEqual(r.rows, [['7']]);
+  await assert.rejects(client.call('db.query', { id: 'app_local', sql: 'DELETE FROM t' }), /Solo lectura/);
+  await assert.rejects(client.call('db.query', { id: 'app_local', sql: 'DELETE FROM t', write: true }), /no permite escritura/);
+  assert.deepEqual(await client.call('db.tables', { id: 'app_local' }), [{ name: 't', view: false }]);
+
+  // sqlite fuera de FRAP_FS_ROOT se rechaza
+  await assert.rejects(client.call('db.save', { conn: { name: 'x', engine: 'sqlite', database: '/etc/x.db' } }), /fuera/);
+
+  const skills = await client.call('db.installSkill', { tools: ['claude'] });
+  assert.equal(skills.length, 1);
+  assert.match(fs.readFileSync(skills[0], 'utf8'), /frap-db\.js/);
+  assert.equal((await client.call('db.list')).skills.claude, true);
+
+  await client.call('db.delete', { id: 'app_local' });
+  assert.equal((await client.call('db.list')).conns.length, 0);
+});
+
+test('música: /yt-player sirve el relé de YouTube y music.ytInfo valida el ID', async () => {
+  const body = await new Promise((resolve, reject) => {
+    require('http').get(`http://127.0.0.1:${port}/yt-player`, (res) => {
+      let d = '';
+      res.on('data', (c) => { d += c; });
+      res.on('end', () => resolve({ status: res.statusCode, type: res.headers['content-type'], d }));
+    }).on('error', reject);
+  });
+  assert.equal(body.status, 200);
+  assert.match(body.type, /text\/html/);
+  assert.match(body.d, /youtube\.com\/iframe_api/);
+  assert.match(body.d, /e\.source !== parent/, 'el relé solo debe aceptar mensajes de la ventana padre');
+  await assert.rejects(client.call('music.ytInfo', { id: 'no-valido!' }), /inválido/);
+  // el Origin http del relé no puede abrir el WebSocket del bridge
+  await assert.rejects(ws.connect(port, `/?token=${TOKEN}`, { Origin: `http://127.0.0.1:${port}` }), { status: 403 });
+});
