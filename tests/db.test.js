@@ -155,7 +155,9 @@ for (const [name, conn] of engines) {
       // el tiempo límite del servidor se aplica (MySQL: max_execution_time; MariaDB: max_statement_time)
       const v = await db.runQuery(conn, 'SELECT VERSION() AS v, @@max_execution_time AS met', { timeoutMs: 45000 });
       if (!/mariadb/i.test(v.rows[0][0])) assert.equal(v.rows[0][1], '45000');
-      const ro = await db.runQuery(conn, 'SELECT @@transaction_read_only AS ro');
+      // MySQL 8 la llama transaction_read_only; MariaDB 10.x, tx_read_only
+      const maria = /mariadb/i.test(v.rows[0][0]);
+      const ro = await db.runQuery(conn, `SELECT @@${maria ? 'tx_read_only' : 'transaction_read_only'} AS ro`);
       assert.equal(ro.rows[0][0], '1', 'la consulta corre en una transacción de solo lectura');
     }
     await assert.rejects(db.runQuery(conn, 'SELECT * FROM no_existe'), /no_existe/);
