@@ -5,7 +5,7 @@
   "description": "Terminal ligera en el navegador para trabajar con claude, codex y opencode sobre tus proyectos.",
   "license": "MIT",
   "engines": { "node": ">=18" },
-  "bin": { "frap-db": "bridge/frap-db.js" },
+  "bin": { "frap-db": "bridge/frap-db.js", "frap-ssh": "bridge/frap-ssh.js" },
   "scripts": {
     "bridge": "node bridge/frap-bridge.js",
     "start": "node bridge/frap-bridge.js --open",

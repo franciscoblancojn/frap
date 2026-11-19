@@ -363,6 +363,9 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .db-agents { border-style: dashed; }
 .db-card.off { opacity: .55; }
 .db-flags { display: flex; gap: 16px; margin-top: 6px; }
+.ssh-pick { display: flex; flex-direction: column; gap: 6px; min-width: 320px; }
+.ssh-pick-item { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; text-align: left; }
+.ssh-pick-item .name { font-weight: 600; }
 .db-flag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-2); cursor: default; }
 .db-pane { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); z-index: 1; }
 .db-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--bg-2); flex-wrap: wrap; }
@@ -630,3 +633,15 @@ textarea.prompt-body { min-height: 180px; font: 12.5px/1.5 var(--mono); resize: 
   :root { --left-w: 200px; --right-w: 260px; }
   #launchers button { padding: 3px 5px; }
 }
+
+/* ---------- avisos de agentes (hook → $FRAP_NOTIFY) ---------- */
+.notice { flex: none; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 8px; white-space: nowrap; }
+.notice.done { color: var(--bg); background: var(--ok); }
+.notice.waiting { color: var(--bg); background: var(--warn); animation: notice-pulse 1.6s ease-in-out infinite; }
+.term-item:has(.notice.done) .tname { color: var(--ok); font-weight: 600; }
+.term-item:has(.notice.waiting) .tname { color: var(--warn); font-weight: 600; }
+.notice-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.notice-dot.done { background: var(--ok); }
+.notice-dot.waiting { background: var(--warn); animation: notice-pulse 1.6s ease-in-out infinite; }
+@keyframes notice-pulse { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .notice.waiting, .notice-dot.waiting { animation: none; } }

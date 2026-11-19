@@ -18,8 +18,9 @@ const net = require('net');
 const { StringDecoder } = require('string_decoder');
 const ws = require('./ws');
 const db = require('./db');
+const ssh = require('./ssh');
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const STARTED_AT = Date.now();
 const HOME = os.homedir();
 
@@ -251,6 +252,10 @@ fs.mkdirSync(SOCK_DIR, { recursive: true, mode: 0o700 });
 fs.chmodSync(SOCK_DIR, 0o700);
 const sockPath = (sid) => path.join(SOCK_DIR, `${sid}.sock`);
 const metaPath = (sid) => path.join(SOCK_DIR, `${sid}.json`);
+// Avisos de agentes: un hook (p. ej. Stop/Notification de claude) escribe "done" o "waiting <mensaje>"
+// en $FRAP_NOTIFY, y el bridge lo publica como evento `notice` para marcar la terminal en la UI.
+const notifyPath = (sid) => path.join(SOCK_DIR, `${sid}.notify`);
+const NOTICE_KINDS = new Set(['done', 'waiting']);
 
 function broadcast(msg) {
   const s = JSON.stringify(msg);
@@ -259,7 +264,7 @@ function broadcast(msg) {
 function sessionInfo(s) {
   return {
     sid: s.sid, pid: s.pid, meta: s.meta, created: s.created,
-    lastOutput: s.lastOutput, alive: s.alive, exitCode: s.exitCode,
+    lastOutput: s.lastOutput, alive: s.alive, exitCode: s.exitCode, notice: s.notice || null,
   };
 }
 function saveMeta(s) {
@@ -268,7 +273,39 @@ function saveMeta(s) {
   } catch (_) { /* sin disco: la sesión sigue funcionando */ }
 }
 function cleanupFiles(sid) {
-  for (const f of [sockPath(sid), metaPath(sid), `${sockPath(sid)}.exit`]) fs.rmSync(f, { force: true });
+  for (const f of [sockPath(sid), metaPath(sid), `${sockPath(sid)}.exit`, notifyPath(sid)]) fs.rmSync(f, { force: true });
+}
+
+/** Lee y consume el archivo de avisos de una sesión. */
+function readNotice(sid) {
+  const s = sessions.get(sid);
+  const f = notifyPath(sid);
+  let text = '';
+  try {
+    const tmp = `${f}.${process.pid}.read`;
+    fs.renameSync(f, tmp); // atómico: lo que el hook escriba después va a un archivo nuevo
+    text = fs.readFileSync(tmp, 'utf8').slice(-4096);
+    fs.rmSync(tmp, { force: true });
+  } catch (_) { return; }
+  if (!s) return;
+  const line = text.split('\n').map((l) => l.trim()).filter(Boolean).pop();
+  if (!line) return;
+  const [kind, ...rest] = line.split(' ');
+  if (!NOTICE_KINDS.has(kind)) return;
+  s.notice = { kind, msg: rest.join(' ').slice(0, 200), at: Date.now() };
+  broadcast({ ev: 'notice', sid, notice: s.notice });
+}
+const noticeTimers = new Map();
+function watchNotices() {
+  try {
+    fs.watch(SOCK_DIR, (_ev, file) => {
+      if (!file || !file.endsWith('.notify')) return;
+      const sid = file.slice(0, -'.notify'.length);
+      clearTimeout(noticeTimers.get(sid));
+      noticeTimers.set(sid, setTimeout(() => { noticeTimers.delete(sid); readNotice(sid); }, 40));
+    });
+  } catch (_) { /* sin inotify: no hay avisos */ }
+  for (const f of fs.readdirSync(SOCK_DIR)) if (f.endsWith('.notify')) readNotice(f.slice(0, -'.notify'.length));
 }
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 
@@ -372,7 +409,7 @@ async function waitForFile(p, ms) {
   return false;
 }
 
-async function createSession({ cwd, cols = 100, rows = 30, meta = {}, init = '', cmd } = {}) {
+async function createSession({ cwd, cols = 100, rows = 30, meta = {}, init = '', cmd, env } = {}) {
   const dir = safePath(cwd || HOME);
   if (!fs.statSync(dir).isDirectory()) throw new Error(`No es un directorio: ${dir}`);
   const shell = process.env.SHELL || '/bin/bash';
@@ -382,7 +419,7 @@ async function createSession({ cwd, cols = 100, rows = 30, meta = {}, init = '',
     cwd: dir,
     detached: true, // sesión propia: no muere con el bridge
     stdio: 'ignore',
-    env: childEnv({ TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'frap', FRAP_SESSION: sid }),
+    env: childEnv({ ...(env || {}), TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'frap', FRAP_SESSION: sid, FRAP_NOTIFY: notifyPath(sid) }),
   });
   proc.unref();
   const spawnErr = new Promise((_, reject) => proc.once('error', (e) => reject(new Error(`No se pudo iniciar la terminal: ${e.message}`))));
@@ -493,6 +530,64 @@ function dbNormalize(input, existing) {
   } else if (!c.user) throw new Error('El usuario es obligatorio');
   return c;
 }
+// ---------- ssh ----------
+const SSH_ENV = path.join(FRAP_HOME, 'ssh.env');
+const SSH_CLI = path.join(__dirname, 'frap-ssh.js');
+const SSH_SKILL_DIRS = {
+  claude: () => path.join(HOME, '.claude', 'skills', 'frap-ssh'),
+  codex: () => path.join(HOME, '.codex', 'skills', 'frap-ssh'),
+};
+function sshHosts() { return ssh.loadHosts(SSH_ENV); }
+function sshHost(id) {
+  const c = sshHosts().find((x) => x.id === id);
+  if (!c) throw new Error(`Servidor no encontrado: ${id}`);
+  return c;
+}
+/** Valida y normaliza un servidor que viene de la UI. `password: null` = conservar la guardada. */
+function sshNormalize(input, existing) {
+  const name = String(input.name || '').trim();
+  if (!name) throw new Error('El nombre es obligatorio');
+  const c = {
+    id: existing ? existing.id : '',
+    name,
+    host: String(input.host || '').trim(),
+    port: String(input.port || '').trim(),
+    user: String(input.user || '').trim(),
+    password: input.password == null ? (existing ? existing.password : '') : String(input.password),
+    key: String(input.key || '').trim(),
+    enabled: input.enabled !== undefined ? input.enabled !== false : existing ? existing.enabled !== false : true,
+    ai: input.ai !== undefined ? input.ai !== false : existing ? existing.ai !== false : false,
+  };
+  ssh.validateHost(c);
+  if (c.key) c.key = safePath(c.key);
+  return c;
+}
+function sshSkillText() {
+  const cli = `node ${SSH_CLI}`;
+  return `---
+name: frap-ssh
+description: Ejecutar comandos en los servidores SSH que el usuario habilitó para agentes en FRAP. Úsala cuando necesites revisar logs, procesos, archivos o el estado de un servidor remoto.
+---
+
+# Servidores SSH de FRAP
+
+El usuario administra los servidores en FRAP y decide cuáles puede usar un agente. Accede **solo**
+con este CLI, que nunca muestra contraseñas:
+
+\`\`\`bash
+${cli} list                         # servidores disponibles (id, destino)
+${cli} <id> "uptime"                # ejecuta un comando y muestra su salida
+${cli} <id> "tail -n 200 /var/log/syslog" --timeout 120
+\`\`\`
+
+Reglas:
+- \`list\` muestra solo los servidores habilitados para agentes; los demás se rechazan. No intentes entrar por otra vía.
+- Sin terminal interactiva: nada que espere entrada (sudo con contraseña, vim, less, top). Usa \`top -bn1\`, \`cat\`, \`tail\`.
+- Por defecto solo lectura: inspecciona (ls, cat, tail, grep, ps, df, systemctl status…). **Antes de cualquier cambio** (reiniciar servicios, editar/borrar archivos, instalar paquetes, deploy) pide confirmación explícita al usuario.
+- No leas, muestres ni copies el archivo de credenciales (${SSH_ENV}).
+`;
+}
+
 function skillText() {
   const cli = `node ${DB_CLI}`;
   return `---
@@ -533,7 +628,7 @@ const ops = {
     startedAt: STARTED_AT,
   }),
   'sessions.list': () => [...sessions.values()].map(sessionInfo),
-  'session.create': (p) => createSession(p),
+  'session.create': (p) => createSession({ ...p, env: undefined }),
   'session.attach': ({ sid }) => {
     const s = getSession(sid);
     // `pending` ya está dentro de `chunks` y se emitirá como evento 'out' después de
@@ -553,6 +648,15 @@ const ops = {
     saveMeta(s);
     broadcast({ ev: 'sessions' });
     return sessionInfo(s);
+  },
+  /** El usuario ya vio la terminal: se borra su aviso (done/waiting). */
+  'session.seen': ({ sid }) => {
+    const s = getSession(sid);
+    if (s.notice) {
+      s.notice = null;
+      broadcast({ ev: 'notice', sid, notice: null });
+    }
+    return true;
   },
   'session.kill': ({ sid }) => {
     const s = getSession(sid);
@@ -663,6 +767,78 @@ const ops = {
       const f = path.join(SKILL_DIRS[t](), 'SKILL.md');
       fs.mkdirSync(path.dirname(f), { recursive: true });
       fs.writeFileSync(f, skillText());
+      written.push(f);
+    }
+    return written;
+  },
+  'ssh.list': () => ({
+    envFile: SSH_ENV,
+    cli: SSH_CLI,
+    client: which('ssh'),
+    skills: Object.fromEntries(Object.entries(SSH_SKILL_DIRS).map(([k, dir]) => [k, exists(path.join(dir(), 'SKILL.md'))])),
+    hosts: sshHosts().map(ssh.publicHost),
+  }),
+  'ssh.save': ({ host }) => {
+    const hosts = sshHosts();
+    const existing = host && host.id ? hosts.find((c) => c.id === host.id) : null;
+    if (host && host.id && !existing) throw new Error(`Servidor no encontrado: ${host.id}`);
+    const c = sshNormalize(host || {}, existing);
+    if (existing) hosts[hosts.indexOf(existing)] = c;
+    else {
+      c.id = ssh.slugify(c.name, new Set(hosts.map((x) => x.id)));
+      hosts.push(c);
+    }
+    ssh.saveHosts(SSH_ENV, hosts, SSH_CLI);
+    return ssh.publicHost(c);
+  },
+  'ssh.delete': ({ id }) => {
+    const hosts = sshHosts();
+    if (!hosts.some((c) => c.id === id)) throw new Error(`Servidor no encontrado: ${id}`);
+    ssh.saveHosts(SSH_ENV, hosts.filter((c) => c.id !== id), SSH_CLI);
+    return true;
+  },
+  /** Cambia solo los interruptores: `enabled` (activo) y/o `ai` (usable por agentes). */
+  'ssh.toggle': ({ id, enabled, ai }) => {
+    const hosts = sshHosts();
+    const c = hosts.find((x) => x.id === id);
+    if (!c) throw new Error(`Servidor no encontrado: ${id}`);
+    if (enabled !== undefined) c.enabled = !!enabled;
+    if (ai !== undefined) c.ai = !!ai;
+    ssh.saveHosts(SSH_ENV, hosts, SSH_CLI);
+    return ssh.publicHost(c);
+  },
+  /** Prueba un servidor guardado (`id`) o el formulario sin guardar (`host`). Funciona aunque esté desactivado. */
+  'ssh.test': async ({ id, host }) => {
+    const existing = id ? sshHost(id) : host && host.id ? sshHosts().find((c) => c.id === host.id) : null;
+    const c = host ? sshNormalize(host, existing) : existing;
+    const env = ssh.askpassEnv(c, FRAP_HOME, SSH_ENV, c.password || undefined);
+    const r = await ssh.runRemote(c, 'echo FRAP_OK; uname -srn', { timeoutMs: 20000, env });
+    if (r.timedOut) throw new Error('Sin respuesta en 20 s: revisa la IP, la VPN o el firewall.');
+    if (r.code !== 0 || !r.stdout.includes('FRAP_OK')) {
+      const msg = (r.stderr.trim().split('\n').filter((l) => !/^Warning: Permanently added/.test(l)).pop()) || `ssh terminó con código ${r.code}`;
+      const hint = ssh.sshHint(r.stderr);
+      throw new Error(hint ? `${msg}\n→ ${hint}` : msg);
+    }
+    return { ms: r.ms, system: r.stdout.split('FRAP_OK').pop().trim() };
+  },
+  /** Abre una terminal con `ssh` al servidor (la contraseña la entrega askpass). */
+  'ssh.connect': ({ id, cwd, projectId, cols, rows }) => {
+    const c = sshHost(id);
+    if (!c.enabled) throw new Error(`El servidor "${c.name}" está desactivado. Actívalo en el panel SSH.`);
+    return createSession({
+      cwd: cwd || FS_ROOT, cols, rows,
+      cmd: ['ssh', ...ssh.sshArgs(c)],
+      env: ssh.askpassEnv(c, FRAP_HOME, SSH_ENV),
+      meta: { projectId: projectId || null, kind: 'ssh', title: c.name, sshId: c.id },
+    });
+  },
+  'ssh.installSkill': ({ tools = ['claude', 'codex'] } = {}) => {
+    const written = [];
+    for (const t of tools) {
+      if (!SSH_SKILL_DIRS[t]) continue;
+      const f = path.join(SSH_SKILL_DIRS[t](), 'SKILL.md');
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, sshSkillText());
       written.push(f);
     }
     return written;
@@ -863,7 +1039,7 @@ process.on('SIGTERM', shutdown);
 
 // primero se reconecta a las terminales que siguen vivas; luego acepta a la UI
 let recovered = 0;
-rediscoverSessions().then((n) => { recovered = n; }, () => {}).then(() => server.listen(PORT, HOST, () => {
+rediscoverSessions().then((n) => { recovered = n; }, () => {}).then(watchNotices).then(() => server.listen(PORT, HOST, () => {
   const page = path.resolve(__dirname, '..', 'src', 'index.html');
   const url = `file://${page}#port=${PORT}&token=${TOKEN}`;
   if (process.env.FRAP_QUIET !== '1') {

@@ -476,7 +476,7 @@ function describeSql(engine, table) {
 
 module.exports = {
   ENGINES, NULL_MARK,
-  loadConnections, saveConnections, slugify, publicConn,
+  loadConnections, saveConnections, slugify, publicConn, parseEnvValue, quoteEnvValue, isOff,
   splitSql, assertReadOnly, parseCsv, parseMysqlXml, connectionHint,
   runQuery, tablesSql, describeSql,
 };

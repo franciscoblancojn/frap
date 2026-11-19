@@ -47,6 +47,7 @@
     opencode: 'vendor/icons/opencode.svg',
     db: 'vendor/icons/db.svg',
     git: 'vendor/icons/git.svg',
+    ssh: 'vendor/icons/ssh.svg',
   };
   const kindIcon = (kind) => (ICONS[kind] ? h('img.ico', { src: ICONS[kind], alt: kind, title: kind }) : null);
   const uid = () => Math.random().toString(36).slice(2, 10);
@@ -241,7 +242,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.query', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -379,13 +380,29 @@
     t.info.alive = false;
     t.info.exitCode = code;
     if (termKind(t) === 'action') { onActionExit(t, code); return; }
-    t.term.write(`\r\n\x1b[2m[proceso terminado · código ${code}] — cierra la pestaña o pulsa Enter para reiniciar\x1b[0m\r\n`);
+    // si la terminal aún está cargando su historial (proceso que murió al instante), el aviso va después
+    const note = () => {
+      if (t.attaching) { setTimeout(note, 50); return; }
+      t.term.write(`\r\n\x1b[2m[proceso terminado · código ${code}] — cierra la pestaña o pulsa Enter para reiniciar\x1b[0m\r\n`);
+    };
+    note();
     t.exitHandler = t.term.onData((d) => {
       if (d === '\r') restartTerm(sid);
     });
     renderAll();
   });
   Bridge.on('sessions', () => syncSessions());
+  Bridge.on('notice', ({ sid, notice }) => {
+    const t = terms.get(sid);
+    if (!t) return;
+    t.info.notice = notice;
+    // si el usuario ya la está mirando, no hace falta marcarla
+    if (notice && sid === state.activeSid && !document.hidden && document.hasFocus()) markSeen(t);
+    renderProjects();
+    renderTabs();
+    updateTitle();
+  });
+  window.addEventListener('focus', () => { const t = activeTerm(); if (t && t.info.notice) { markSeen(t); renderAll(); } });
 
   /** reattach=true al (re)conectar: las terminales ya abiertas recargan su historial, porque
    *  mientras el bridge estuvo caído (o se reinició) siguieron produciendo salida. */
@@ -418,6 +435,12 @@
     const ids = new Set(state.projects.map((p) => p.id));
     return [...terms.values()].filter((t) => termKind(t) !== 'action' && !ids.has((t.info.meta || {}).projectId));
   }
+  /** Terminales con pestaña: las del proyecto activo, o las "Sin proyecto" (p. ej. ssh) si una de ellas está activa. */
+  function tabSessions() {
+    const at = activeTerm();
+    const orphanActive = at && termKind(at) !== 'action' && !project((at.info.meta || {}).projectId);
+    return orphanActive || !project() ? orphanSessions() : sessionsOf(state.activeProject);
+  }
   const termTitle = (t) => t.liveTitle || (t.info.meta || {}).title || t.sid;
   const termKind = (t) => (t.info.meta || {}).kind || 'shell';
 
@@ -429,6 +452,7 @@
     const pid = (t.info.meta || {}).projectId;
     if (pid && project(pid)) state.activeProject = pid;
     state.activeSid = sid;
+    markSeen(t);
     save();
     renderAll();
     requestAnimationFrame(() => { fitTerm(t); t.term.focus(); });
@@ -468,6 +492,7 @@
     const meta = t.info.meta || {};
     const p = project(meta.projectId);
     disposeTerm(sid);
+    if (meta.sshId) { if (p) state.activeProject = p.id; await connectSsh(meta.sshId); return; }
     if (!p) { renderAll(); return; }
     state.activeProject = p.id;
     await launch(meta.kind || 'shell', { title: meta.title, cwd: meta.cwd });
@@ -479,7 +504,7 @@
     if (t.info.alive !== false) {
       try { await Bridge.call('session.kill', { sid }); } catch (_) { /* ya muerta */ }
     }
-    const list = sessionsOf(state.activeProject);
+    const list = tabSessions();
     const idx = list.findIndex((x) => x.sid === sid);
     disposeTerm(sid);
     if (state.activeSid === sid) {
@@ -730,7 +755,32 @@
     },
     h('span', { class: dotClass(t) }),
     h('span.tname', termTitle(t)),
+    noticeBadge(t),
     kindIcon(termKind(t)) || h(`span.kind.${termKind(t)}`, termKind(t)));
+  }
+
+  /** Aviso de un agente (hook Stop/Notification → $FRAP_NOTIFY): visible hasta abrir la terminal. */
+  function noticeBadge(t) {
+    const n = t.info.notice;
+    if (!n) return null;
+    return n.kind === 'done'
+      ? h('span.notice.done', { title: `Terminó ${fmtAgo(n.at)}` }, '✓ terminó')
+      : h('span.notice.waiting', { title: n.msg || 'Espera tu respuesta' }, '● espera');
+  }
+  function fmtAgo(ts) {
+    const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+    return s < 60 ? `hace ${s} s` : s < 3600 ? `hace ${Math.round(s / 60)} min` : `hace ${Math.round(s / 3600)} h`;
+  }
+  const APP_TITLE = document.title;
+  function updateTitle() {
+    const n = [...terms.values()].filter((t) => t.info.notice).length;
+    document.title = n ? `(${n}) ${APP_TITLE}` : APP_TITLE;
+  }
+  /** Borra el aviso de la terminal que el usuario está mirando. */
+  function markSeen(t) {
+    if (!t || !t.info.notice) return;
+    t.info.notice = null;
+    if (Bridge.ready) Bridge.call('session.seen', { sid: t.sid }).catch(() => {});
   }
 
   function renderProjects() {
@@ -774,7 +824,7 @@
         h('span.tname', `⚡ ${termTitle(at)}`),
         h('span.x', { title: 'Cerrar log (la acción sigue)', onclick: (e) => { e.stopPropagation(); leaveActionLog(); } }, '✕')));
     }
-    for (const t of sessionsOf(state.activeProject)) {
+    for (const t of tabSessions()) {
       tabs.append(h(`div.tab${t.sid === state.activeSid ? '.active' : ''}`, {
         dataset: { sid: t.sid },
         title: `${(t.info.meta || {}).cwd || ''}\nDoble clic: renombrar`,
@@ -785,6 +835,7 @@
       h('span', { class: dotClass(t) }),
       kindIcon(termKind(t)),
       h('span.tname', termTitle(t)),
+      t.info.notice ? h(`span.notice-dot.${t.info.notice.kind}`, { title: t.info.notice.kind === 'done' ? 'Terminó' : 'Espera tu respuesta' }) : null,
       h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeTerm(t.sid); } }, '✕')));
     }
     for (const id of state.openPages) {
@@ -845,6 +896,7 @@
     renderProjects();
     renderTabs();
     renderPanes();
+    updateTitle();
   }
 
   // indicadores de actividad sin re-render completo
@@ -1010,6 +1062,7 @@
     actions: renderActions,
     pages: renderPages,
     dbs: renderDbs,
+    ssh: renderSsh,
     music: renderMusic,
     timers: renderTimers,
     agents: () => renderConfigList('agents'),
@@ -1024,8 +1077,9 @@
     for (const b of $$('#rtabs button')) b.classList.toggle('active', b.dataset.rtab === name);
     renderRight();
     if (name === 'procs') pollProcs();
-    else if (name !== 'prompts' && name !== 'actions' && name !== 'pages' && name !== 'dbs' && name !== 'music' && name !== 'timers') loadConfig();
+    else if (name !== 'prompts' && name !== 'actions' && name !== 'pages' && name !== 'dbs' && name !== 'ssh' && name !== 'music' && name !== 'timers') loadConfig();
     if (name === 'dbs') loadDbs();
+    if (name === 'ssh') loadSsh();
     updateDock();
   }
   function renderRight() {
@@ -2164,6 +2218,187 @@
     } catch (e) { toast(e.message, 'err'); }
   }
 
+  // ======================================================================
+  // SSH: servidores guardados en FRAP_HOME/ssh.env (contraseñas solo en el bridge)
+  // ======================================================================
+  let sshInfo = null;
+  let sshError = null;
+  const sshTarget = (c) => `${c.user}@${c.host}${c.port ? ':' + c.port : ''}`;
+
+  async function loadSsh() {
+    if (!Bridge.ready) return;
+    try { sshInfo = await Bridge.call('ssh.list'); sshError = null; } catch (e) { sshError = e.message; }
+    if (state.ui.rtab === 'ssh') renderRight();
+  }
+
+  function renderSsh() {
+    const head = section('SSH',
+      h('button.mini', { title: 'Recargar', onclick: loadSsh }, '↻'),
+      h('button.mini.primary', { onclick: () => editSsh() }, '+ Nuevo'));
+    if (!Bridge.ready) return [head, h('p.muted', 'Bridge desconectado.')];
+    if (!sshInfo) return [head, sshError ? h('p', { style: 'color:var(--err)' }, sshError) : h('p.muted', 'Cargando…')];
+    const sk = sshInfo.skills || {};
+    const agents = h('div.card.db-agents',
+      h('div.title', h('span.name', '🤖 Acceso para agentes')),
+      h('div.desc', { title: 'claude, codex y opencode usan el CLI frap-ssh: ejecutan comandos sin terminal y nunca ven contraseñas' },
+        'Los agentes solo ven los servidores con 🤖 Uso por IA y pueden ejecutar comandos en ellos.'),
+      h('div.path', { title: sshInfo.envFile }, `credenciales: ${tilde(sshInfo.envFile)} (0600)`),
+      h('div.acts',
+        h('button.mini', { title: 'Escribe la skill frap-ssh en ~/.claude/skills y ~/.codex/skills', onclick: installSshSkill },
+          sk.claude && sk.codex ? '✓ Skill instalada · reinstalar' : 'Instalar skill (claude + codex)'),
+        h('button.mini', { title: 'Copiar el comando del CLI', onclick: () => { copyText(`node ${sshInfo.cli} list`); toast('Comando copiado', 'ok'); } }, 'Copiar comando')));
+    const warn = sshInfo.client ? null : h('p', { style: 'color:var(--err)' }, 'No se encontró el cliente ssh en el sistema.');
+    if (!sshInfo.hosts.length) return [head, agents, warn, h('p.muted', 'Aún no hay servidores. Pulsa "+ Nuevo" y agrega IP, usuario y contraseña o llave.')];
+    return [head, agents, warn, ...sshInfo.hosts.map((c) => h(`div.card.db-card${c.enabled ? '.clickable' : '.off'}`, {
+      title: c.enabled ? 'Conectar (abre una terminal)' : 'Servidor desactivado',
+      onclick: () => { if (c.enabled) connectSsh(c.id); },
+    },
+      h('div.title',
+        h('span.name', `🖧 ${c.name}`),
+        c.key ? h('span.badge', { title: c.key }, '🔑 llave') : null,
+        h('button.icon.mini', { title: 'Conectar', disabled: !c.enabled, onclick: (e) => { e.stopPropagation(); connectSsh(c.id); } }, '▶'),
+        h('button.icon.mini', { title: 'Probar conexión', onclick: (e) => { e.stopPropagation(); testSsh({ id: c.id }, c.name); } }, '⚡'),
+        h('button.icon.mini', { title: 'Editar', onclick: (e) => { e.stopPropagation(); editSsh(c); } }, '✎'),
+        h('button.icon.mini', { title: 'Eliminar', onclick: (e) => { e.stopPropagation(); deleteSsh(c); } }, '✕')),
+      h('div.path', { title: c.id }, `${sshTarget(c)} · id: ${c.id}`),
+      h('div.db-flags',
+        h('label.db-flag', { onclick: (e) => e.stopPropagation() },
+          sshSwitch(c, 'enabled', c.enabled ? 'Desactivar (no se podrá conectar ni usar por agentes)' : 'Activar'),
+          h('span', c.enabled ? 'Activo' : 'Desactivado')),
+        h('label.db-flag', { onclick: (e) => e.stopPropagation() },
+          sshSwitch(c, 'ai', !c.enabled ? 'Activa primero el servidor'
+            : c.ai ? 'Quitar el acceso a claude, codex, opencode…' : 'Permitir que claude, codex, opencode… ejecuten comandos aquí', !c.enabled),
+          h('span', c.enabled && c.ai ? '🤖 Uso por IA' : '🤖 Sin IA')))))];
+  }
+
+  function sshSwitch(c, key, title, disabled) {
+    const on = key === 'ai' ? c.enabled && c.ai : c.enabled;
+    return h('button', {
+      class: `switch ${on ? 'on' : 'off'}`,
+      role: 'switch', 'aria-checked': String(!!on), title, disabled: !!disabled || !Bridge.ready,
+      onclick: (e) => { e.stopPropagation(); toggleSsh(c, key); },
+    });
+  }
+
+  async function toggleSsh(c, key) {
+    try {
+      const saved = await Bridge.call('ssh.toggle', { id: c.id, [key]: !c[key] });
+      toast(key === 'enabled'
+        ? `${c.name}: ${saved.enabled ? 'activado' : 'desactivado'}`
+        : `${c.name}: ${saved.ai ? 'los agentes pueden ejecutar comandos aquí' : 'los agentes ya no pueden usarlo'}`, 'ok');
+      loadSsh();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  async function installSshSkill() {
+    try {
+      const files = await Bridge.call('ssh.installSkill', { tools: ['claude', 'codex'] });
+      toast(`Skill instalada: ${files.map(tilde).join(', ')}`, 'ok');
+      loadSsh();
+      loadConfig(true);
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  async function testSsh(args, label) {
+    toast(`Probando ${label || 'servidor'}…`);
+    try {
+      const r = await Bridge.call('ssh.test', args);
+      toast(`✓ Conecta (${r.ms} ms)${r.system ? ' · ' + r.system.slice(0, 80) : ''}`, 'ok');
+    } catch (e) { toast(`✗ ${e.message}`, 'err'); }
+  }
+
+  /** Abre una terminal ssh en el proyecto activo (o "Sin proyecto"). */
+  async function connectSsh(id) {
+    if (!Bridge.ready) { toast('Bridge desconectado', 'err'); return; }
+    const p = project();
+    try {
+      const info = await Bridge.call('ssh.connect', {
+        id, cols: 120, rows: 32,
+        projectId: p ? p.id : null,
+        cwd: p && p.folders.length ? p.folders[0] : undefined,
+      });
+      ensureTerm(info);
+      activate(info.sid);
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  /** Botón ssh del panel central: conecta directo si hay un solo servidor activo; si no, elige. */
+  async function pickSsh() {
+    if (!sshInfo) await loadSsh();
+    const hosts = sshInfo ? sshInfo.hosts.filter((c) => c.enabled) : [];
+    if (!hosts.length) { setRtab('ssh'); toast(sshInfo && sshInfo.hosts.length ? 'Todos los servidores están desactivados' : 'Agrega un servidor SSH en el panel derecho'); return; }
+    if (hosts.length === 1) { connectSsh(hosts[0].id); return; }
+    openModal({
+      title: 'Conectar por SSH',
+      body: [h('div.ssh-pick', hosts.map((c) => h('button.ssh-pick-item', {
+        onclick: () => { modalClose(true); connectSsh(c.id); },
+      }, h('span.name', c.name), h('span.muted.mono', sshTarget(c)))))],
+      foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar')],
+    });
+    requestAnimationFrame(() => { const b = $('.ssh-pick-item'); if (b) b.focus(); });
+  }
+
+  function editSsh(c) {
+    if (!Bridge.ready) { toast('Bridge desconectado', 'err'); return; }
+    const isNew = !c;
+    const name = h('input', { value: c ? c.name : '', placeholder: 'Mi servidor' });
+    const host = h('input.mono', { value: c ? c.host : '', placeholder: '192.168.0.10 o servidor.ejemplo.com' });
+    const port = h('input.mono', { value: c ? c.port : '', placeholder: '22', style: 'width:100px' });
+    const user = h('input.mono', { value: c ? c.user : '', placeholder: 'usuario', autocomplete: 'off' });
+    const pass = h('input.mono', { type: 'password', autocomplete: 'new-password', placeholder: c && c.hasPassword ? '•••••• (sin cambios)' : 'contraseña (opcional con llave)' });
+    pass.style.width = '100%';
+    const showPass = h('button.icon.mini', { title: 'Mostrar/ocultar', onclick: () => { pass.type = pass.type === 'password' ? 'text' : 'password'; } }, '👁');
+    const key = h('input.mono', { value: c ? c.key : '', placeholder: '~/.ssh/id_ed25519 (opcional)' });
+    const enabled = h('input', { type: 'checkbox' });
+    enabled.checked = !c || c.enabled !== false;
+    const ai = h('input', { type: 'checkbox' });
+    ai.checked = !!(c && c.ai);
+    const collect = () => ({
+      id: c ? c.id : undefined,
+      name: name.value.trim(), host: host.value.trim(), port: port.value.trim(), user: user.value.trim(),
+      password: c && !pass.value ? null : pass.value,
+      key: key.value.trim().replace(/^~(?=\/|$)/, (Bridge.info && Bridge.info.home) || '~'),
+      enabled: enabled.checked, ai: ai.checked,
+    });
+    const doSave = async () => {
+      try {
+        await Bridge.call('ssh.save', { host: collect() });
+        modalClose(true);
+        toast(`Guardado en ${tilde(sshInfo ? sshInfo.envFile : 'ssh.env')}`, 'ok');
+        loadSsh();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    openModal({
+      title: isNew ? 'Nuevo servidor SSH' : `Editar · ${c.name}`,
+      body: [
+        h('div.field', h('label', 'Nombre'), name),
+        h('div.field-row', h('div.field.grow', h('label', 'IP / host'), host), h('div.field', h('label', 'Puerto'), port)),
+        h('div.field-row',
+          h('div.field.grow', h('label', 'Usuario'), user),
+          h('div.field.grow', h('label', 'Contraseña'), h('div.field-row', h('span.grow', pass), showPass))),
+        h('div.field', h('label', 'Llave privada (opcional)'), key),
+        h('label.muted', enabled, ' Activo (desactivado, no se puede conectar ni lo usan los agentes)'),
+        h('label.muted', ai, ' Uso por IA: claude, codex, opencode… pueden ejecutar comandos en este servidor con frap-ssh'),
+        h('p.muted', { style: 'margin:0;font-size:11px' },
+          'Se guarda en el ssh.env del bridge (permisos 0600), no en el navegador. La contraseña se entrega a ssh por SSH_ASKPASS, nunca en la línea de comandos. Si das uso por IA, mejor un usuario con permisos limitados.'),
+      ],
+      foot: [
+        h('button', { onclick: () => testSsh({ host: collect() }, name.value || 'servidor') }, '⚡ Probar conexión'),
+        h('span.grow'),
+        h('button', { onclick: () => modalClose(true) }, 'Cancelar'),
+        h('button.primary', { onclick: doSave }, 'Guardar'),
+      ],
+    });
+  }
+
+  async function deleteSsh(c) {
+    if (!(await confirmBox(`¿Eliminar el servidor "${c.name}"?`, 'Se borra del ssh.env; los agentes dejarán de verlo. Las terminales abiertas siguen.'))) return;
+    try {
+      await Bridge.call('ssh.delete', { id: c.id });
+      loadSsh();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
   // ----- pestaña DB (panel central) -----
   function openDbView(connId) {
     state.db.open = true;
@@ -3046,7 +3281,7 @@
     titleTimer = setInterval(() => { on = !on; document.title = on ? `${t.icon || '⏰'} ${t.title}` : baseTitle; }, 1000);
   }
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) { clearInterval(titleTimer); titleTimer = null; document.title = baseTitle; }
+    if (!document.hidden) { clearInterval(titleTimer); titleTimer = null; document.title = baseTitle; updateTitle(); }
   });
 
   // ----- reloj -----
@@ -3478,7 +3713,7 @@
     if (!isAppShortcut(e) || modalClose) return;
     e.preventDefault();
     if (/^Digit/.test(e.code)) {
-      const t = sessionsOf(state.activeProject)[Number(e.code.slice(5)) - 1];
+      const t = tabSessions()[Number(e.code.slice(5)) - 1];
       if (t) activate(t.sid);
       return;
     }
@@ -3524,7 +3759,7 @@
   $('#btn-settings').onclick = openSettings;
   $('#toggle-left').onclick = () => togglePanel('left');
   $('#toggle-right').onclick = () => togglePanel('right');
-  for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : b.dataset.launch === 'git' ? openGitView() : launch(b.dataset.launch));
+  for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : b.dataset.launch === 'git' ? openGitView() : b.dataset.launch === 'ssh' ? pickSsh() : launch(b.dataset.launch));
   for (const b of $$('#rtabs button')) b.onclick = () => setRtab(b.dataset.rtab);
   $('#token-input').value = conn.token;
   $('#port-input').value = conn.port;
@@ -3555,6 +3790,7 @@
     tickTimers();
     loadConfig(true);
     loadDbs();
+    loadSsh();
     pollProcs();
     renderRight();
   });

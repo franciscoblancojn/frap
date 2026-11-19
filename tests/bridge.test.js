@@ -17,6 +17,17 @@ let port;
 let root;
 let client;
 
+const FAKE_SSH = `#!/bin/sh
+echo "ARGS:$*"
+if [ -n "$SSH_ASKPASS" ]; then
+  echo "PASS:$("$SSH_ASKPASS" "lector@host's password: ")"
+  "$SSH_ASKPASS" "Are you sure you want to continue connecting (yes/no)?" >/dev/null; echo "HOSTKEY:$?"
+fi
+for last; do :; done
+case "$last" in *FRAP_OK*) echo FRAP_OK; echo "Linux falso 6.0";; esac
+exit 0
+`;
+
 function rpcClient(conn) {
   let seq = 0;
   const pending = new Map();
@@ -68,11 +79,15 @@ function rpcClient(conn) {
 
 test.before(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'frap-test-'));
+  // ssh falso: muestra los argumentos y lo que responde SSH_ASKPASS (no se usa ningún servidor real)
+  const fakeBin = path.join(root, 'fakebin');
+  fs.mkdirSync(fakeBin);
+  fs.writeFileSync(path.join(fakeBin, 'ssh'), FAKE_SSH, { mode: 0o755 });
   bridge = fork(path.join(__dirname, '..', 'bridge', 'frap-bridge.js'), [], {
     env: {
       ...process.env,
       FRAP_PORT: '0', FRAP_TOKEN: TOKEN, HOME: root, CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', FRAP_HOME: path.join(root, 'cfg'),
-      FRAP_FS_ROOT: root, FRAP_QUIET: '1', SHELL: '/bin/sh',
+      FRAP_FS_ROOT: root, FRAP_QUIET: '1', SHELL: '/bin/sh', PATH: `${path.join(root, 'fakebin')}${path.delimiter}${process.env.PATH}`,
       GIT_AUTHOR_NAME: 'FRAP Test', GIT_AUTHOR_EMAIL: 'test@frap.local', GIT_COMMITTER_NAME: 'FRAP Test', GIT_COMMITTER_EMAIL: 'test@frap.local',
     },
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
@@ -104,8 +119,8 @@ test('rechaza origins web', async () => {
 
 test('hello', async () => {
   const info = await client.call('hello');
-  assert.equal(info.version, '1.2.0');
-  for (const op of ['db.list', 'db.save', 'db.toggle', 'git.run', 'music.ytInfo']) assert.ok(info.ops.includes(op), op);
+  assert.equal(info.version, '1.3.0');
+  for (const op of ['db.list', 'db.save', 'db.toggle', 'ssh.list', 'ssh.connect', 'session.seen', 'git.run', 'music.ytInfo']) assert.ok(info.ops.includes(op), op);
   assert.equal(info.fsRoot, root);
 });
 
@@ -392,4 +407,65 @@ test('paths.check y open.editor: rutas detectadas en la terminal', async () => {
   await assert.rejects(client.call('open.editor', { path: file, editor: 'code; rm -rf ~' }), /inválido/);
   await assert.rejects(client.call('open.editor', { path: '/etc/passwd' }), /fuera/);
   await assert.rejects(client.call('open.editor', { path: path.join(root, 'nada.txt'), editor: 'true' }), /No existe/);
+});
+
+test('ssh.*: guardar sin exponer contraseña, validar, probar, conectar con askpass, interruptores y skill', async () => {
+  const saved = await client.call('ssh.save', { host: { name: 'Servidor App', host: '10.0.0.9', port: '2222', user: 'lector', password: 'cl4ve "ssh"' } });
+  assert.equal(saved.id, 'servidor_app');
+  assert.equal(saved.password, undefined);
+  assert.equal(saved.hasPassword, true);
+  assert.deepEqual([saved.enabled, saved.ai], [true, false]); // uso por IA apagado por defecto
+  const list = await client.call('ssh.list');
+  assert.equal(fs.statSync(list.envFile).mode & 0o777, 0o600);
+  assert.equal(JSON.stringify(list).includes('cl4ve'), false);
+  assert.ok(list.client.endsWith(path.join('fakebin', 'ssh')));
+
+  // inyección de opciones en host/usuario
+  await assert.rejects(client.call('ssh.save', { host: { name: 'x', host: '-oProxyCommand=touch /tmp/pwn', user: 'a' } }), /Host inválido/);
+  await assert.rejects(client.call('ssh.save', { host: { name: 'x', host: 'h', user: '-oX' } }), /Usuario inválido/);
+  await assert.rejects(client.call('ssh.save', { host: { name: 'x', host: 'h', user: 'a b' } }), /Usuario inválido/);
+
+  // editar sin contraseña la conserva
+  await client.call('ssh.save', { host: { id: 'servidor_app', name: 'Servidor App', host: '10.0.0.9', port: '2222', user: 'lector', password: null } });
+  assert.match(fs.readFileSync(list.envFile, 'utf8'), /FRAP_SSH_SERVIDOR_APP_PASSWORD="cl4ve \\"ssh\\""/);
+
+  const t = await client.call('ssh.test', { id: 'servidor_app' });
+  assert.equal(t.system, 'Linux falso 6.0');
+  // formulario sin guardar con contraseña escrita
+  assert.ok((await client.call('ssh.test', { host: { name: 'Nuevo', host: 'otro', user: 'u', password: 'x' } })).ms >= 0);
+
+  const s = await client.call('ssh.connect', { id: 'servidor_app', cols: 80, rows: 24 });
+  assert.equal(s.meta.kind, 'ssh');
+  assert.equal(s.meta.sshId, 'servidor_app');
+  const out = await client.waitOutput(s.sid, /HOSTKEY:\d/);
+  assert.match(out, /-p 2222/);
+  assert.match(out, /-- lector@10\.0\.0\.9/);
+  assert.match(out, /PASS:cl4ve "ssh"/); // askpass la lee del .env por id
+  assert.match(out, /HOSTKEY:1/); // otras preguntas no se responden
+  await client.call('session.kill', { sid: s.sid }).catch(() => {});
+
+  const off = await client.call('ssh.toggle', { id: 'servidor_app', enabled: false });
+  assert.equal(off.enabled, false);
+  await assert.rejects(client.call('ssh.connect', { id: 'servidor_app' }), /desactivado/);
+  const ai = await client.call('ssh.toggle', { id: 'servidor_app', enabled: true, ai: true });
+  assert.deepEqual([ai.enabled, ai.ai], [true, true]);
+
+  const skills = await client.call('ssh.installSkill', { tools: ['claude'] });
+  assert.match(fs.readFileSync(skills[0], 'utf8'), /frap-ssh\.js/);
+  assert.equal((await client.call('ssh.list')).skills.claude, true);
+  await client.call('ssh.delete', { id: 'servidor_app' });
+  assert.equal((await client.call('ssh.list')).hosts.length, 0);
+});
+
+test('avisos de agentes: $FRAP_NOTIFY → evento notice, sessions.list lo incluye y session.seen lo borra', async () => {
+  const s = await client.call('session.create', {
+    cwd: root, cmd: ['/bin/sh', '-c', 'echo "waiting Claude espera tu respuesta" >> "$FRAP_NOTIFY"; sleep 0.3; echo done >> "$FRAP_NOTIFY"; sleep 5'],
+  });
+  const w = await client.waitFor((e) => e.ev === 'notice' && e.sid === s.sid && e.notice && e.notice.kind === 'waiting');
+  assert.equal(w.notice.msg, 'Claude espera tu respuesta');
+  await client.waitFor((e) => e.ev === 'notice' && e.sid === s.sid && e.notice && e.notice.kind === 'done');
+  assert.equal((await client.call('sessions.list')).find((x) => x.sid === s.sid).notice.kind, 'done');
+  await client.call('session.seen', { sid: s.sid });
+  assert.equal((await client.call('sessions.list')).find((x) => x.sid === s.sid).notice, null);
+  await client.call('session.kill', { sid: s.sid });
 });

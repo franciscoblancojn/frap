@@ -15,7 +15,8 @@ FRAP es una alternativa ligera a Warp que corre en el navegador: 3 paneles (proy
    - Las contraseñas solo viven en `FRAP_HOME/databases.env` (0600): nunca en el estado de la UI, en localStorage ni en las respuestas del bridge (usa `publicConn`).
    - `frap-db.js` (agentes) es siempre solo lectura, sin flags para escribir.
    - No debilites `assertReadOnly` ni las capas del motor: cualquier cambio necesita un test en `tests/db.test.js`.
-7. La UI está en español.
+7. **SSH**: contraseñas solo en `FRAP_HOME/ssh.env` (0600) y se entregan a `ssh` por askpass, nunca en argv ni en el entorno de la terminal. Host y usuario se validan (nada que empiece por `-`) y van tras `--`. `frap-ssh.js` solo ve servidores con `ENABLED=1` y `AI=1`. Cambios aquí necesitan test en `tests/ssh.test.js`.
+8. La UI está en español.
 
 ## Estructura
 
@@ -30,8 +31,12 @@ bridge/ws.js           WebSocket RFC 6455 mínimo (servidor + cliente para tests
 bridge/frap_pty.py     sesión PTY persistente (Python stdlib, desligada del bridge, socket Unix). NO renombrar a pty.py: tapa el módulo stdlib
 bridge/db.js           conexiones de BD (.env), clasificador de solo lectura, ejecución vía mysql/psql/sqlite3
 bridge/frap-db.js      CLI de SOLO LECTURA para agentes (lo usa la skill frap-db)
+bridge/ssh.js          servidores SSH (.env), argumentos de ssh, askpass, ejecución remota
+bridge/frap-ssh.js     CLI para agentes: comandos en servidores con "Uso por IA" (skill frap-ssh)
+bridge/frap-askpass.js SSH_ASKPASS: entrega la contraseña del .env a ssh
 tests/bridge.test.js   tests de integración del bridge (node:test)
 tests/db.test.js       clasificador, parsers, .env, motores y CLI
+tests/ssh.test.js      .env, argumentos, askpass y CLI frap-ssh (con un ssh falso)
 scripts/check.js       chequeos estáticos + reglas de arriba
 docs/                  arquitectura, protocolo y roadmap
 ```

@@ -56,6 +56,26 @@ navegador (file://src/index.html)                     máquina local
 - Interruptores por conexión: `ENABLED=0` la desactiva (la UI y `frap-db` la rechazan; `db.test` sí funciona). `AI=0` la oculta a los agentes: `frap-db list` no la muestra y las consultas a ese id fallan. Si faltan, valen 1.
 - Lo que hace la pestaña DB de la UI: lee en modo solo lectura por defecto. Escribe solo si la conexión tiene `UI_WRITE=1`, el usuario marca "escritura" y confirma.
 
+## Avisos de agentes
+
+Cada sesión recibe `FRAP_NOTIFY=<SOCK_DIR>/<sid>.notify`. Un hook del agente escribe ahí una línea `done` o `waiting <mensaje>`. El bridge vigila el directorio (`fs.watch`), consume el archivo, guarda `notice = {kind, msg, at}` en la sesión (va en `sessions.list`) y emite el evento `{ev: 'notice', sid, notice}`. La UI marca la terminal (✓ terminó / ● espera) y muestra el total en el título hasta que se abre; `session.seen` lo borra. Fuera de FRAP la variable no existe y el hook no hace nada.
+
+Hooks de claude (`~/.claude/settings.json`):
+
+```bash
+# Stop
+[ -n "$FRAP_NOTIFY" ] && echo done >> "$FRAP_NOTIFY"
+# Notification (stdin trae {"message": …})
+jq -r '.message' | { read -r m; [ -n "$FRAP_NOTIFY" ] && printf 'waiting %s\n' "$m" >> "$FRAP_NOTIFY"; }
+```
+
+## SSH
+
+- `bridge/ssh.js` lee y escribe `FRAP_HOME/ssh.env` (claves `FRAP_SSH_<ID>_{NAME,HOST,PORT,USER,PASSWORD,KEY,ENABLED,AI}`, 0600) y arma los argumentos de `ssh`. Valida host y usuario (sin espacios ni `-` inicial) y pone `--` antes del destino para evitar inyección de opciones.
+- Contraseña: `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` apuntan a `FRAP_HOME/askpass.sh` (envoltorio que ejecuta `bridge/frap-askpass.js` con el mismo node). El askpass busca la contraseña por `FRAP_SSH_ID` en el `.env` y solo responde preguntas de contraseña o passphrase; cualquier otra (p. ej. confirmar una llave de servidor) la rechaza. `ssh.test` con un formulario sin guardar la pasa en `FRAP_SSH_PASS` a ese proceso corto.
+- `ssh.connect` crea una sesión PTY normal (`meta.kind = 'ssh'`, `meta.sshId`) con `ssh` como comando, en el proyecto activo o en "Sin proyecto".
+- `bridge/frap-ssh.js` (agentes): solo ve servidores con `ENABLED=1` y `AI=1`, ejecuta `ssh -T` sin terminal, con `BatchMode=yes` si no hay contraseña, y propaga el código de salida. `AI` vale 0 por defecto en servidores nuevos creados desde la UI.
+
 ## Protocolo
 
 Cliente → bridge: `{ id?, op, args }`. Con `id` se responde `{ re: id, ok, data | error }`; sin `id` no se responde (se usa para input y resize).
@@ -70,6 +90,7 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `session.input` | `{sid, data}` | — |
 | `session.resize` | `{sid, cols, rows}` | — |
 | `session.meta` | `{sid, meta}` | info (mezcla la meta) |
+| `session.seen` | `{sid}` | `true`; borra el aviso (`notice`) de la sesión |
 | `session.kill` | `{sid}` | `true` |
 | `ps` | — | `{sid: [{pid, ppid, etime, cpu, rss, args, depth}]}` |
 | `proc.kill` | `{pid, signal?}` | solo descendientes de sesiones FRAP |
@@ -90,6 +111,13 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `open.editor` | `{path, line?, col?, editor?}` | abre en el editor sin shell; la familia VS Code recibe `--goto ruta:línea:col` |
 | `git.run` | `{cwd, args}` | `{code, stdout, stderr}`; ejecuta `git` sin shell, solo subcomandos de `GIT_ALLOWED`, sin `-c`/`--upload-pack`/`--exec`…; un código distinto de 0 no lanza error |
 | `music.ytInfo` | `{id}` | `{title, author}` vía oEmbed público de YouTube |
+| `ssh.list` | — | `{envFile, cli, client, skills, hosts}` (sin contraseñas) |
+| `ssh.save` | `{host}` | servidor público; `password: null` conserva la guardada |
+| `ssh.delete` | `{id}` | `true` |
+| `ssh.toggle` | `{id, enabled?, ai?}` | servidor público |
+| `ssh.test` | `{id}` o `{host}` | `{ms, system}`; error con pista si falla |
+| `ssh.connect` | `{id, cwd?, projectId?, cols, rows}` | info de la sesión nueva (rechaza si está desactivado) |
+| `ssh.installSkill` | `{tools}` | escribe la skill `frap-ssh` en `~/.claude/skills` y `~/.codex/skills` |
 | `db.installSkill` | `{tools}` | escribe `~/.claude/skills/frap-db/SKILL.md` y `~/.codex/skills/frap-db/SKILL.md` |
 
 ## Dónde se busca la configuración (`config.scan`)

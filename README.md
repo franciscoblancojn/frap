@@ -43,6 +43,7 @@ Requisitos: Node ≥ 18, Python 3, Linux (macOS debería funcionar; no está pro
   - **Prompts:** prompts estándar que se ejecutan en la terminal activa con un clic. Admiten `{{project}}`, `{{folder}}` y `{{folders}}`, y se pueden importar y exportar en JSON.
   - **Acciones:** comandos con nombre que se encienden y apagan con un interruptor (VPN, servidores, túneles). Corren con tu shell interactiva (`bash -ic`), así que funcionan los alias. Para apagarlas se envía Ctrl+C, que llega aunque el proceso corra con `sudo`. Un patrón opcional ("lista cuando la salida contenga…") distingue *iniciando* de *activa*. ☰ abre el log, donde se puede escribir si pide contraseña. Las activas se muestran en la barra de estado.
   - **Páginas:** accesos con nombre y URL (`localhost:3000` se completa como `http://…`). Se abren en una pestaña del navegador, que es lo predeterminado, o como pestaña interna con iframe junto a las terminales. El modo por defecto se cambia en Ajustes o con el botón del panel, y cada página puede tener el suyo. Muchos sitios públicos bloquean los iframes; los servidores locales suelen funcionar.
+  - **SSH:** servidores con nombre, IP/host, puerto, usuario, contraseña y/o llave privada. Se guardan en `~/.config/frap/ssh.env` (0600). ▶ (o clic en la tarjeta, o el botón SSH del panel central) abre una terminal conectada; ⚡ prueba la conexión. Interruptores **activo** y **🤖 Uso por IA** (apagado por defecto).
   - **Bases de datos:** conexiones MySQL/MariaDB, PostgreSQL o SQLite (nombre, host, puerto, usuario, contraseña, base). Se guardan en `~/.config/frap/databases.env` con permisos 0600, nunca en el navegador. Cada conexión tiene dos interruptores: **activa** (apagada, nadie la usa) y **🤖 Uso por IA** (decide si claude, codex, opencode… pueden consultarla). ⚡ prueba la conexión. **Instalar skill** enseña a claude y codex a consultarlas en solo lectura con `frap-db`.
   - **Música:** lista de reproducción con archivos de tu equipo (📁 o arrastrándolos a la lista) y links de YouTube (`youtube.com/watch`, `youtu.be`, `shorts`…). Clic en una pista la reproduce, y arrastrando ⋮⋮ cambias el orden. Tiene aleatorio (⇄, recorre toda la lista antes de repetir) y repetición (🔁 lista, 🔂 canción, o apagada). El reproductor queda fijo al pie del panel derecho y sigue sonando en cualquier pestaña. Las teclas multimedia y `Alt+Shift+M` hacen ⏯. Los archivos se guardan en el navegador (IndexedDB), y YouTube necesita el bridge.
   - **Temporizador:** recordatorios con ícono, título y descripción, que se repiten cada X tiempo (*💧 Toma agua cada 1 h*) o suenan una sola vez (*🍅 Pomodoro 25 min*). Tienen dos modos: 🔔 **aviso simple**, que aparece en la esquina sin interrumpir, y 🛑 **bloquear la pantalla**, un aviso a pantalla completa que no deja usar FRAP hasta pulsar *Listo* o *Posponer 5/15 min*. Hay plantillas, un interruptor de encendido/apagado, ↺ para reiniciar la cuenta y ▶ para probar el aviso. El próximo aviso se ve en la barra de estado. Con FRAP en segundo plano el título de la pestaña parpadea, y si el navegador lo permite llega una notificación del sistema.
@@ -82,6 +83,23 @@ El modo solo lectura tiene varias capas:
 3. **Recomendado:** un usuario de base de datos con permisos solo SELECT.
 
 Requiere los clientes del sistema: `mysql`, `psql` o `sqlite3`.
+
+## Aviso cuando un agente termina
+
+En el panel izquierdo, la terminal de un agente que terminó muestra **✓ terminó**, y la que espera tu respuesta (permisos, preguntas) muestra **● espera**. El título de la pestaña del navegador cuenta las pendientes: `(2) FRAP`. La marca se borra al abrir esa terminal. Para activarlo, los hooks `Stop` y `Notification` de claude escriben en `$FRAP_NOTIFY` (ver `docs/ARCHITECTURE.md`). Funciona en las terminales abiertas después de reiniciar el bridge.
+
+## SSH y agentes
+
+Las terminales SSH reciben la contraseña por `SSH_ASKPASS` (`bridge/frap-askpass.js`), que la lee del `.env` en el momento: nunca va en la línea de comandos ni en el entorno de la terminal. Los servidores nuevos se aceptan la primera vez (`StrictHostKeyChecking=accept-new`); si la llave de un servidor cambia, ssh se niega a conectar.
+
+Los agentes usan **solo** los servidores con 🤖 Uso por IA, con el CLI `frap-ssh`:
+
+```bash
+node bridge/frap-ssh.js list                 # servidores habilitados para agentes
+node bridge/frap-ssh.js <id> "uptime"        # ejecuta un comando (--timeout S, por defecto 60)
+```
+
+A diferencia de `frap-db`, **no hay modo solo lectura**: el agente puede ejecutar cualquier comando que el usuario remoto permita. La skill le pide confirmar antes de cambiar algo, pero la protección real es usar un usuario remoto con permisos limitados. Además, un agente con acceso a la terminal local podría leer `ssh.env`: la skill se lo prohíbe, pero no es una barrera.
 
 ## Configuración del bridge
 
