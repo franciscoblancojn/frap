@@ -40,6 +40,14 @@
     return el;
   }
 
+  /** Logos de las herramientas (src/vendor/icons). */
+  const ICONS = {
+    claude: 'vendor/icons/claude.svg',
+    codex: 'vendor/icons/codex.svg',
+    opencode: 'vendor/icons/opencode.svg',
+    db: 'vendor/icons/db.svg',
+  };
+  const kindIcon = (kind) => (ICONS[kind] ? h('img.ico', { src: ICONS[kind], alt: kind, title: kind }) : null);
   const uid = () => Math.random().toString(36).slice(2, 10);
   /** /home/u/x -> ~/x (solo para mostrar). */
   const tilde = (p) => {
@@ -567,7 +575,7 @@
     },
     h('span', { class: dotClass(t) }),
     h('span.tname', termTitle(t)),
-    h(`span.kind.${termKind(t)}`, termKind(t)));
+    kindIcon(termKind(t)) || h(`span.kind.${termKind(t)}`, termKind(t)));
   }
 
   function renderProjects() {
@@ -620,6 +628,7 @@
         onauxclick: (e) => { if (e.button === 1) closeTerm(t.sid); },
       },
       h('span', { class: dotClass(t) }),
+      kindIcon(termKind(t)),
       h('span.tname', termTitle(t)),
       h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeTerm(t.sid); } }, '✕')));
     }
@@ -642,7 +651,8 @@
         onclick: () => openDbView(),
         onauxclick: (e) => { if (e.button === 1) closeDbView(); },
       },
-      h('span.tname', '🗄 DB'),
+      kindIcon('db'),
+      h('span.tname', 'DB'),
       h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeDbView(); } }, '✕')));
     }
   }

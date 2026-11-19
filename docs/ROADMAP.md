@@ -22,6 +22,7 @@
 - [x] Páginas: accesos nombre + URL, abrir en pestaña del navegador (por defecto) o pestaña interna (iframe), modo por página y global
 - [x] Bases de datos: conexiones en `.env` (0600), pestaña DB (tablas, editor, resultados, historial, CSV), CLI `frap-db` de solo lectura para agentes y skill para claude/codex
 - [x] Música: archivos (IndexedDB) y YouTube (relé `/yt-player`), bucle (lista/canción), aleatorio sin repetir, arrastrar para reordenar, dock persistente y teclas multimedia
+- [x] Logos de claude, codex, opencode y DB en lanzadores, pestañas y panel izquierdo; favicon propio
 - [ ] Paneles redimensionables arrastrando el borde
 - [ ] Buscar en la terminal (xterm addon-search vendorizado)
 - [ ] Notificación del navegador cuando un agente termina o pide atención (pasa de activo a inactivo)

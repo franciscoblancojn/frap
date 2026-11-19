@@ -6,7 +6,7 @@ FRAP es una alternativa ligera a Warp que corre en el navegador: 3 paneles (proy
 
 1. **`src/index.html` debe funcionar abriéndolo como `file://`.** Nada de build, bundlers, servidores web ni CDNs.
    - Solo scripts clásicos: nada de `<script type="module">`, `import` ni `export` (Chrome bloquea módulos en `file://`).
-   - Las librerías de terceros van en `src/vendor/` (hoy solo xterm.js 5.5.0 y addon-fit 0.10.0).
+   - Las librerías y recursos de terceros van en `src/vendor/`: xterm.js 5.5.0, addon-fit 0.10.0 y `icons/` (logos de claude, codex y opencode, con su origen en `icons/README.md`).
 2. **Cero dependencias npm** en runtime y en tests. El bridge usa solo la librería estándar de Node 18+ y Python 3.
 3. **Nunca `innerHTML`** en `src/index.js`: se muestra contenido de archivos del usuario. Usa `h()` (crea nodos con `textContent`).
 4. **Seguridad del bridge**: escucha solo en `127.0.0.1`, exige token y rechaza Origins `http(s)` (salvo los de `FRAP_ALLOW_ORIGINS`). `fs.*` queda limitado a `FRAP_FS_ROOT` (por defecto `$HOME`) y `proc.kill` solo a descendientes de sesiones FRAP. No relajes esto.
@@ -22,7 +22,8 @@ FRAP es una alternativa ligera a Warp que corre en el navegador: 3 paneles (proy
 src/index.html   layout de 3 paneles + modal
 src/index.css    tema oscuro (variables CSS en :root)
 src/index.js     toda la UI (IIFE): Bridge RPC, terminales xterm, paneles, modales, atajos
-src/vendor/      xterm.js + addon-fit (no editar)
+src/vendor/      xterm.js + addon-fit + icons/ (no editar)
+src/favicon.svg  favicon de FRAP
 bridge/frap-bridge.js  servidor WS: sesiones PTY, fs, ps, escaneo de config, estado
 bridge/ws.js           WebSocket RFC 6455 mínimo (servidor + cliente para tests)
 bridge/frap_pty.py     helper PTY (Python stdlib). NO renombrar a pty.py: tapa el módulo stdlib

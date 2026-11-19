@@ -189,10 +189,9 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 
 #launchers { display: flex; gap: 4px; }
 #launchers button { font: 11px var(--mono); padding: 3px 8px; }
-.l-claude { color: var(--claude); }
-.l-codex { color: var(--codex); }
-.l-opencode { color: var(--opencode); }
-.l-db { color: var(--warn); }
+#launchers .l-icon { padding: 4px 9px; display: flex; align-items: center; }
+#launchers .l-icon img { width: 16px; height: 16px; display: block; }
+.ico { width: 14px; height: 14px; flex: none; display: block; }
 
 #term-host { flex: 1; position: relative; min-height: 0; }
 .term-pane { position: absolute; inset: 0; padding: 6px 0 0 10px; }

@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>FRAP</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="vendor/xterm.css">
   <link rel="stylesheet" href="index.css">
 </head>
@@ -28,10 +29,10 @@
         <div id="tabs"></div>
         <div id="launchers">
           <button data-launch="shell" title="Nueva terminal (Alt+T)">＞_ shell</button>
-          <button data-launch="claude" class="l-claude">claude</button>
-          <button data-launch="codex" class="l-codex">codex</button>
-          <button data-launch="opencode" class="l-opencode">opencode</button>
-          <button data-launch="db" class="l-db" title="Consultas SQL (Alt+Shift+D)">db</button>
+          <button data-launch="claude" class="l-icon" title="Claude Code (Alt+Shift+C)" aria-label="claude"><img src="vendor/icons/claude.svg" alt="claude"></button>
+          <button data-launch="codex" class="l-icon" title="Codex (Alt+Shift+X)" aria-label="codex"><img src="vendor/icons/codex.svg" alt="codex"></button>
+          <button data-launch="opencode" class="l-icon" title="opencode (Alt+Shift+O)" aria-label="opencode"><img src="vendor/icons/opencode.svg" alt="opencode"></button>
+          <button data-launch="db" class="l-icon" title="Consultas SQL (Alt+Shift+D)" aria-label="db"><img src="vendor/icons/db.svg" alt="db"></button>
         </div>
         <button class="icon" id="toggle-right" title="Mostrar/ocultar panel derecho (Alt+P)">⟩</button>
       </div>
