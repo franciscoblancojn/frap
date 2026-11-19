@@ -31,6 +31,7 @@ Requisitos: Node ≥ 18, Python 3, Linux (macOS debería funcionar; no está pro
 - **Derecho**:
   - **Procesos:** árbol de procesos de cada terminal (CPU, memoria, tiempo), con los agentes resaltados. Se pueden terminar.
   - **Prompts:** prompts estándar que se ejecutan en la terminal activa con un clic. Admiten `{{project}}`, `{{folder}}` y `{{folders}}`, y se pueden importar y exportar en JSON.
+  - **Acciones:** comandos con nombre que se encienden y apagan con un interruptor (VPN, servidores, túneles). Corren con tu shell interactiva (`bash -ic`), así que funcionan los alias. Para apagarlas se envía Ctrl+C, que llega aunque el proceso corra con `sudo`. Un patrón opcional ("lista cuando la salida contenga…") distingue *iniciando* de *activa*. ☰ abre el log, donde se puede escribir si pide contraseña. Las activas se muestran en la barra de estado.
   - **Agentes / Skills / Comandos:** de `~/.claude`, `~/.codex`, `~/.config/opencode` y de las carpetas del proyecto. Se pueden editar y crear desde plantillas.
   - **Hooks:** hooks de Claude Code (`settings.json` / `settings.local.json`). Se pueden listar, agregar, eliminar o editar en el JSON.
   - **Memoria:** `CLAUDE.md`, `AGENTS.md` y `settings.json`. Se editan o se crean si faltan.

@@ -287,6 +287,46 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 
 .prompt-card .body { font: 11px var(--mono); color: var(--fg-2); white-space: pre-wrap; max-height: 3.2em; overflow: hidden; margin-top: 3px; }
 
+/* ---------- acciones ---------- */
+.switch {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  flex: none;
+  padding: 0;
+  border: none;
+  border-radius: 9px;
+  background: var(--line);
+  transition: background .15s;
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--fg-2);
+  transition: left .15s, background .15s;
+}
+.switch:hover { background: var(--bg-hover); }
+.switch.on, .switch.on:hover { background: var(--ok); }
+.switch.starting, .switch.starting:hover, .switch.stopping { background: var(--warn); }
+.switch.on::after, .switch.starting::after, .switch.stopping::after { left: 17px; background: var(--bg); }
+.switch.error { background: color-mix(in srgb, var(--err) 45%, var(--line)); }
+.switch:disabled { cursor: default; opacity: .7; }
+.action-card.on { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.action-card.error { border-color: color-mix(in srgb, var(--err) 45%, var(--line)); }
+.badge.st-on { color: var(--ok); }
+.badge.st-starting, .badge.st-stopping { color: var(--warn); }
+.badge.st-error { color: var(--err); }
+.st-action { cursor: pointer; }
+.st-action.on { color: var(--ok); }
+.st-action.starting, .st-action.stopping { color: var(--warn); }
+.st-action.error { color: var(--err); }
+#st-actions { display: flex; gap: 10px; }
+
 /* ---------- modal ---------- */
 .modal {
   position: fixed;

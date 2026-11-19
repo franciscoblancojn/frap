@@ -90,6 +90,7 @@
     activeProject: null,
     activeSid: null,
     prompts: DEFAULT_PROMPTS.map((p) => ({ id: uid(), ...p })),
+    actions: [], // {id, name, cmd, cwd, ready} comandos con nombre que se encienden/apagan
     settings: {
       fontSize: 13,
       launchers: {
@@ -282,6 +283,7 @@
       t.term.reset();
       if (res.buffer) t.term.write(res.buffer);
       t.info = { ...t.info, ...res };
+      if (res.buffer) actionScan(t, res.buffer, true);
       if (!res.alive) t.term.write('\r\n\x1b[2m[proceso terminado]\x1b[0m\r\n');
     } catch (e) {
       t.term.write(`\r\n\x1b[31m[frap] ${e.message}\x1b[0m\r\n`);
@@ -316,12 +318,17 @@
     const t = terms.get(sid);
     if (!t) return;
     t.lastOut = Date.now();
-    if (!t.attaching) t.term.write(d); // durante attach el buffer ya trae esta salida
+    if (!t.attaching) {
+      t.term.write(d); // durante attach el buffer ya trae esta salida
+      actionScan(t, d, false);
+    }
   });
   Bridge.on('exit', ({ sid, code }) => {
     const t = terms.get(sid);
     if (!t) return;
     t.info.alive = false;
+    t.info.exitCode = code;
+    if (termKind(t) === 'action') { onActionExit(t, code); return; }
     t.term.write(`\r\n\x1b[2m[proceso terminado · código ${code}] — cierra la pestaña o pulsa Enter para reiniciar\x1b[0m\r\n`);
     t.exitHandler = t.term.onData((d) => {
       if (d === '\r') restartTerm(sid);
@@ -355,7 +362,7 @@
   }
   function orphanSessions() {
     const ids = new Set(state.projects.map((p) => p.id));
-    return [...terms.values()].filter((t) => !ids.has((t.info.meta || {}).projectId));
+    return [...terms.values()].filter((t) => termKind(t) !== 'action' && !ids.has((t.info.meta || {}).projectId));
   }
   const termTitle = (t) => t.liveTitle || (t.info.meta || {}).title || t.sid;
   const termKind = (t) => (t.info.meta || {}).kind || 'shell';
@@ -584,6 +591,14 @@
   function renderTabs() {
     const tabs = $('#tabs');
     tabs.replaceChildren();
+    const at = activeTerm();
+    if (at && termKind(at) === 'action') {
+      // log de una acción: pestaña temporal, cerrarla no detiene la acción
+      tabs.append(h('div.tab.active', { dataset: { sid: at.sid }, title: 'Log de la acción' },
+        h('span', { class: dotClass(at) }),
+        h('span.tname', `⚡ ${termTitle(at)}`),
+        h('span.x', { title: 'Cerrar log (la acción sigue)', onclick: (e) => { e.stopPropagation(); leaveActionLog(); } }, '✕')));
+    }
     for (const t of sessionsOf(state.activeProject)) {
       tabs.append(h(`div.tab${t.sid === state.activeSid ? '.active' : ''}`, {
         dataset: { sid: t.sid },
@@ -605,6 +620,7 @@
     $('#st-project').textContent = p ? p.name : '—';
     const t = activeTerm();
     $('#st-cwd').textContent = t ? tilde((t.info.meta || {}).cwd || '') : p ? p.folders.map(tilde).join('  +  ') : '';
+    renderStatusActions();
   }
 
   function renderAll() {
@@ -772,6 +788,7 @@
   const RTABS = {
     procs: renderProcs,
     prompts: renderPrompts,
+    actions: renderActions,
     agents: () => renderConfigList('agents'),
     skills: () => renderConfigList('skills'),
     commands: () => renderConfigList('commands'),
@@ -784,7 +801,7 @@
     for (const b of $$('#rtabs button')) b.classList.toggle('active', b.dataset.rtab === name);
     renderRight();
     if (name === 'procs') pollProcs();
-    else if (name !== 'prompts') loadConfig();
+    else if (name !== 'prompts' && name !== 'actions') loadConfig();
   }
   function renderRight() {
     const fn = RTABS[state.ui.rtab] || renderProcs;
@@ -943,6 +960,214 @@
       } catch (e) { toast(`Importación fallida: ${e.message}`, 'err'); }
     };
     input.click();
+  }
+
+  // ---------- acciones: comandos con nombre que se encienden / apagan (VPN, servidores…) ----------
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // eslint-disable-next-line no-control-regex
+  const stripAnsi = (s) => s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(\x07|\x1b\\)|\r/g, '');
+  const actionById = (id) => state.actions.find((a) => a.id === id) || null;
+  const actionOf = (t) => (termKind(t) === 'action' ? actionById((t.info.meta || {}).actionId) : null);
+  const actionSessions = (id) => [...terms.values()]
+    .filter((t) => (t.info.meta || {}).actionId === id)
+    .sort((a, b) => a.info.created - b.info.created);
+  const actionLive = (id) => actionSessions(id).find((t) => t.info.alive !== false) || null;
+  const actionLast = (id) => actionSessions(id).pop() || null;
+
+  function actionStatus(a) {
+    const t = actionLive(a.id);
+    if (!t) {
+      const last = actionLast(a.id);
+      if (last && !last.stopRequested && last.info.exitCode != null && last.info.exitCode !== 0) return 'error';
+      return 'off';
+    }
+    if (t.stopRequested) return 'stopping';
+    if (a.ready && !t.ready) return 'starting';
+    return 'on';
+  }
+  const ACTION_LABEL = { on: 'activa', starting: 'iniciando…', stopping: 'deteniendo…', off: 'apagada', error: 'falló' };
+
+  /** Busca el patrón "lista" de la acción en la salida (para pasar de iniciando → activa). */
+  function actionScan(t, d, quiet) {
+    const a = actionOf(t);
+    if (!a || !a.ready || t.ready) return;
+    t.tail = ((t.tail || '') + stripAnsi(d)).slice(-16384);
+    let re;
+    try { re = new RegExp(a.ready, 'i'); } catch (_) { return; }
+    if (!re.test(t.tail)) return;
+    t.ready = true;
+    if (!quiet) toast(`${a.name}: activa`, 'ok');
+    refreshActions();
+  }
+
+  function onActionExit(t, code) {
+    const a = actionOf(t);
+    t.term.write(`\r\n\x1b[2m[acción terminada · código ${code}]\x1b[0m\r\n`);
+    if (a) {
+      if (t.stopRequested) toast(`${a.name}: desactivada`, 'ok');
+      else if (code !== 0) toast(`${a.name}: terminó con código ${code} — revisa el log`, 'err');
+      else toast(`${a.name}: terminó`, 'ok');
+    }
+    renderAll();
+    refreshActions();
+  }
+
+  function refreshActions() {
+    if (state.ui.rtab === 'actions') renderRight();
+    renderStatusActions();
+  }
+
+  async function startAction(a) {
+    if (!Bridge.ready) { toast('Bridge desconectado', 'err'); return; }
+    if (actionLive(a.id)) return;
+    for (const t of actionSessions(a.id)) disposeTerm(t.sid); // descarta logs de ejecuciones previas
+    const shell = (Bridge.info && Bridge.info.shell) || '/bin/bash';
+    try {
+      // -i: shell interactiva para que funcionen alias y funciones del .bashrc/.zshrc
+      const info = await Bridge.call('session.create', {
+        cwd: a.cwd || Bridge.info.home,
+        cols: 120, rows: 32,
+        cmd: [shell, '-ic', a.cmd],
+        meta: { kind: 'action', actionId: a.id, title: a.name },
+      });
+      ensureTerm(info);
+      toast(`${a.name}: iniciando…`);
+    } catch (e) { toast(e.message, 'err'); }
+    refreshActions();
+  }
+
+  /** Apagar = Ctrl+C por la terminal (llega aunque el proceso corra con sudo/root). */
+  async function stopAction(a) {
+    const t = actionLive(a.id);
+    if (!t || t.stopRequested) return;
+    t.stopRequested = true;
+    refreshActions();
+    Bridge.send('session.input', { sid: t.sid, data: '\x03' });
+    for (let i = 0; i < 50 && t.info.alive !== false; i++) {
+      await sleep(200);
+      if (i === 20) Bridge.send('session.input', { sid: t.sid, data: '\x03' });
+    }
+    if (t.info.alive !== false) {
+      try { await Bridge.call('session.kill', { sid: t.sid }); } catch (_) { /* ya terminó */ }
+      toast(`${a.name}: no respondió a Ctrl+C; se cerró su terminal. Revisa que no haya quedado un proceso como root.`, 'err');
+    }
+    refreshActions();
+  }
+
+  function toggleAction(a) {
+    const st = actionStatus(a);
+    if (st === 'on' || st === 'starting') stopAction(a);
+    else if (st === 'off' || st === 'error') startAction(a);
+  }
+
+  function showActionLog(a) {
+    const t = actionLast(a.id);
+    if (!t) { toast('Esta acción aún no se ha ejecutado'); return; }
+    activate(t.sid);
+  }
+  function leaveActionLog() {
+    const list = sessionsOf(state.activeProject);
+    state.activeSid = list.length ? list[list.length - 1].sid : null;
+    renderAll();
+    const t = activeTerm();
+    if (t) requestAnimationFrame(() => { fitTerm(t); t.term.focus(); });
+  }
+
+  function renderStatusActions() {
+    const el = $('#st-actions');
+    if (!el) return;
+    el.replaceChildren(...state.actions
+      .map((a) => [a, actionStatus(a)])
+      .filter(([, st]) => st !== 'off')
+      .map(([a, st]) => h(`span.st-action.${st}`, {
+        title: `${a.name}: ${ACTION_LABEL[st]} — clic para ver acciones`,
+        onclick: () => { if (state.ui.hideRight) togglePanel('right'); setRtab('actions'); },
+      }, `⚡ ${a.name}`)));
+  }
+
+  function renderActions() {
+    const head = section('Acciones', h('button.mini.primary', { onclick: () => editAction() }, '+ Nueva'));
+    const hint = h('p.muted', { style: 'margin:0 2px 8px;font-size:11px' },
+      'Comandos con nombre que enciendes y apagas desde aquí (VPN, servidores, túneles…). Corren en una shell interactiva, así que funcionan tus alias. Apagar envía Ctrl+C.');
+    if (!state.actions.length) return [head, hint, h('p.muted', 'Aún no hay acciones. Pulsa "+ Nueva", ponle un nombre y escribe el comando a ejecutar (puede ser un alias o un script).')];
+    return [head, hint, ...state.actions.map((a) => {
+      const st = actionStatus(a);
+      const live = actionLive(a.id);
+      const last = actionLast(a.id);
+      const label = st === 'error' && last ? `falló (código ${last.info.exitCode})` : ACTION_LABEL[st];
+      return h(`div.card.action-card.${st}`,
+        h('div.title',
+          h(`button.switch.${st}`, {
+            title: st === 'on' || st === 'starting' ? 'Apagar' : st === 'stopping' ? 'Deteniendo…' : 'Encender',
+            role: 'switch', 'aria-checked': String(st === 'on' || st === 'starting'),
+            disabled: !Bridge.ready || st === 'stopping',
+            onclick: () => toggleAction(a),
+          }),
+          h('span.name', a.name),
+          h(`span.badge.st-${st}`, label),
+          h('button.icon.mini', { title: 'Ver log', disabled: !last, onclick: () => showActionLog(a) }, '☰'),
+          h('button.icon.mini', { title: 'Editar', onclick: () => editAction(a) }, '✎'),
+          h('button.icon.mini', { title: 'Eliminar', onclick: () => deleteAction(a) }, '✕')),
+        h('div.desc.mono', a.cmd),
+        live && live.info.created ? h('div.path', `desde ${new Date(live.info.created).toLocaleTimeString()}${a.cwd ? ' · ' + tilde(a.cwd) : ''}`)
+          : a.cwd ? h('div.path', tilde(a.cwd)) : null);
+    })];
+  }
+
+  function editAction(a) {
+    const isNew = !a;
+    const name = h('input', { value: a ? a.name : '', placeholder: 'Mi acción' });
+    const cmd = h('textarea.prompt-body', { spellcheck: 'false', placeholder: 'mi-comando --opcion', style: 'min-height:90px' });
+    cmd.value = a ? a.cmd : '';
+    const cwd = h('input.mono', { value: a ? a.cwd || '' : '', placeholder: '(carpeta personal)' });
+    const ready = h('input.mono', { value: a ? a.ready || '' : '', placeholder: 'texto que indica que ya está lista' });
+    const doSave = () => {
+      if (!name.value.trim() || !cmd.value.trim()) { toast('Nombre y comando son obligatorios', 'err'); return; }
+      if (ready.value.trim()) {
+        try { new RegExp(ready.value.trim()); } catch (e) { toast(`Patrón inválido: ${e.message}`, 'err'); return; }
+      }
+      if (isNew) { a = { id: uid() }; state.actions.push(a); }
+      a.name = name.value.trim();
+      a.cmd = cmd.value.trim();
+      a.cwd = cwd.value.trim();
+      a.ready = ready.value.trim();
+      save();
+      modalClose(true);
+      refreshActions();
+    };
+    openModal({
+      title: isNew ? 'Nueva acción' : `Editar acción · ${a.name}`,
+      body: [
+        h('div.field', h('label', 'Nombre'), name),
+        h('div.field', h('label', 'Comando (se ejecuta con tu shell interactiva: alias, funciones y scripts)'), cmd),
+        h('div.field', h('label', 'Carpeta (opcional)'), h('div.field-row', h('span.grow', cwd),
+          h('button', { onclick: async () => { const f = await pickFolderInline(cwd.value); if (f) cwd.value = f; } }, 'Elegir…'))),
+        h('div.field', h('label', 'Marcar "activa" cuando la salida contenga (regex, opcional)'), ready),
+        h('p.muted', { style: 'margin:0;font-size:11px' }, 'Sin patrón, la acción se considera activa mientras el proceso corre. Si el comando pide contraseña (sudo), ábrelo con ☰ y escríbela en el log.'),
+      ],
+      foot: [h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
+    });
+    cwd.style.width = '100%';
+  }
+
+  /** pickFolder reabre el modal; aquí lo usamos desde otro modal, así que se guarda y restaura el formulario. */
+  async function pickFolderInline(start) {
+    const body = [...$('#modal-body').childNodes];
+    const foot = [...$('#modal-foot').childNodes];
+    const title = $('#modal-title').textContent;
+    const res = await pickFolder(start || undefined);
+    openModal({ title, body, foot });
+    return res;
+  }
+
+  async function deleteAction(a) {
+    if (!(await confirmBox(`¿Eliminar la acción "${a.name}"?`, actionLive(a.id) ? 'Está activa: se apagará primero.' : ''))) return;
+    if (actionLive(a.id)) await stopAction(a);
+    for (const t of actionSessions(a.id)) disposeTerm(t.sid);
+    state.actions = state.actions.filter((x) => x.id !== a.id);
+    save();
+    refreshActions();
+    renderAll();
   }
 
   // ---------- configuración de agentes (agents/skills/commands/hooks/memory) ----------

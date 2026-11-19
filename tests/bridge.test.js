@@ -207,3 +207,15 @@ test('las terminales no heredan marcadores de sesión de Claude Code', async () 
   const out = await client.waitOutput(s.sid, /path=\[ok\]/);
   assert.match(out, /cc=\[\]/);
 });
+
+test('acciones: Ctrl+C por el PTY detiene el comando en primer plano (bash -ic)', async () => {
+  const s = await client.call('session.create', {
+    cwd: root, cmd: ['bash', '-ic', 'echo listo-ok; sleep 30'], meta: { kind: 'action', actionId: 'a1', title: 'VPN' },
+  });
+  await client.waitOutput(s.sid, /listo-ok/);
+  client.send('session.input', { sid: s.sid, data: '\x03' });
+  const ex = await client.waitFor((e) => e.ev === 'exit' && e.sid === s.sid, 4000);
+  assert.notEqual(ex.code, null);
+  const info = (await client.call('sessions.list')).find((x) => x.sid === s.sid);
+  assert.equal(info.meta.actionId, 'a1');
+});

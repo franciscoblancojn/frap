@@ -14,10 +14,11 @@
   - [x] Hooks de Claude Code: listar, agregar, eliminar y editar el JSON
   - [x] Memoria: CLAUDE.md, AGENTS.md y settings.json (crear si faltan)
 - [x] Estado en localStorage + `~/.config/frap/state.json`
-- [x] Harness: `npm run check` (chequeos estáticos + 13 tests de integración), CLAUDE.md y docs
+- [x] Harness: `npm run check` (chequeos estáticos + tests de integración), CLAUDE.md y docs
 
 ## v1.1: pulido
 
+- [x] Acciones: comandos con nombre e interruptor encender/apagar (VPN…), patrón de "lista", log e indicador en la barra de estado
 - [ ] Paneles redimensionables arrastrando el borde
 - [ ] Buscar en la terminal (xterm addon-search vendorizado)
 - [ ] Notificación del navegador cuando un agente termina o pide atención (pasa de activo a inactivo)
