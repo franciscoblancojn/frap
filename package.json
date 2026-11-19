@@ -1,0 +1,14 @@
+{
+  "name": "frap",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Terminal ligera en el navegador para trabajar con claude, codex y opencode sobre tus proyectos.",
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "bridge": "node bridge/frap-bridge.js",
+    "start": "node bridge/frap-bridge.js --open",
+    "test": "node --test tests/",
+    "check": "node scripts/check.js && node --test tests/"
+  }
+}

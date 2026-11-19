@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FRAP</title>
+  <link rel="stylesheet" href="vendor/xterm.css">
+  <link rel="stylesheet" href="index.css">
+</head>
+<body>
+  <div id="app">
+    <!-- ============ PANEL IZQUIERDO: proyectos / terminales ============ -->
+    <aside id="left" class="panel">
+      <header class="panel-head">
+        <span class="brand">FRAP</span>
+        <span id="conn" class="conn off" title="Estado del bridge">●</span>
+        <span class="grow"></span>
+        <button class="icon" id="btn-settings" title="Ajustes">⚙</button>
+        <button class="icon" id="btn-new-project" title="Nuevo proyecto (agregar carpeta)">＋</button>
+      </header>
+      <div id="projects" class="scroll"></div>
+    </aside>
+
+    <!-- ============ PANEL CENTRAL: terminal ============ -->
+    <main id="center">
+      <div id="tabs-bar">
+        <button class="icon" id="toggle-left" title="Mostrar/ocultar panel izquierdo (Alt+B)">⟨</button>
+        <div id="tabs"></div>
+        <div id="launchers">
+          <button data-launch="shell" title="Nueva terminal (Alt+T)">＞_ shell</button>
+          <button data-launch="claude" class="l-claude">claude</button>
+          <button data-launch="codex" class="l-codex">codex</button>
+          <button data-launch="opencode" class="l-opencode">opencode</button>
+        </div>
+        <button class="icon" id="toggle-right" title="Mostrar/ocultar panel derecho (Alt+P)">⟩</button>
+      </div>
+      <div id="term-host">
+        <div id="empty" class="empty">
+          <h2>Sin terminal</h2>
+          <p>Crea o selecciona un proyecto a la izquierda y lanza <b>shell</b>, <b>claude</b>, <b>codex</b> u <b>opencode</b>.</p>
+        </div>
+        <div id="offline" class="offline hidden">
+          <h2>Bridge desconectado</h2>
+          <p>El navegador no puede ejecutar procesos por sí solo. Inicia el bridge (sin dependencias) una vez:</p>
+          <pre><code id="bridge-cmd">node bridge/frap-bridge.js</code></pre>
+          <p>Imprime una URL con el token: ábrela, o pega el token aquí.</p>
+          <div class="row">
+            <input id="token-input" type="password" placeholder="token" autocomplete="off">
+            <input id="port-input" type="number" placeholder="7681" min="1" max="65535">
+            <button id="token-save" class="primary">Conectar</button>
+          </div>
+          <p class="muted" id="offline-detail"></p>
+        </div>
+      </div>
+      <div id="statusbar">
+        <span id="st-project"></span>
+        <span id="st-cwd" class="muted"></span>
+        <span class="grow"></span>
+        <span id="st-host" class="muted"></span>
+      </div>
+    </main>
+
+    <!-- ============ PANEL DERECHO: procesos, config, prompts ============ -->
+    <aside id="right" class="panel">
+      <nav id="rtabs">
+        <button data-rtab="procs" class="active">Procesos</button>
+        <button data-rtab="prompts">Prompts</button>
+        <button data-rtab="agents">Agentes</button>
+        <button data-rtab="skills">Skills</button>
+        <button data-rtab="commands">Comandos</button>
+        <button data-rtab="hooks">Hooks</button>
+        <button data-rtab="memory">Memoria</button>
+      </nav>
+      <div id="rbody" class="scroll"></div>
+    </aside>
+  </div>
+
+  <!-- ============ MODAL genérico ============ -->
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <header>
+        <h3 id="modal-title"></h3>
+        <span class="grow"></span>
+        <button class="icon" id="modal-close" title="Cerrar (Esc)">✕</button>
+      </header>
+      <div id="modal-body"></div>
+      <footer id="modal-foot"></footer>
+    </div>
+  </div>
+  <div id="toasts"></div>
+
+  <script src="vendor/xterm.js"></script>
+  <script src="vendor/addon-fit.js"></script>
+  <script src="index.js"></script>
+</body>
+</html>
