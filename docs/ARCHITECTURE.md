@@ -48,7 +48,7 @@ navegador (file://src/index.html)                     máquina local
 ## Bases de datos
 
 - `bridge/db.js` es el núcleo compartido. Lee y escribe `FRAP_HOME/databases.env` (claves `FRAP_DB_<ID>_{NAME,ENGINE,HOST,PORT,USER,PASSWORD,DATABASE,UI_WRITE}`, archivo 0600), clasifica el SQL y ejecuta con los clientes del sistema. No hay drivers npm.
-  - **MySQL:** `mysql --xml`, para distinguir NULL de `'NULL'`. La contraseña va en un `--defaults-extra-file` temporal 0600, nunca en argv.
+  - **MySQL / MariaDB:** `mysql --xml --comments`. `--xml` distingue NULL de `'NULL'`. La contraseña va en un `--defaults-extra-file` temporal 0600, nunca en argv. El tiempo límite se fija con una sola sentencia compatible con los dos motores: `SET /*!50708 SESSION MAX_EXECUTION_TIME=… */ /*M!100108 SESSION max_statement_time=… */ @frap=1`. MySQL ignora `/*M!`, MariaDB ignora los `/*!5xxxx` de MySQL 5.7+, y `@frap` evita una sentencia vacía. Verificado con MySQL 8.0 y MariaDB 10.11.
   - **PostgreSQL:** `psql --csv` con un marcador de NULL. La contraseña va en `PGPASSWORD`.
   - **SQLite:** `sqlite3 -csv -safe`.
 - La UI nunca recibe contraseñas: `db.list` y `db.save` devuelven `publicConn`.

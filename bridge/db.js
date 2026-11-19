@@ -283,6 +283,37 @@ function fromCsv(out) {
 }
 
 // ---------------------------------------------------------------------------
+// Pistas para errores de conexión frecuentes
+// ---------------------------------------------------------------------------
+function connectionHint(text) {
+  const privateIp = /\b(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+/.test(text);
+  if (/\(110\)|timed out|timeout expired|Connection timed out/i.test(text)) {
+    return 'El servidor no respondió (timeout): revisa el host y el puerto' +
+      (privateIp ? ', y que la VPN esté encendida (es una IP interna)' : '; si la base de datos está en una red interna, usa su IP interna y enciende la VPN') +
+      '. Un firewall también puede bloquear el puerto.';
+  }
+  if (/\(111\)|Connection refused/i.test(text)) return 'El host responde pero no hay nada escuchando en ese puerto: revisa el puerto (MySQL 3306, PostgreSQL 5432) o que el servidor acepte conexiones remotas.';
+  if (/\(2\)|\(-2\)|Unknown (MySQL server )?host|could not translate host name|Name or service not known/i.test(text)) return 'No se pudo resolver el nombre del host: revisa que esté bien escrito (o usa la IP).';
+  const denied = text.match(/Access denied for user '([^']*)'@'([^']*)'/i);
+  if (denied && denied[2] && denied[2] !== 'localhost') {
+    const ip = denied[2];
+    const isPrivate = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.)/.test(ip);
+    if (!isPrivate && /^\d+\.\d+\.\d+\.\d+$/.test(ip)) {
+      // te conectas por internet: no conviene habilitar IPs públicas (cambian y exponen el servidor)
+      return `El servidor te ve con tu IP pública ${ip}: te estás conectando por internet. Si el servidor es de la red de la empresa, ` +
+        'usa su IP interna (p. ej. 192.168.x.x) con la VPN encendida y habilita el usuario para la IP con que llega la VPN. ' +
+        'No habilites IPs públicas: cambian y dejan la base de datos expuesta.';
+    }
+    return `El servidor te ve llegando desde ${ip}. O la contraseña no coincide, o el usuario solo existe para 'localhost' (típico si te funciona en phpMyAdmin): ` +
+      `pide que lo habiliten para esa IP ('${denied[1]}'@'${ip}') o usa un túnel SSH al servidor.`;
+  }
+  if (/ERROR 1045|password authentication failed|Access denied for user/i.test(text)) return 'Usuario o contraseña incorrectos, o el usuario no tiene permiso para conectarse desde tu IP.';
+  if (/ERROR 1049|database ".*" does not exist|Unknown database/i.test(text)) return 'La base de datos no existe: revisa el nombre (en MySQL puedes dejarlo vacío).';
+  if (/ERROR 2059|caching_sha2_password|authentication plugin/i.test(text)) return 'El servidor usa un método de autenticación que tu cliente mysql no soporta.';
+  return '';
+}
+
+// ---------------------------------------------------------------------------
 // Ejecución
 // ---------------------------------------------------------------------------
 function runClient(cmd, args, { env, input, timeoutMs }) {
@@ -320,7 +351,9 @@ function runClient(cmd, args, { env, input, timeoutMs }) {
       if (timedOut) { reject(new Error(`La consulta superó el tiempo límite (${Math.round(timeoutMs / 1000)} s)`)); return; }
       if (code !== 0) {
         const msg = err.split('\n').filter((l) => l.trim() && !/Using a password on the command line/.test(l)).join('\n').trim();
-        reject(new Error(msg || `${cmd} terminó con código ${code}`));
+        const text = msg || `${cmd} terminó con código ${code}`;
+        const hint = connectionHint(text);
+        reject(new Error(hint ? `${text}\n→ ${hint}` : text));
         return;
       }
       resolve({ out, err, truncatedBytes });
@@ -355,13 +388,17 @@ async function runQuery(conn, sql, opts = {}) {
     const body = write
       ? stmt
       : [
-        `SET SESSION MAX_EXECUTION_TIME=${timeoutMs};`,
+        // Tiempo límite en el servidor, compatible con MySQL y MariaDB en UNA sentencia:
+        //   MySQL ve   SET SESSION MAX_EXECUTION_TIME=…, @frap=1   (ignora /*M! */)
+        //   MariaDB ve SET SESSION max_statement_time=…, @frap=1   (ignora /*!50708 */: es de MySQL 5.7+)
+        // @frap evita que quede una sentencia vacía. Requiere `--comments` para que /*M! llegue al servidor.
+        `SET /*!50708 SESSION MAX_EXECUTION_TIME=${timeoutMs}, */ /*M!100108 SESSION max_statement_time=${Math.max(1, Math.round(timeoutMs / 1000))}, */ @frap = 1;`,
         'SET SESSION TRANSACTION READ ONLY;',
         'START TRANSACTION READ ONLY;',
         `${stmt}\n;`,
         'ROLLBACK;',
       ].join('\n');
-    const args = [`--defaults-extra-file=${cnf}`, '--xml', '--default-character-set=utf8mb4', '--connect-timeout=10',
+    const args = [`--defaults-extra-file=${cnf}`, '--comments', '--xml', '--default-character-set=utf8mb4', '--connect-timeout=10',
       '-h', conn.host || 'localhost', '-P', String(conn.port || 3306), '-u', conn.user || ''];
     // "localhost" en mysql = socket Unix; cualquier otro host va por TCP
     if (conn.host && conn.host !== 'localhost') args.splice(1, 0, '--protocol=TCP');
@@ -430,6 +467,6 @@ function describeSql(engine, table) {
 module.exports = {
   ENGINES, NULL_MARK,
   loadConnections, saveConnections, slugify, publicConn,
-  splitSql, assertReadOnly, parseCsv, parseMysqlXml,
+  splitSql, assertReadOnly, parseCsv, parseMysqlXml, connectionHint,
   runQuery, tablesSql, describeSql,
 };

@@ -611,6 +611,7 @@ textarea.prompt-body { min-height: 180px; font: 12.5px/1.5 var(--mono); resize: 
 /* ---------- toasts ---------- */
 #toasts { position: fixed; bottom: 30px; right: 16px; display: flex; flex-direction: column; gap: 6px; z-index: 60; }
 .toast {
+  white-space: pre-line;
   background: var(--bg-3);
   border: 1px solid var(--line);
   border-left: 3px solid var(--accent);

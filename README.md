@@ -78,7 +78,7 @@ node bridge/frap-db.js <id> "SELECT … LIMIT 50"   # consulta (--json, --limit 
 
 El modo solo lectura tiene varias capas:
 1. **Clasificador:** una sola sentencia, que debe empezar por SELECT, WITH, SHOW, DESCRIBE o EXPLAIN. Rechaza INSERT, UPDATE, DELETE, DDL, `INTO OUTFILE`, `FOR UPDATE`, los metacomandos `\!` y `.shell`, y funciones peligrosas.
-2. **Motor:** MySQL ejecuta dentro de `START TRANSACTION READ ONLY` y hace ROLLBACK. PostgreSQL corre con `default_transaction_read_only=on`. SQLite se abre con `-readonly -safe`.
+2. **Motor:** MySQL y MariaDB ejecutan dentro de `START TRANSACTION READ ONLY` y hacen ROLLBACK. PostgreSQL corre con `default_transaction_read_only=on`. SQLite se abre con `-readonly -safe`.
 3. **Recomendado:** un usuario de base de datos con permisos solo SELECT.
 
 Requiere los clientes del sistema: `mysql`, `psql` o `sqlite3`.

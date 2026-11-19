@@ -42,6 +42,9 @@ test('assertReadOnly acepta lecturas', () => {
   ];
   for (const [e, q] of ok) assert.doesNotThrow(() => db.assertReadOnly(q, e), `${e}: ${q}`);
   assert.equal(db.assertReadOnly('SELECT 1; -- fin', 'mysql'), 'SELECT 1');
+  // los comentarios ejecutables /*! */ se eliminan del texto que se ejecuta: no sirven para colar SQL
+  const smuggled = db.assertReadOnly('SELECT 1 /*!50000 , (SELECT 1) ; DROP TABLE t */', 'mysql');
+  assert.doesNotMatch(smuggled, /DROP|50000/);
 });
 
 test('assertReadOnly rechaza escrituras y trucos', () => {
@@ -65,6 +68,30 @@ test('assertReadOnly rechaza escrituras y trucos', () => {
     ['sqlite', '', /vacía/],
   ];
   for (const [e, q, re] of bad) assert.throws(() => db.assertReadOnly(q, e), re, `${e}: ${q}`);
+});
+
+test('connectionHint: pistas para errores de conexión frecuentes', () => {
+  assert.match(db.connectionHint("ERROR 2003 (HY000): Can't connect to MySQL server on '131.0.136.187:3306' (110)"), /timeout.*IP interna y enciende la VPN/);
+  assert.match(db.connectionHint("ERROR 2003 (HY000): Can't connect to MySQL server on '192.168.0.187:3306' (110)"), /VPN esté encendida/);
+  assert.match(db.connectionHint("ERROR 2003 (HY000): Can't connect to MySQL server on '127.0.0.1:1' (111)"), /puerto/);
+  assert.match(db.connectionHint("ERROR 1045 (28000): Access denied for user 'x'@'y' (using password: YES)"), /contraseña/);
+  const h1045 = db.connectionHint("ERROR 1045 (28000): Access denied for user 'apiappave-only-read'@'192.168.0.4' (using password: YES)");
+  assert.match(h1045, /desde 192\.168\.0\.4/);
+  assert.match(h1045, /'apiappave-only-read'@'192\.168\.0\.4'/);
+  const pub = db.connectionHint("ERROR 1045 (28000): Access denied for user 'c1logisd-only-read'@'191.95.130.19' (using password: YES)");
+  assert.match(pub, /IP pública 191\.95\.130\.19/);
+  assert.match(pub, /VPN/);
+  assert.doesNotMatch(pub, /191\.95\.130\.%/, 'nunca sugerir abrir un rango público');
+  assert.match(h1045, /túnel SSH/);
+  assert.match(db.connectionHint('psql: error: could not translate host name "nope" to address'), /resolver/);
+  assert.equal(db.connectionHint('ERROR 1146: Table x doesn\'t exist'), '');
+});
+
+test('conexión real rechazada devuelve el error con pista', { skip: spawnSync('mysql', ['--version']).status !== 0 }, async () => {
+  await assert.rejects(
+    db.runQuery({ engine: 'mysql', host: '127.0.0.1', port: '1', user: 'x', password: 'y' }, 'SELECT 1', { timeoutMs: 15000 }),
+    /\(111\)[\s\S]*→ El host responde pero no hay nada escuchando/
+  );
 });
 
 // ------------------------------------------------------------------ parsers y .env
@@ -124,6 +151,13 @@ for (const [name, conn] of engines) {
     const d = await db.runQuery(conn, db.describeSql(name, 'clientes'));
     assert.deepEqual(d.rows.map((row) => row[0]), ['id', 'nombre', 'nota', 'saldo']);
 
+    if (name === 'mysql') {
+      // el tiempo límite del servidor se aplica (MySQL: max_execution_time; MariaDB: max_statement_time)
+      const v = await db.runQuery(conn, 'SELECT VERSION() AS v, @@max_execution_time AS met', { timeoutMs: 45000 });
+      if (!/mariadb/i.test(v.rows[0][0])) assert.equal(v.rows[0][1], '45000');
+      const ro = await db.runQuery(conn, 'SELECT @@transaction_read_only AS ro');
+      assert.equal(ro.rows[0][0], '1', 'la consulta corre en una transacción de solo lectura');
+    }
     await assert.rejects(db.runQuery(conn, 'SELECT * FROM no_existe'), /no_existe/);
     await assert.rejects(db.runQuery(conn, 'DELETE FROM clientes'), /Solo lectura/);
     await assert.rejects(db.runQuery(conn, 'SELECT 1', { write: true }), /no permite escritura/);
