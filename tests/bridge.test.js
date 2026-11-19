@@ -84,7 +84,12 @@ test.before(async () => {
   client = rpcClient(await ws.connect(port, `/?token=${TOKEN}`, { Origin: 'null' }));
 });
 
-test.after(() => {
+test.after(async () => {
+  // las sesiones sobreviven al bridge: se cierran explícitamente
+  try {
+    for (const s of await client.call('sessions.list')) if (s.alive) await client.call('session.kill', { sid: s.sid });
+    await new Promise((r) => setTimeout(r, 300));
+  } catch (_) { /* nada */ }
   if (bridge) bridge.kill('SIGTERM');
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -99,7 +104,8 @@ test('rechaza origins web', async () => {
 
 test('hello', async () => {
   const info = await client.call('hello');
-  assert.equal(info.version, '1.0.0');
+  assert.equal(info.version, '1.1.0');
+  for (const op of ['db.list', 'db.save', 'git.run', 'music.ytInfo']) assert.ok(info.ops.includes(op), op);
   assert.equal(info.fsRoot, root);
 });
 
@@ -298,4 +304,51 @@ test('git.run: flujo status → add → commit → checkout -b, errores y lista 
   await assert.rejects(git('-c', 'core.sshCommand=touch /tmp/pwn', 'fetch'), /no permitida/);
   await assert.rejects(git('push', '--receive-pack=touch /tmp/pwn'), /no permitida/);
   await assert.rejects(client.call('git.run', { cwd: '/etc', args: ['status'] }), /fuera/);
+});
+
+test('persistencia: las terminales sobreviven a reiniciar el bridge (historial, entrada y meta)', async () => {
+  const home = path.join(root, 'persist-cfg');
+  const start = () => new Promise((resolve, reject) => {
+    const b = fork(path.join(__dirname, '..', 'bridge', 'frap-bridge.js'), [], {
+      env: { ...process.env, FRAP_PORT: '0', FRAP_TOKEN: TOKEN, FRAP_HOME: home, FRAP_FS_ROOT: root, FRAP_QUIET: '1', SHELL: '/bin/sh', HOME: root },
+      stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+    });
+    b.on('message', async (m) => {
+      if (!m.ready) return;
+      try { resolve({ b, c: rpcClient(await ws.connect(m.port, `/?token=${TOKEN}`, { Origin: 'null' })) }); } catch (e) { reject(e); }
+    });
+    b.on('error', reject);
+  });
+  const stop = (b) => new Promise((r) => { b.once('exit', r); b.kill('SIGTERM'); });
+
+  let { b, c } = await start();
+  const s = await c.call('session.create', { cwd: root, meta: { projectId: 'p1', title: 'larga', kind: 'claude' } });
+  c.send('session.input', { sid: s.sid, data: 'echo antes-$((20+1))\r' });
+  await c.waitOutput(s.sid, /antes-21/);
+  await c.call('session.meta', { sid: s.sid, meta: { title: 'renombrada' } });
+  await stop(b); // reiniciar el bridge
+
+  ({ b, c } = await start());
+  try {
+    const list = await c.call('sessions.list');
+    const again = list.find((x) => x.sid === s.sid);
+    assert.ok(again, 'la sesión debe seguir viva tras reiniciar el bridge');
+    assert.equal(again.alive, true);
+    assert.equal(again.meta.title, 'renombrada');
+    assert.equal(again.meta.projectId, 'p1');
+    const att = await c.call('session.attach', { sid: s.sid });
+    assert.match(att.buffer, /antes-21/, 'el historial se conserva');
+    c.send('session.input', { sid: s.sid, data: 'echo despues-$((40+2))\r' });
+    await c.waitOutput(s.sid, /despues-42/);
+    await c.call('session.kill', { sid: s.sid });
+    const ex = await c.waitFor((e) => e.ev === 'exit' && e.sid === s.sid);
+    assert.equal(typeof ex.code, 'number');
+  } finally {
+    await stop(b);
+  }
+  // con la sesión terminada, un bridge nuevo ya no la ve
+  ({ b, c } = await start());
+  try {
+    assert.equal((await c.call('sessions.list')).some((x) => x.sid === s.sid), false);
+  } finally { await stop(b); }
 });

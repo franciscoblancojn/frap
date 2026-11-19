@@ -195,6 +195,7 @@
         try {
           this.info = await this.call('hello');
           setConn('on', `${this.info.hostname} · bridge v${this.info.version}`);
+          checkBridgeVersion(this.info);
           this.emit('open', this.info);
         } catch (e) { setConn('off', e.message); }
       };
@@ -205,7 +206,7 @@
           const p = this.pending.get(msg.re);
           if (!p) return;
           this.pending.delete(msg.re);
-          msg.ok ? p.resolve(msg.data) : p.reject(new Error(msg.error));
+          msg.ok ? p.resolve(msg.data) : p.reject(new Error(/^Operación desconocida/.test(msg.error || '') ? `${msg.error}. El bridge está desactualizado: reinícialo (Ctrl+C y node bridge/frap-bridge.js).` : msg.error));
         } else if (msg.ev) {
           this.emit(msg.ev, msg);
         }
@@ -237,11 +238,33 @@
     },
   };
 
+  // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
+  // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
+  const REQUIRED_OPS = ['session.create', 'config.scan', 'db.list', 'db.save', 'db.query', 'git.run', 'music.ytInfo'];
+  function checkBridgeVersion(info) {
+    // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
+    const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
+    const bar = $('#bridge-warn');
+    if (missing && !missing.length) { bar.classList.add('hidden'); return; }
+    const started = info.startedAt ? ` (en marcha desde las ${new Date(info.startedAt).toLocaleTimeString()})` : '';
+    bar.replaceChildren(
+      h('span', '⚠'),
+      h('span.grow',
+        h('b', 'El bridge en ejecución es una versión anterior'), started,
+        missing ? `: no soporta ${missing.join(', ')}.` : ` (v${info.version || '?'}): le faltan funciones nuevas como bases de datos, git y YouTube.`,
+        ' Reinícialo: en su terminal pulsa Ctrl+C y vuelve a ejecutar ',
+        h('code', 'node bridge/frap-bridge.js'),
+        '. Las terminales abiertas se cerrarán.'),
+      h('button.icon', { title: 'Ocultar', onclick: () => bar.classList.add('hidden') }, '✕'));
+    bar.classList.remove('hidden');
+  }
+
   function setConn(kind, detail) {
     const el = $('#conn');
     el.className = `conn ${kind}`;
     el.title = detail || '';
     $('#offline').classList.toggle('hidden', kind === 'on');
+    if (kind !== 'on') $('#bridge-warn').classList.add('hidden');
     $('#offline-detail').textContent = kind === 'on' ? '' : detail || '';
     $('#st-host').textContent = kind === 'on' ? detail : '';
   }
@@ -362,14 +385,18 @@
   });
   Bridge.on('sessions', () => syncSessions());
 
-  async function syncSessions() {
+  /** reattach=true al (re)conectar: las terminales ya abiertas recargan su historial, porque
+   *  mientras el bridge estuvo caído (o se reinició) siguieron produciendo salida. */
+  async function syncSessions(reattach = false) {
     if (!Bridge.ready) return;
     let list;
     try { list = await Bridge.call('sessions.list'); } catch (_) { return; }
     const seen = new Set();
     for (const info of list) {
       seen.add(info.sid);
-      ensureTerm(info);
+      const existed = terms.has(info.sid);
+      const t = ensureTerm(info);
+      if (reattach && existed) attach(t);
     }
     for (const sid of [...terms.keys()]) if (!seen.has(sid) && terms.get(sid).info.alive !== false) disposeTerm(sid);
     if (state.activeSid && !isViewSid(state.activeSid) && !terms.has(state.activeSid)) state.activeSid = null;
@@ -1831,6 +1858,7 @@
   const DB_PORTS = { mysql: '3306', postgres: '5432' };
   /** Respuesta de db.list: { envFile, cli, clients, skills, conns } (sin contraseñas). */
   let dbInfo = null;
+  let dbError = null; // error de la última carga (p. ej. bridge desactualizado)
   let dbPane = null;
   let dbLast = null; // último resultado { columns, rows, … } para exportar
   const dbConnById = (id) => (dbInfo ? dbInfo.conns.find((c) => c.id === id) : null) || null;
@@ -1838,7 +1866,11 @@
 
   async function loadDbs() {
     if (!Bridge.ready) return;
-    try { dbInfo = await Bridge.call('db.list'); } catch (e) { toast(e.message, 'err'); return; }
+    try { dbInfo = await Bridge.call('db.list'); dbError = null; } catch (e) {
+      dbError = e.message;
+      if (state.ui.rtab === 'dbs') renderRight(); else toast(e.message, 'err');
+      return;
+    }
     if (state.db.connId && !dbConnById(state.db.connId)) state.db.connId = null;
     if (!state.db.connId && dbInfo.conns[0]) state.db.connId = dbInfo.conns[0].id;
     if (state.ui.rtab === 'dbs') renderRight();
@@ -1852,7 +1884,7 @@
       h('button.mini', { title: 'Abrir la pestaña DB (Alt+Shift+D)', onclick: () => openDbView() }, '🗄 Consultar'),
       h('button.mini.primary', { onclick: () => editDb() }, '+ Nueva'));
     if (!Bridge.ready) return [head, h('p.muted', 'Bridge desconectado.')];
-    if (!dbInfo) return [head, h('p.muted', 'Cargando…')];
+    if (!dbInfo) return [head, dbError ? h('p', { style: 'color:var(--err)' }, dbError) : h('p.muted', 'Cargando…')];
     const sk = dbInfo.skills || {};
     const agents = h('div.card.db-agents',
       h('div.title', h('span.name', '🤖 Acceso para agentes (solo lectura)')),
@@ -3352,7 +3384,7 @@
         save();
       }
     } catch (_) { /* sin estado remoto */ }
-    await syncSessions();
+    await syncSessions(true);
     tickTimers();
     loadConfig(true);
     loadDbs();

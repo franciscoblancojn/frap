@@ -14,11 +14,13 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
+const net = require('net');
 const { StringDecoder } = require('string_decoder');
 const ws = require('./ws');
 const db = require('./db');
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
+const STARTED_AT = Date.now();
 const HOME = os.homedir();
 
 // ---------- opciones ----------
@@ -235,10 +237,20 @@ function descendants(rows, rootPid) {
   return out;
 }
 
-// ---------- sesiones PTY ----------
+// ---------- sesiones PTY (persistentes) ----------
+// Cada terminal es un proceso frap_pty.py DESLIGADO del bridge, con su propio historial y un
+// socket Unix privado. El bridge solo se conecta: si se reinicia o se cae, las terminales siguen
+// vivas y al arrancar se reconecta a ellas (rediscoverSessions).
 const sessions = new Map();
 const clients = new Set();
-let seq = 0;
+const SOCK_DIR = path.join(
+  process.env.XDG_RUNTIME_DIR && fs.existsSync(process.env.XDG_RUNTIME_DIR) ? process.env.XDG_RUNTIME_DIR : os.tmpdir(),
+  `frap-${process.getuid ? process.getuid() : 'u'}-${crypto.createHash('sha1').update(path.resolve(FRAP_HOME)).digest('hex').slice(0, 8)}`
+);
+fs.mkdirSync(SOCK_DIR, { recursive: true, mode: 0o700 });
+fs.chmodSync(SOCK_DIR, 0o700);
+const sockPath = (sid) => path.join(SOCK_DIR, `${sid}.sock`);
+const metaPath = (sid) => path.join(SOCK_DIR, `${sid}.json`);
 
 function broadcast(msg) {
   const s = JSON.stringify(msg);
@@ -246,76 +258,190 @@ function broadcast(msg) {
 }
 function sessionInfo(s) {
   return {
-    sid: s.sid, pid: s.proc.pid, meta: s.meta, created: s.created,
+    sid: s.sid, pid: s.pid, meta: s.meta, created: s.created,
     lastOutput: s.lastOutput, alive: s.alive, exitCode: s.exitCode,
   };
 }
+function saveMeta(s) {
+  try {
+    fs.writeFileSync(metaPath(s.sid), JSON.stringify({ sid: s.sid, pid: s.pid, meta: s.meta, created: s.created }), { mode: 0o600 });
+  } catch (_) { /* sin disco: la sesión sigue funcionando */ }
+}
+function cleanupFiles(sid) {
+  for (const f of [sockPath(sid), metaPath(sid), `${sockPath(sid)}.exit`]) fs.rmSync(f, { force: true });
+}
+const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 
-function createSession({ cwd, cols = 100, rows = 30, meta = {}, init = '', cmd } = {}) {
+function frame(kind, data) {
+  const payload = Buffer.isBuffer(data) ? data : Buffer.from(String(data || ''), 'utf8');
+  const head = Buffer.alloc(5);
+  head.write(kind, 0, 'ascii');
+  head.writeUInt32BE(payload.length, 1);
+  return Buffer.concat([head, payload]);
+}
+
+function newSessionState(sid, pid, meta, created) {
+  return {
+    sid, pid, meta, created, lastOutput: 0, alive: true, exitCode: null,
+    chunks: [], size: 0, pending: '', timer: null, decoder: new StringDecoder('utf8'), sock: null,
+  };
+}
+
+function markExited(s, code) {
+  if (!s.alive) return;
+  if (s.timer) { clearTimeout(s.timer); s.timer = null; }
+  if (s.pending) { broadcast({ ev: 'out', sid: s.sid, d: s.pending }); s.pending = ''; }
+  s.alive = false;
+  s.exitCode = code;
+  broadcast({ ev: 'exit', sid: s.sid, code });
+  cleanupFiles(s.sid);
+  setTimeout(() => sessions.delete(s.sid), 10_000);
+}
+
+/** Conecta (o reconecta) el bridge al socket de una sesión. Resuelve cuando llega el historial. */
+function connectSession(s) {
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(sockPath(s.sid));
+    let buf = Buffer.alloc(0);
+    let gotBacklog = false;
+    sock.once('connect', () => { s.sock = sock; });
+    sock.on('data', (d) => {
+      buf = buf.length ? Buffer.concat([buf, d]) : d;
+      while (buf.length >= 5) {
+        const n = buf.readUInt32BE(1);
+        if (buf.length < 5 + n) break;
+        const kind = String.fromCharCode(buf[0]);
+        const payload = buf.subarray(5, 5 + n);
+        buf = buf.subarray(5 + n);
+        if (kind === 'B') {
+          // historial que guarda la sesión: reemplaza el del bridge (p. ej. tras reiniciarlo)
+          const d = new StringDecoder('utf8').write(payload);
+          s.chunks = d ? [d] : [];
+          s.size = d.length;
+          s.pending = '';
+          // sesión recién creada: nadie ha visto aún esa salida, se emite como salida normal
+          if (s.fresh && d) { s.lastOutput = Date.now(); broadcast({ ev: 'out', sid: s.sid, d }); }
+          s.fresh = false;
+          if (!gotBacklog) { gotBacklog = true; resolve(s); }
+        } else if (kind === 'O') onSessionOutput(s, payload);
+        else if (kind === 'X') markExited(s, Number(payload.toString()) || 0);
+      }
+    });
+    sock.on('error', (e) => { if (!gotBacklog) reject(e); });
+    sock.on('close', () => {
+      if (s.sock === sock) s.sock = null;
+      // cerró sin avisar: si el proceso ya no existe, la sesión terminó
+      if (s.alive && !pidAlive(s.pid)) {
+        let code = null;
+        try { code = Number(fs.readFileSync(`${sockPath(s.sid)}.exit`, 'utf8')); } catch (_) { /* sin código */ }
+        markExited(s, code);
+      }
+    });
+  });
+}
+
+function onSessionOutput(s, buf) {
+  const d = s.decoder.write(buf);
+  if (!d) return;
+  s.lastOutput = Date.now();
+  s.chunks.push(d);
+  s.size += d.length;
+  while (s.size > BUFFER_MAX && s.chunks.length > 1) s.size -= s.chunks.shift().length;
+  s.pending += d;
+  if (!s.timer) {
+    s.timer = setTimeout(() => {
+      s.timer = null;
+      if (!s.pending) return;
+      const out = s.pending;
+      s.pending = '';
+      broadcast({ ev: 'out', sid: s.sid, d: out });
+    }, 4);
+  }
+  if (s.init && !s.initSent) {
+    s.initSent = true;
+    setTimeout(() => write(s, s.init + '\r'), 120);
+  }
+}
+
+async function waitForFile(p, ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (fs.existsSync(p)) return true;
+    await new Promise((r) => setTimeout(r, 15));
+  }
+  return false;
+}
+
+async function createSession({ cwd, cols = 100, rows = 30, meta = {}, init = '', cmd } = {}) {
   const dir = safePath(cwd || HOME);
   if (!fs.statSync(dir).isDirectory()) throw new Error(`No es un directorio: ${dir}`);
   const shell = process.env.SHELL || '/bin/bash';
   const command = Array.isArray(cmd) && cmd.length ? cmd : [shell];
-  const sid = `s${++seq}-${crypto.randomBytes(3).toString('hex')}`;
-  const proc = spawn(PYTHON, [PTY_HELPER, ...command], {
+  const sid = `s${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
+  const proc = spawn(PYTHON, [PTY_HELPER, '--sock', sockPath(sid), '--rows', String(rows | 0), '--cols', String(cols | 0), '--', ...command], {
     cwd: dir,
-    env: childEnv({
-      TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'frap',
-      FRAP_ROWS: String(rows), FRAP_COLS: String(cols), FRAP_SESSION: sid,
-    }),
-    stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+    detached: true, // sesión propia: no muere con el bridge
+    stdio: 'ignore',
+    env: childEnv({ TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'frap', FRAP_SESSION: sid }),
   });
-  const s = {
-    sid, proc, meta: { ...meta, cwd: dir }, created: Date.now(), lastOutput: 0,
-    alive: true, exitCode: null, chunks: [], size: 0, pending: '', timer: null,
-    decoder: new StringDecoder('utf8'), ctl: proc.stdio[3],
-  };
+  proc.unref();
+  const spawnErr = new Promise((_, reject) => proc.once('error', (e) => reject(new Error(`No se pudo iniciar la terminal: ${e.message}`))));
+  const s = newSessionState(sid, proc.pid, { ...meta, cwd: dir }, Date.now());
+  s.init = init;
+  s.fresh = true;
   sessions.set(sid, s);
-
-  const flush = () => {
-    s.timer = null;
-    if (!s.pending) return;
-    const d = s.pending;
-    s.pending = '';
-    broadcast({ ev: 'out', sid, d });
-  };
-  const onOut = (buf) => {
-    const d = s.decoder.write(buf);
-    if (!d) return;
-    s.lastOutput = Date.now();
-    s.chunks.push(d);
-    s.size += d.length;
-    while (s.size > BUFFER_MAX && s.chunks.length > 1) s.size -= s.chunks.shift().length;
-    s.pending += d;
-    if (!s.timer) s.timer = setTimeout(flush, 4);
-    if (init && !s.initSent) {
-      s.initSent = true;
-      setTimeout(() => write(s, init + '\r'), 120);
-    }
-  };
-  proc.stdout.on('data', onOut);
-  proc.stderr.on('data', onOut);
+  saveMeta(s);
+  try {
+    const ok = await Promise.race([waitForFile(sockPath(sid), 5000), spawnErr]);
+    if (!ok) throw new Error('La terminal no respondió (¿python3 instalado?)');
+    await Promise.race([connectSession(s), spawnErr]);
+  } catch (e) {
+    sessions.delete(sid);
+    try { process.kill(proc.pid, 'SIGTERM'); } catch (_) { /* ya no existe */ }
+    cleanupFiles(sid);
+    throw e;
+  }
   if (init) setTimeout(() => { if (!s.initSent) { s.initSent = true; write(s, init + '\r'); } }, 1500);
-  proc.on('error', (e) => onOut(Buffer.from(`\r\n[frap] error al iniciar PTY: ${e.message}\r\n`)));
-  proc.on('exit', (code) => {
-    flush();
-    s.alive = false;
-    s.exitCode = code;
-    broadcast({ ev: 'exit', sid, code });
-    setTimeout(() => sessions.delete(sid), 10_000);
-  });
-  if (s.ctl) s.ctl.on('error', () => {});
-  proc.stdin.on('error', () => {});
   broadcast({ ev: 'sessions' });
   return sessionInfo(s);
 }
+
+/** Al arrancar: reconecta con las sesiones que siguen vivas de un bridge anterior. */
+async function rediscoverSessions() {
+  let files = [];
+  try { files = fs.readdirSync(SOCK_DIR).filter((f) => f.endsWith('.json')); } catch (_) { return 0; }
+  let n = 0;
+  await Promise.all(files.map(async (f) => {
+    let m;
+    try { m = JSON.parse(fs.readFileSync(path.join(SOCK_DIR, f), 'utf8')); } catch (_) { return; }
+    if (!m || !m.sid || sessions.has(m.sid)) return;
+    if (!fs.existsSync(sockPath(m.sid)) || !pidAlive(m.pid)) { cleanupFiles(m.sid); return; }
+    const s = newSessionState(m.sid, m.pid, m.meta || {}, m.created || Date.now());
+    s.initSent = true;
+    sessions.set(m.sid, s);
+    try {
+      await Promise.race([connectSession(s), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000))]);
+      n++;
+    } catch (_) {
+      sessions.delete(m.sid);
+      if (!pidAlive(m.pid)) cleanupFiles(m.sid);
+    }
+  }));
+  return n;
+}
+
 function getSession(sid) {
   const s = sessions.get(sid);
   if (!s) throw new Error(`Sesión no encontrada: ${sid}`);
   return s;
 }
 function write(s, data) {
-  if (s.alive && s.proc.stdin.writable) s.proc.stdin.write(data);
+  if (s.alive && s.sock && !s.sock.destroyed) s.sock.write(frame('I', String(data)));
+}
+function killSession(s) {
+  if (!s.alive) return;
+  if (s.sock && !s.sock.destroyed) s.sock.write(frame('K'));
+  else { try { process.kill(s.pid, 'SIGTERM'); } catch (_) { /* ya no existe */ } }
 }
 
 // ---------- estado persistente de la UI ----------
@@ -399,6 +525,9 @@ const ops = {
     version: VERSION, home: HOME, fsRoot: FS_ROOT, shell: process.env.SHELL || '/bin/bash',
     platform: process.platform, hostname: os.hostname(),
     tools: { claude: which('claude'), codex: which('codex'), opencode: which('opencode') },
+    // la UI lo compara con lo que necesita para detectar un bridge viejo que sigue corriendo
+    ops: Object.keys(ops),
+    startedAt: STARTED_AT,
   }),
   'sessions.list': () => [...sessions.values()].map(sessionInfo),
   'session.create': (p) => createSession(p),
@@ -412,18 +541,19 @@ const ops = {
   'session.input': ({ sid, data }) => { write(getSession(sid), String(data)); return true; },
   'session.resize': ({ sid, cols, rows }) => {
     const s = getSession(sid);
-    if (s.alive && s.ctl && s.ctl.writable) s.ctl.write(`R ${rows | 0} ${cols | 0}\n`);
+    if (s.alive && s.sock && !s.sock.destroyed) s.sock.write(frame('R', `${rows | 0} ${cols | 0}`));
     return true;
   },
   'session.meta': ({ sid, meta }) => {
     const s = getSession(sid);
     Object.assign(s.meta, meta || {});
+    saveMeta(s);
     broadcast({ ev: 'sessions' });
     return sessionInfo(s);
   },
   'session.kill': ({ sid }) => {
     const s = getSession(sid);
-    if (s.alive) s.proc.kill('SIGTERM');
+    if (s.alive) killSession(s);
     else sessions.delete(sid);
     return true;
   },
@@ -433,14 +563,14 @@ const ops = {
     for (const s of sessions.values()) {
       if (!s.alive) continue;
       // descendants del helper python: [shell, ...hijos]
-      out[s.sid] = descendants(rows, s.proc.pid);
+      out[s.sid] = descendants(rows, s.pid);
     }
     return out;
   },
   'proc.kill': ({ pid, signal = 'SIGTERM' }) => {
     return psTable().then((rows) => {
       const allowed = new Set();
-      for (const s of sessions.values()) for (const r of descendants(rows, s.proc.pid)) allowed.add(r.pid);
+      for (const s of sessions.values()) for (const r of descendants(rows, s.pid)) allowed.add(r.pid);
       if (!allowed.has(Number(pid))) throw new Error('Solo se pueden matar procesos de sesiones FRAP');
       process.kill(Number(pid), signal);
       return true;
@@ -669,18 +799,28 @@ server.on('upgrade', (req, socket, head) => {
   });
 });
 
+// Cerrar el bridge NO cierra las terminales (siguen vivas para el próximo bridge),
+// salvo con --kill-sessions.
 function shutdown() {
-  for (const s of sessions.values()) if (s.alive) s.proc.kill('SIGTERM');
-  process.exit(0);
+  if (argv.includes('--kill-sessions')) for (const s of sessions.values()) killSession(s);
+  for (const s of sessions.values()) if (s.sock) s.sock.end();
+  setTimeout(() => {
+    try { fs.rmdirSync(SOCK_DIR); } catch (_) { /* quedan terminales vivas: se conserva */ }
+    process.exit(0);
+  }, 50);
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-server.listen(PORT, HOST, () => {
+// primero se reconecta a las terminales que siguen vivas; luego acepta a la UI
+let recovered = 0;
+rediscoverSessions().then((n) => { recovered = n; }, () => {}).then(() => server.listen(PORT, HOST, () => {
   const page = path.resolve(__dirname, '..', 'src', 'index.html');
   const url = `file://${page}#port=${PORT}&token=${TOKEN}`;
   if (process.env.FRAP_QUIET !== '1') {
     console.log(`FRAP bridge v${VERSION} escuchando en ws://${HOST}:${PORT}`);
+    if (recovered) console.log(`Reconectado a ${recovered} terminal${recovered === 1 ? '' : 'es'} abierta${recovered === 1 ? '' : 's'}.`);
+    console.log('Ctrl+C cierra el bridge; las terminales siguen vivas (usa --kill-sessions para cerrarlas también).');
     console.log(`Abre en el navegador:\n  ${url}`);
   }
   if (process.send) process.send({ ready: true, port: server.address().port });
@@ -688,7 +828,7 @@ server.listen(PORT, HOST, () => {
     const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
     spawn(opener, [url], { detached: true, stdio: 'ignore' }).unref();
   }
-});
+}));
 server.on('error', (e) => {
   console.error(`No se pudo iniciar el bridge: ${e.message}`);
   process.exit(1);

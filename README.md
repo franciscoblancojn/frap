@@ -20,7 +20,9 @@ Un navegador no puede ejecutar procesos por sí solo, así que FRAP usa un **bri
 node bridge/frap-bridge.js          # o: npm start (lo abre en el navegador)
 ```
 
-Imprime una URL `file:///…/src/index.html#port=7681&token=…`. Ábrela una vez: el token se guarda y desde entonces basta con abrir `src/index.html` (doble clic) mientras el bridge esté corriendo. Las terminales viven en el bridge, así que si recargas o cierras la pestaña siguen corriendo y se re-adjuntan con su historial.
+Imprime una URL `file:///…/src/index.html#port=7681&token=…`. Ábrela una vez: el token se guarda y desde entonces basta con abrir `src/index.html` (doble clic) mientras el bridge esté corriendo.
+
+**Las terminales son persistentes.** Cada una es un proceso independiente del navegador y del bridge. Si recargas la página, cierras la pestaña o **reinicias el bridge** (o se cae), siguen corriendo, igual que claude, codex, opencode y las Acciones como la VPN. Al volver, la página se reconecta sola y recupera el historial, incluida la salida que produjeron mientras no estabas. Una terminal solo se cierra cuando cierras su pestaña, cuando termina su proceso, o si arrancas el bridge con `node bridge/frap-bridge.js --kill-sessions` y luego lo detienes con Ctrl+C.
 
 Requisitos: Node ≥ 18, Python 3, Linux (macOS debería funcionar; no está probado).
 
@@ -91,6 +93,12 @@ Requiere los clientes del sistema: `mysql`, `psql` o `sqlite3`.
 | `FRAP_FS_ROOT` | `$HOME` | raíz permitida para leer y escribir archivos |
 | `FRAP_ALLOW_ORIGINS` | — | Origins http extra permitidos (coma) |
 | `FRAP_PYTHON` | `python3` | intérprete para el PTY |
+
+## Problemas frecuentes
+
+- **"Operación desconocida: db.list"**, o una barra amarilla que dice que el bridge es una versión anterior. El bridge que está corriendo arrancó antes de actualizar FRAP (Node carga el código al iniciar). Reinícialo: en su terminal pulsa Ctrl+C y vuelve a ejecutar `node bridge/frap-bridge.js`. Desde la versión 1.1 las terminales sobreviven al reinicio; un bridge 1.0 todavía las cierra.
+- **Recuperar una conversación de un agente** cuya terminal se cerró: claude y codex guardan sus conversaciones en disco. Usa `claude --continue` (la última) o `claude --resume` (elegir), `codex resume --last`, u `opencode --continue`, en la misma carpeta.
+- **"No se pudo conectar al bridge"**: el bridge no está corriendo, o el token o el puerto no coinciden. Ábrelo con la URL que imprime al arrancar.
 
 ## Desarrollo
 
