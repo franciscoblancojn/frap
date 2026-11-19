@@ -23,6 +23,13 @@ navegador (file://src/index.html)                     máquina local
 - **YouTube:** rechaza embeds desde `file://` (error 153, sin Referer). Por eso el bridge sirve `GET /yt-player`, un relé en `http://127.0.0.1:<puerto>` que carga la IFrame API de YouTube. La UI lo incrusta y le habla por `postMessage` (`{frap:'yt', cmd:'load'|'play'|'pause'|'seek'|'volume'}`), y recibe de vuelta `ready`, `state`, `time` y `error`. La UI valida `event.source` y `event.origin`, y el relé solo acepta mensajes de su ventana padre. El relé no usa token, y el WebSocket rechaza su Origin http, así que no da acceso al bridge.
 - El reproductor (dock) vive fuera de `#rbody`, así que re-renderizar el panel no corta la música. Fuera de la pestaña Música el video se minimiza, pero sigue sonando.
 
+## Temporizador
+
+- Vive solo en la UI, en `state.timers`. Cada temporizador guarda `nextAt` (marca de tiempo absoluta), así que sobrevive a recargas. Si al volver a abrir FRAP alguno ya venció, avisa una vez marcado como "atrasado" y se reprograma desde ese momento, sin acumular avisos.
+- `tickTimers()` corre cada segundo. Dispara los vencidos y actualiza los contadores en el sitio, sin re-renderizar. Con la pestaña en segundo plano Chrome puede espaciar los timers, y el aviso puede llegar hasta ~1 min tarde.
+- El aviso bloqueante es `#alarm`, por encima de modales y toasts. Quita el foco de xterm, atrapa el teclado (Tab cicla entre sus botones) y desactiva los atajos. Varios avisos simultáneos se ponen en cola.
+- El sonido se genera con WebAudio, sin archivos.
+
 ## Bases de datos
 
 - `bridge/db.js` es el núcleo compartido. Lee y escribe `FRAP_HOME/databases.env` (claves `FRAP_DB_<ID>_{NAME,ENGINE,HOST,PORT,USER,PASSWORD,DATABASE,UI_WRITE}`, archivo 0600), clasifica el SQL y ejecuta con los clientes del sistema. No hay drivers npm.

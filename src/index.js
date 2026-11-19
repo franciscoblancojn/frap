@@ -104,6 +104,8 @@
     db: { open: false, connId: null, sql: '', limit: 500, history: [] }, // pestaña DB del panel central
     // música: tracks = [{id, type: 'file'|'youtube', title, videoId?, duration?}]; los archivos viven en IndexedDB
     music: { tracks: [], current: null, loop: 'all', shuffle: false, volume: 80 },
+    // temporizadores: [{id, icon, title, desc, kind: 'repeat'|'once', every (seg), mode: 'toast'|'modal', sound, enabled, nextAt, startedAt}]
+    timers: [],
     settings: {
       fontSize: 13,
       pageMode: 'tab', // cómo se abren las páginas por defecto: 'tab' (navegador) | 'iframe' (pestaña interna)
@@ -843,6 +845,7 @@
     pages: renderPages,
     dbs: renderDbs,
     music: renderMusic,
+    timers: renderTimers,
     agents: () => renderConfigList('agents'),
     skills: () => renderConfigList('skills'),
     commands: () => renderConfigList('commands'),
@@ -855,7 +858,7 @@
     for (const b of $$('#rtabs button')) b.classList.toggle('active', b.dataset.rtab === name);
     renderRight();
     if (name === 'procs') pollProcs();
-    else if (name !== 'prompts' && name !== 'actions' && name !== 'pages' && name !== 'dbs' && name !== 'music') loadConfig();
+    else if (name !== 'prompts' && name !== 'actions' && name !== 'pages' && name !== 'dbs' && name !== 'music' && name !== 'timers') loadConfig();
     if (name === 'dbs') loadDbs();
     updateDock();
   }
@@ -2242,6 +2245,336 @@
     }, `${Player.playing ? '♪' : '⏸'} ${t.title.length > 32 ? t.title.slice(0, 31) + '…' : t.title}`)] : []));
   }
 
+  // ---------- temporizador: recordatorios recurrentes o de una vez, con aviso simple o bloqueante ----------
+  const TIMER_ICONS = ['⏰', '💧', '🧘', '👀', '🍅', '☕', '🚶', '🍎', '💊', '📞', '🧠', '🛌', '🏋️', '🌿', '📝', '🔔', '🎯', '🚀', '🧹', '🐶'];
+  const TIMER_UNITS = { s: 1, min: 60, h: 3600 };
+  const TIMER_PRESETS = [
+    { icon: '💧', title: 'Toma agua', desc: 'Un vaso de agua. Tu cerebro te lo agradece.', kind: 'repeat', every: 3600, mode: 'toast' },
+    { icon: '🧘', title: 'Estírate', desc: 'Levántate, estira espalda, cuello y muñecas.', kind: 'repeat', every: 50 * 60, mode: 'modal' },
+    { icon: '👀', title: 'Descansa la vista', desc: 'Regla 20-20-20: mira algo a 6 metros durante 20 segundos.', kind: 'repeat', every: 20 * 60, mode: 'toast' },
+    { icon: '🚶', title: 'Camina un poco', desc: 'Da una vuelta de 5 minutos.', kind: 'repeat', every: 2 * 3600, mode: 'modal' },
+    { icon: '🍅', title: 'Pomodoro', desc: '25 minutos de foco terminados. Toma 5 de descanso.', kind: 'once', every: 25 * 60, mode: 'modal' },
+    { icon: '☕', title: 'Pausa', desc: 'Fin del descanso: de vuelta al trabajo.', kind: 'once', every: 5 * 60, mode: 'toast' },
+  ];
+  const timerById = (id) => state.timers.find((t) => t.id === id) || null;
+
+  function fmtCountdown(sec) {
+    sec = Math.max(0, Math.ceil(sec));
+    const hh = Math.floor(sec / 3600);
+    const mm = Math.floor((sec % 3600) / 60);
+    const ss = String(sec % 60).padStart(2, '0');
+    return hh ? `${hh}:${String(mm).padStart(2, '0')}:${ss}` : `${mm}:${ss}`;
+  }
+  function fmtEvery(sec) {
+    if (sec % 3600 === 0) return `${sec / 3600} h`;
+    if (sec % 60 === 0) return `${sec / 60} min`;
+    return `${sec} s`;
+  }
+  const timerLeft = (t) => (t.enabled && t.nextAt ? (t.nextAt - Date.now()) / 1000 : null);
+
+  function startTimer(t) {
+    t.enabled = true;
+    t.startedAt = Date.now();
+    t.nextAt = Date.now() + t.every * 1000;
+    save();
+  }
+  function stopTimer(t) {
+    t.enabled = false;
+    t.nextAt = null;
+    save();
+  }
+
+  // ----- disparo -----
+  function fireTimer(t, late = false) {
+    if (t.kind === 'repeat') {
+      // se reprograma desde ahora (no se acumulan avisos atrasados)
+      t.startedAt = Date.now();
+      t.nextAt = Date.now() + t.every * 1000;
+    } else {
+      t.enabled = false;
+      t.nextAt = null;
+    }
+    save();
+    if (t.sound) chime(t.mode === 'modal');
+    notifySystem(t);
+    flashTitle(t);
+    if (t.mode === 'modal') showAlarm(t, late);
+    else timerToast(t, late);
+    if (state.ui.rtab === 'timers') renderRight();
+  }
+
+  function timerToast(t, late) {
+    const el = h('div.toast.timer-toast', { title: 'Clic para cerrar', onclick: () => el.remove() },
+      h('span.tt-icon', t.icon || '⏰'),
+      h('div', h('div.tt-title', t.title + (late ? ' (atrasado)' : '')), t.desc ? h('div.tt-desc', t.desc) : null));
+    $('#toasts').append(el);
+    setTimeout(() => el.remove(), 12000);
+  }
+
+  // Aviso bloqueante: overlay a pantalla completa por encima de todo; hay que atenderlo.
+  const alarmQueue = [];
+  function showAlarm(t, late) {
+    alarmQueue.push({ t, late });
+    if (alarmQueue.length === 1) renderAlarm();
+  }
+  function renderAlarm() {
+    const root = $('#alarm');
+    const item = alarmQueue[0];
+    if (!item) { root.classList.add('hidden'); const at = activeTerm(); if (at) at.term.focus(); return; }
+    const { t, late } = item;
+    const done = (snoozeMin) => {
+      if (snoozeMin) {
+        const cur = timerById(t.id);
+        if (cur) {
+          cur.enabled = true;
+          cur.startedAt = Date.now();
+          cur.nextAt = Date.now() + snoozeMin * 60 * 1000;
+          save();
+          toast(`${t.icon || '⏰'} ${t.title}: pospuesto ${snoozeMin} min`);
+        }
+      }
+      alarmQueue.shift();
+      renderAlarm();
+      if (state.ui.rtab === 'timers') renderRight();
+    };
+    const ok = h('button.primary.alarm-ok', { onclick: () => done(0) }, 'Listo');
+    root.replaceChildren(h('div.alarm-card', { role: 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': 'alarm-title' },
+      h('div.alarm-icon', t.icon || '⏰'),
+      h('h2#alarm-title', t.title),
+      t.desc ? h('p.alarm-desc', t.desc) : null,
+      h('p.muted.alarm-meta', `${t.kind === 'preview' ? 'Vista previa del aviso' : t.kind === 'repeat' ? `Se repite cada ${fmtEvery(t.every)}` : 'Temporizador terminado'}${late ? ' · llegó atrasado' : ''}${alarmQueue.length > 1 ? ` · ${alarmQueue.length - 1} más en cola` : ''}`),
+      h('div.alarm-acts',
+        t.kind === 'preview' ? null : h('button', { onclick: () => done(5) }, 'Posponer 5 min'),
+        t.kind === 'preview' ? null : h('button', { onclick: () => done(15) }, '15 min'),
+        ok)));
+    root.classList.remove('hidden');
+    // el foco sale de la terminal: las teclas no deben llegar a xterm mientras está el aviso
+    if (document.activeElement) document.activeElement.blur();
+    setTimeout(() => ok.focus(), 30);
+  }
+  // atrapa el foco dentro del aviso bloqueante
+  document.addEventListener('keydown', (e) => {
+    if ($('#alarm').classList.contains('hidden')) return;
+    const btns = $$('#alarm button');
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const i = btns.indexOf(document.activeElement);
+      btns[(i + (e.shiftKey ? -1 : 1) + btns.length) % btns.length].focus();
+    } else if (!btns.includes(document.activeElement) || e.key !== 'Enter') {
+      if (e.key !== 'Enter' && e.key !== ' ') { e.preventDefault(); e.stopPropagation(); }
+    }
+  }, true);
+
+  // ----- sonido, notificación del sistema y título -----
+  let audioCtx = null;
+  function chime(strong) {
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      const notes = strong ? [880, 1175, 880, 1175] : [880, 1175];
+      notes.forEach((f, i) => {
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        const t0 = audioCtx.currentTime + i * 0.22;
+        o.type = 'sine';
+        o.frequency.value = f;
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.exponentialRampToValueAtTime(0.25, t0 + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.2);
+        o.connect(g).connect(audioCtx.destination);
+        o.start(t0);
+        o.stop(t0 + 0.21);
+      });
+    } catch (_) { /* sin audio */ }
+  }
+  const canNotify = () => typeof Notification !== 'undefined';
+  function notifySystem(t) {
+    if (!canNotify() || Notification.permission !== 'granted' || !document.hidden) return;
+    try { new Notification(`${t.icon || '⏰'} ${t.title}`, { body: t.desc || '', tag: `frap-${t.id}`, requireInteraction: t.mode === 'modal' }); } catch (_) { /* nada */ }
+  }
+  let titleTimer = null;
+  const baseTitle = document.title;
+  function flashTitle(t) {
+    if (!document.hidden) return;
+    clearInterval(titleTimer);
+    let on = false;
+    titleTimer = setInterval(() => { on = !on; document.title = on ? `${t.icon || '⏰'} ${t.title}` : baseTitle; }, 1000);
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) { clearInterval(titleTimer); titleTimer = null; document.title = baseTitle; }
+  });
+
+  // ----- reloj -----
+  function tickTimers() {
+    const now = Date.now();
+    for (const t of state.timers) {
+      if (t.enabled && t.nextAt && t.nextAt <= now) fireTimer(t, now - t.nextAt > 60 * 1000);
+    }
+    // actualiza contadores visibles sin re-renderizar
+    for (const el of $$('[data-timer-left]')) {
+      const t = timerById(el.dataset.timerLeft);
+      if (!t) continue;
+      const left = timerLeft(t);
+      el.textContent = left == null ? (t.kind === 'once' && t.startedAt ? 'terminado' : 'apagado') : fmtCountdown(left);
+    }
+    for (const el of $$('[data-timer-bar]')) {
+      const t = timerById(el.dataset.timerBar);
+      const left = t && timerLeft(t);
+      el.style.width = left == null ? '0%' : `${Math.min(100, Math.max(0, 100 - (left / t.every) * 100))}%`;
+    }
+    renderStatusTimer();
+  }
+  setInterval(tickTimers, 1000);
+
+  function renderStatusTimer() {
+    const el = $('#st-timer');
+    if (!el) return;
+    const next = state.timers.filter((t) => t.enabled && t.nextAt).sort((a, b) => a.nextAt - b.nextAt)[0];
+    const label = next ? `${next.icon || '⏰'} ${fmtCountdown(timerLeft(next))} ${next.title.length > 18 ? next.title.slice(0, 17) + '…' : next.title}` : '';
+    if (el.dataset.label === label) return;
+    el.dataset.label = label;
+    el.replaceChildren(...(next ? [h('span.st-timer', {
+      title: `Próximo aviso: ${next.title} — clic para ver temporizadores`,
+      onclick: () => { if (state.ui.hideRight) togglePanel('right'); setRtab('timers'); },
+    }, label)] : []));
+  }
+
+  // ----- panel derecho -----
+  function renderTimers() {
+    const notifBtn = canNotify() && Notification.permission === 'default'
+      ? h('button.mini', {
+        title: 'Para recibir avisos aunque FRAP esté en segundo plano',
+        onclick: async () => {
+          try { await Notification.requestPermission(); } catch (_) { /* nada */ }
+          toast(Notification.permission === 'granted' ? 'Notificaciones activadas' : 'El navegador no permitió notificaciones (en file:// suele bloquearlas)', Notification.permission === 'granted' ? 'ok' : 'err');
+          renderRight();
+        },
+      }, '🔔')
+      : null;
+    const head = section('Temporizador',
+      notifBtn,
+      h('button.mini', { title: 'Agregar desde una plantilla', onclick: openTimerPresets }, '✨ Plantillas'),
+      h('button.mini.primary', { onclick: () => editTimer() }, '+ Nuevo'));
+    const hint = h('p.muted', { style: 'margin:0 2px 8px;font-size:11px' },
+      '🔔 aviso simple: aparece en la esquina sin interrumpir · 🛑 bloquea la pantalla hasta que lo atiendas (puedes posponer).');
+    if (!state.timers.length) {
+      return [head, hint, h('p.muted', 'Aún no hay temporizadores. Crea uno o usa una plantilla como "💧 Toma agua cada 1 h".')];
+    }
+    return [head, hint, ...state.timers.map((t) => {
+      const left = timerLeft(t);
+      const finished = !t.enabled && t.kind === 'once' && t.startedAt;
+      return h(`div.card.timer-card${t.enabled ? '.on' : ''}`,
+        h('div.timer-top',
+          h('span.timer-icon', t.icon || '⏰'),
+          h('div.timer-main',
+            h('div.title', h('span.name', { title: t.title }, t.title)),
+            t.desc ? h('div.desc', t.desc) : null,
+            h('div.timer-meta',
+              h('span.badge', { title: t.mode === 'modal' ? 'Bloquea la pantalla' : 'Aviso simple' }, t.mode === 'modal' ? '🛑 bloquea' : '🔔 aviso'),
+              h('span.badge', t.kind === 'repeat' ? `cada ${fmtEvery(t.every)}` : `una vez · ${fmtEvery(t.every)}`),
+              t.sound ? h('span.badge', { title: 'Con sonido' }, '🔊') : null)),
+          h('button.switch', {
+            class: `switch ${t.enabled ? 'on' : 'off'}`,
+            role: 'switch', 'aria-checked': String(!!t.enabled),
+            title: t.enabled ? 'Apagar' : 'Encender (empieza a contar desde ahora)',
+            onclick: () => { if (t.enabled) stopTimer(t); else startTimer(t); renderRight(); tickTimers(); },
+          })),
+        h('div.timer-bottom',
+          h('span.timer-left', { dataset: { timerLeft: t.id } }, left == null ? (finished ? 'terminado' : 'apagado') : fmtCountdown(left)),
+          h('div.timer-track', h('div.timer-bar', { dataset: { timerBar: t.id } })),
+          h('button.icon.mini', { title: 'Reiniciar la cuenta', onclick: () => { startTimer(t); renderRight(); tickTimers(); } }, '↺'),
+          h('button.icon.mini', { title: 'Probar el aviso ahora', onclick: () => previewTimer(t) }, '▶'),
+          h('button.icon.mini', { title: 'Editar', onclick: () => editTimer(t) }, '✎'),
+          h('button.icon.mini', { title: 'Eliminar', onclick: () => deleteTimer(t) }, '✕')));
+    })];
+  }
+
+  function previewTimer(t) {
+    if (t.sound) chime(t.mode === 'modal');
+    if (t.mode === 'modal') showAlarm({ ...t, kind: 'preview' }, false);
+    else timerToast(t, false);
+  }
+
+  function editTimer(t, preset) {
+    const isNew = !t;
+    const src = t || preset || {};
+    let icon = src.icon || '⏰';
+    const iconBtns = h('div.icon-grid', TIMER_ICONS.map((ic) => h('button.icon-pick', {
+      class: `icon-pick${ic === icon ? ' sel' : ''}`,
+      title: ic,
+      onclick: (e) => {
+        icon = ic;
+        customIcon.value = '';
+        $$('.icon-pick', iconBtns).forEach((b) => b.classList.toggle('sel', b === e.currentTarget));
+      },
+    }, ic)));
+    const customIcon = h('input', { placeholder: 'u otro emoji', maxlength: '4', style: 'width:110px', value: TIMER_ICONS.includes(icon) ? '' : icon });
+    customIcon.addEventListener('input', () => {
+      if (customIcon.value.trim()) { icon = customIcon.value.trim(); $$('.icon-pick', iconBtns).forEach((b) => b.classList.remove('sel')); }
+    });
+    const title = h('input', { value: src.title || '', placeholder: 'Toma agua' });
+    const desc = h('textarea.prompt-body', { placeholder: 'Descripción opcional que se muestra en el aviso', style: 'min-height:60px' });
+    desc.value = src.desc || '';
+    const every = src.every || 3600;
+    const unit = every % 3600 === 0 ? 'h' : every % 60 === 0 ? 'min' : 's';
+    const amount = h('input', { type: 'number', min: '1', value: String(every / TIMER_UNITS[unit]), style: 'width:90px' });
+    const unitSel = h('select', h('option', { value: 's' }, 'segundos'), h('option', { value: 'min' }, 'minutos'), h('option', { value: 'h' }, 'horas'));
+    unitSel.value = unit;
+    const kind = h('select', h('option', { value: 'repeat' }, 'Repetir cada…'), h('option', { value: 'once' }, 'Una vez, dentro de…'));
+    kind.value = src.kind || 'repeat';
+    const mode = h('select', h('option', { value: 'toast' }, '🔔 Aviso simple (no bloquea)'), h('option', { value: 'modal' }, '🛑 Bloquear la pantalla con un aviso'));
+    mode.value = src.mode || 'toast';
+    const sound = h('input', { type: 'checkbox' });
+    sound.checked = src.sound !== false;
+    const doSave = () => {
+      const secs = Math.round(Number(amount.value) * TIMER_UNITS[unitSel.value]);
+      if (!title.value.trim()) { toast('El título es obligatorio', 'err'); return; }
+      if (!(secs >= 1)) { toast('El intervalo debe ser mayor que 0', 'err'); return; }
+      const changedTiming = !t || t.every !== secs || t.kind !== kind.value;
+      if (isNew) { t = { id: uid() }; state.timers.push(t); }
+      Object.assign(t, { icon, title: title.value.trim(), desc: desc.value.trim(), kind: kind.value, every: secs, mode: mode.value, sound: sound.checked });
+      if (isNew || (changedTiming && t.enabled)) startTimer(t); else save();
+      modalClose(true);
+      if (state.ui.rtab !== 'timers') setRtab('timers'); else renderRight();
+      tickTimers();
+      if (isNew) toast(`${icon} ${t.title}: ${t.kind === 'repeat' ? `cada ${fmtEvery(secs)}` : `en ${fmtEvery(secs)}`}`, 'ok');
+    };
+    title.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSave(); });
+    openModal({
+      title: isNew ? 'Nuevo temporizador' : `Editar · ${t.title}`,
+      body: [
+        h('div.field', h('label', 'Ícono'), iconBtns, customIcon),
+        h('div.field', h('label', 'Título'), title),
+        h('div.field', h('label', 'Descripción'), desc),
+        h('div.field', h('label', 'Cuándo'), h('div.field-row', kind, amount, unitSel)),
+        h('div.field', h('label', 'Tipo de aviso'), mode),
+        h('label.muted', sound, ' Sonar al avisar'),
+      ],
+      foot: [h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, isNew ? 'Crear y empezar' : 'Guardar')],
+    });
+  }
+
+  function openTimerPresets() {
+    openModal({
+      title: 'Plantillas de temporizador',
+      body: [
+        h('p.muted', { style: 'margin:0' }, 'Elige una para crearla; puedes ajustarla antes de guardar.'),
+        ...TIMER_PRESETS.map((p) => h('div.card.clickable', { onclick: () => { modalClose(true); editTimer(null, p); } },
+          h('div.title', h('span', { style: 'font-size:18px' }, p.icon), h('span.name', p.title),
+            h('span.badge', p.mode === 'modal' ? '🛑 bloquea' : '🔔 aviso'),
+            h('span.badge', p.kind === 'repeat' ? `cada ${fmtEvery(p.every)}` : `una vez · ${fmtEvery(p.every)}`)),
+          h('div.desc', p.desc))),
+      ],
+    });
+  }
+
+  async function deleteTimer(t) {
+    if (!(await confirmBox(`¿Eliminar "${t.title}"?`))) return;
+    state.timers = state.timers.filter((x) => x.id !== t.id);
+    save();
+    renderRight();
+    tickTimers();
+  }
+
   // ---------- configuración de agentes (agents/skills/commands/hooks/memory) ----------
   let config = null;
   let configKey = '';
@@ -2490,6 +2823,7 @@
     return e.shiftKey && ['KeyT', 'KeyW', 'KeyB', 'KeyP', 'KeyC', 'KeyX', 'KeyO', 'KeyD', 'KeyM'].includes(e.code);
   }
   document.addEventListener('keydown', (e) => {
+    if (!$('#alarm').classList.contains('hidden')) return; // el aviso bloqueante tiene prioridad
     if (e.key === 'Escape' && modalClose) { modalClose(); return; }
     if (!isAppShortcut(e) || modalClose) return;
     e.preventDefault();
@@ -2566,6 +2900,7 @@
       }
     } catch (_) { /* sin estado remoto */ }
     await syncSessions();
+    tickTimers();
     loadConfig(true);
     loadDbs();
     pollProcs();
