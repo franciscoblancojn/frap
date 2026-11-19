@@ -21,7 +21,7 @@ const ENGINES = {
   postgres: { label: 'PostgreSQL', client: 'psql', port: 5432 },
   sqlite: { label: 'SQLite', client: 'sqlite3', port: null },
 };
-const FIELDS = ['NAME', 'ENGINE', 'HOST', 'PORT', 'USER', 'PASSWORD', 'DATABASE', 'UI_WRITE'];
+const FIELDS = ['NAME', 'ENGINE', 'HOST', 'PORT', 'USER', 'PASSWORD', 'DATABASE', 'UI_WRITE', 'ENABLED', 'AI'];
 const KEY_RE = new RegExp(`^FRAP_DB_([A-Z0-9_]+?)_(${FIELDS.join('|')})$`);
 const NULL_MARK = '␀FRAP_NULL␀';
 const MAX_BYTES = 20 * 1024 * 1024;
@@ -41,7 +41,12 @@ function quoteEnvValue(v) {
   return `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r')}"`;
 }
 
-/** Lee el .env y devuelve [{id, name, engine, host, port, user, password, database, uiWrite}]. */
+const isOff = (v) => v != null && /^(0|false|no|off)$/i.test(String(v).trim());
+
+/**
+ * Lee el .env y devuelve [{id, name, engine, host, port, user, password, database, uiWrite, enabled, ai}].
+ * `enabled` (activa) y `ai` (usable por agentes) valen true si faltan: así las conexiones viejas siguen igual.
+ */
 function loadConnections(envFile) {
   let text = '';
   try { text = fs.readFileSync(envFile, 'utf8'); } catch (_) { return []; }
@@ -65,6 +70,8 @@ function loadConnections(envFile) {
     password: c.PASSWORD || '',
     database: c.DATABASE || '',
     uiWrite: c.UI_WRITE === '1' || c.UI_WRITE === 'true',
+    enabled: !isOff(c.ENABLED),
+    ai: !isOff(c.AI),
   }));
 }
 
@@ -72,7 +79,7 @@ function saveConnections(envFile, conns, cliPath) {
   const lines = [
     '# FRAP — conexiones a bases de datos.',
     '# Se gestiona desde FRAP (panel "Bases de datos"); se puede editar a mano.',
-    '# Los agentes (claude, codex, opencode) las usan SOLO EN LECTURA a través de:',
+    '# Los agentes (claude, codex, opencode) usan SOLO EN LECTURA las que tienen ENABLED=1 y AI=1, a través de:',
     `#   node ${cliPath || 'bridge/frap-db.js'} <id> "SELECT …"`,
     '# Contiene contraseñas: no lo subas a git ni lo compartas.',
     '',
@@ -90,6 +97,8 @@ function saveConnections(envFile, conns, cliPath) {
     }
     lines.push(`${p}DATABASE=${quoteEnvValue(c.database)}`);
     lines.push(`${p}UI_WRITE=${c.uiWrite ? 1 : 0}`);
+    lines.push(`${p}ENABLED=${c.enabled === false ? 0 : 1}`);
+    lines.push(`${p}AI=${c.ai === false ? 0 : 1}`);
     lines.push('');
   }
   fs.mkdirSync(path.dirname(envFile), { recursive: true, mode: 0o700 });
@@ -374,6 +383,7 @@ async function runQuery(conn, sql, opts = {}) {
   const timeoutMs = opts.timeoutMs || 60000;
   const engine = conn.engine;
   if (!ENGINES[engine]) throw new Error(`Motor no soportado: ${engine}`);
+  if (conn.enabled === false) throw new Error(`La conexión "${conn.name || conn.id}" está desactivada. Actívala en FRAP → panel "Bases de datos".`);
   if (write && !conn.uiWrite) throw new Error('Esta conexión no permite escritura');
   const stmt = write ? String(sql || '').trim() : assertReadOnly(sql, engine);
   if (!stmt) throw new Error('Consulta vacía');

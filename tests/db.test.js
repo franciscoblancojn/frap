@@ -114,8 +114,8 @@ test('parseMysqlXml distingue NULL de "NULL" y decodifica entidades', () => {
 test('.env: guardar y leer conserva caracteres especiales y permisos 0600', () => {
   const env = path.join(root, 'cfg', 'databases.env');
   const conns = [
-    { id: 'prod', name: 'Producción "A"', engine: 'mysql', host: '10.0.0.1', port: '3306', user: 'lector', password: 'p@ss "x" \\ $HOME #no', database: 'app', uiWrite: false },
-    { id: 'local_db', name: 'Local', engine: 'sqlite', host: '', port: '', user: '', password: '', database: '/tmp/a b.db', uiWrite: true },
+    { id: 'prod', name: 'Producción "A"', engine: 'mysql', host: '10.0.0.1', port: '3306', user: 'lector', password: 'p@ss "x" \\ $HOME #no', database: 'app', uiWrite: false, enabled: true, ai: false },
+    { id: 'local_db', name: 'Local', engine: 'sqlite', host: '', port: '', user: '', password: '', database: '/tmp/a b.db', uiWrite: true, enabled: false, ai: true },
   ];
   db.saveConnections(env, conns, '/x/frap-db.js');
   assert.deepEqual(db.loadConnections(env), conns);
@@ -209,4 +209,31 @@ test('CLI frap-db: list, --tables, --describe, consulta, --json y rechazo de esc
   assert.notEqual(w.status, 0);
   assert.match(w.stderr, /Solo lectura/);
   assert.notEqual(cli('nope', 'SELECT 1').status, 0);
+
+  // solo las conexiones activas y con uso por IA son visibles para los agentes
+  const env = path.join(home, 'databases.env');
+  const base = { engine: 'sqlite', host: '', port: '', user: '', password: '', database: sqliteFile };
+  db.saveConnections(env, [
+    { ...base, id: 'tienda', name: 'Tienda' },
+    { ...base, id: 'privada', name: 'Privada', ai: false },
+    { ...base, id: 'apagada', name: 'Apagada', enabled: false },
+  ]);
+  const l2 = cli('list');
+  assert.match(l2.stdout, /tienda/);
+  assert.doesNotMatch(l2.stdout, /privada|apagada/);
+  const p = cli('privada', 'SELECT 1');
+  assert.notEqual(p.status, 0);
+  assert.match(p.stderr, /no está habilitada para agentes/);
+  const a = cli('apagada', 'SELECT 1');
+  assert.notEqual(a.status, 0);
+  assert.match(a.stderr, /desactivada/);
+  db.saveConnections(env, [{ ...base, id: 'privada', name: 'Privada', ai: false }]);
+  assert.match(cli('list').stderr, /ninguna conexión está habilitada/);
+});
+
+test('.env: ENABLED/AI faltantes valen 1 (conexiones viejas) y 0/false/off los apagan', () => {
+  const env = path.join(root, 'flags.env');
+  fs.writeFileSync(env, 'FRAP_DB_A_NAME=a\nFRAP_DB_B_NAME=b\nFRAP_DB_B_ENABLED=0\nFRAP_DB_B_AI=false\nFRAP_DB_C_NAME=c\nFRAP_DB_C_AI=off\n');
+  const byId = Object.fromEntries(db.loadConnections(env).map((c) => [c.id, [c.enabled, c.ai]]));
+  assert.deepEqual(byId, { a: [true, true], b: [false, false], c: [true, false] });
 });

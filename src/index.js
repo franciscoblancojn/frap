@@ -241,7 +241,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'config.scan', 'db.list', 'db.save', 'db.query', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
+  const REQUIRED_OPS = ['session.create', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.query', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -1994,8 +1994,10 @@
       if (state.ui.rtab === 'dbs') renderRight(); else toast(e.message, 'err');
       return;
     }
-    if (state.db.connId && !dbConnById(state.db.connId)) state.db.connId = null;
-    if (!state.db.connId && dbInfo.conns[0]) state.db.connId = dbInfo.conns[0].id;
+    const cur = dbConnById(state.db.connId);
+    if (state.db.connId && !(cur && cur.enabled)) state.db.connId = null;
+    const first = dbInfo.conns.find((c) => c.enabled);
+    if (!state.db.connId && first) state.db.connId = first.id;
     if (state.ui.rtab === 'dbs') renderRight();
     if (dbPane) { renderDbBar(); loadDbTables(); }
   }
@@ -2011,7 +2013,7 @@
     const sk = dbInfo.skills || {};
     const agents = h('div.card.db-agents',
       h('div.title', h('span.name', '🤖 Acceso para agentes (solo lectura)')),
-      h('div.desc', 'claude, codex y opencode consultan estas bases con el CLI frap-db, que solo permite lecturas y nunca muestra contraseñas.'),
+      h('div.desc', { title: 'claude, codex y opencode usan el CLI frap-db: solo lectura y nunca ve contraseñas' }, 'Los agentes solo ven las conexiones con 🤖 Uso por IA.'),
       h('div.path', { title: dbInfo.envFile }, `credenciales: ${tilde(dbInfo.envFile)} (0600)`),
       h('div.acts',
         h('button.mini', { title: 'Escribe la skill frap-db en ~/.claude/skills y ~/.codex/skills', onclick: installDbSkill },
@@ -2020,7 +2022,10 @@
     if (!dbInfo.conns.length) return [head, agents, h('p.muted', 'Aún no hay conexiones. Pulsa "+ Nueva" y agrega host, usuario y contraseña.')];
     return [head, agents, ...dbInfo.conns.map((c) => {
       const missing = dbInfo.clients && !dbInfo.clients[c.engine];
-      return h('div.card.clickable', { title: 'Abrir en la pestaña DB', onclick: () => openDbView(c.id) },
+      return h(`div.card.db-card${c.enabled ? '.clickable' : '.off'}`, {
+        title: c.enabled ? 'Abrir en la pestaña DB' : 'Conexión desactivada',
+        onclick: () => { if (c.enabled) openDbView(c.id); },
+      },
         h('div.title',
           h('span.name', `🗄 ${c.name}`),
           h(`span.badge.db-${c.engine}`, c.engine),
@@ -2029,8 +2034,35 @@
           h('button.icon.mini', { title: 'Editar', onclick: (e) => { e.stopPropagation(); editDb(c); } }, '✎'),
           h('button.icon.mini', { title: 'Eliminar', onclick: (e) => { e.stopPropagation(); deleteDb(c); } }, '✕')),
         h('div.path', { title: c.id }, `${dbTarget(c)} · id: ${c.id}`),
+        h('div.db-flags',
+          h('label.db-flag', { onclick: (e) => e.stopPropagation() },
+            dbSwitch(c, 'enabled', c.enabled ? 'Desactivar la conexión (ni la pestaña DB ni los agentes podrán usarla)' : 'Activar la conexión'),
+            h('span', c.enabled ? 'Activa' : 'Desactivada')),
+          h('label.db-flag', { onclick: (e) => e.stopPropagation() },
+            dbSwitch(c, 'ai', !c.enabled ? 'Activa primero la conexión'
+              : c.ai ? 'Quitar el acceso a claude, codex, opencode…' : 'Permitir que claude, codex, opencode… la consulten (solo lectura)', !c.enabled),
+            h('span', c.enabled && c.ai ? '🤖 Uso por IA' : '🤖 Sin IA'))),
         missing ? h('div.desc', { style: 'color:var(--err)' }, `Falta el cliente ${c.engine === 'postgres' ? 'psql' : c.engine === 'sqlite' ? 'sqlite3' : 'mysql'} en el sistema`) : null);
     })];
+  }
+
+  function dbSwitch(c, key, title, disabled) {
+    const on = key === 'ai' ? c.enabled && c.ai : c.enabled;
+    return h('button', {
+      class: `switch ${on ? 'on' : 'off'}`,
+      role: 'switch', 'aria-checked': String(!!on), title, disabled: !!disabled || !Bridge.ready,
+      onclick: (e) => { e.stopPropagation(); toggleDb(c, key); },
+    });
+  }
+
+  async function toggleDb(c, key) {
+    try {
+      const saved = await Bridge.call('db.toggle', { id: c.id, [key]: !c[key] });
+      toast(key === 'enabled'
+        ? `${c.name}: ${saved.enabled ? 'activada' : 'desactivada'}`
+        : `${c.name}: ${saved.ai ? 'los agentes pueden consultarla' : 'los agentes ya no pueden usarla'}`, 'ok');
+      loadDbs();
+    } catch (e) { toast(e.message, 'err'); }
   }
 
   async function installDbSkill() {
@@ -2065,6 +2097,10 @@
     const database = h('input.mono', { value: c ? c.database : '' });
     const uiWrite = h('input', { type: 'checkbox' });
     uiWrite.checked = !!(c && c.uiWrite);
+    const enabled = h('input', { type: 'checkbox' });
+    enabled.checked = !c || c.enabled !== false;
+    const ai = h('input', { type: 'checkbox' });
+    ai.checked = !c || c.ai !== false;
     const netFields = h('div', { style: 'display:flex;flex-direction:column;gap:8px' },
       h('div.field-row', h('div.field.grow', h('label', 'Host'), host), h('div.field', h('label', 'Puerto'), port)),
       h('div.field-row',
@@ -2085,7 +2121,7 @@
       id: c ? c.id : undefined,
       name: name.value.trim(), engine: engine.value, host: host.value.trim(), port: port.value.trim(),
       user: user.value.trim(), password: c && !pass.value ? null : pass.value,
-      database: database.value.trim(), uiWrite: uiWrite.checked,
+      database: database.value.trim(), uiWrite: uiWrite.checked, enabled: enabled.checked, ai: ai.checked,
     });
     const doSave = async () => {
       try {
@@ -2103,6 +2139,8 @@
         h('div.field-row', h('div.field.grow', h('label', 'Nombre'), name), h('div.field', h('label', 'Motor'), engine)),
         netFields,
         h('div.field', dbLabel, database),
+        h('label.muted', enabled, ' Conexión activa (desactivada, ni la pestaña DB ni los agentes pueden usarla)'),
+        h('label.muted', ai, ' Uso por IA: claude, codex, opencode… pueden consultarla en solo lectura con frap-db'),
         h('label.muted', uiWrite, ' Permitir escritura desde la pestaña DB (pide confirmación). Los agentes siempre son solo lectura.'),
         h('p.muted', { style: 'margin:0;font-size:11px' },
           'Se guarda en el .env del bridge (permisos 0600), no en el navegador. Recomendado: un usuario de BD con permisos solo SELECT.'),
@@ -2208,12 +2246,13 @@
   function renderDbBar() {
     if (!dbPane) return;
     const { conn, write, writeLabel, mode, history } = dbPane;
-    const conns = dbInfo ? dbInfo.conns : [];
+    const conns = dbInfo ? dbInfo.conns.filter((c) => c.enabled) : [];
     conn.replaceChildren(...(conns.length
       ? conns.map((c) => h('option', { value: c.id }, `${c.name} (${c.engine})`))
-      : [h('option', { value: '' }, 'Sin conexiones — agrégalas en el panel derecho')]));
+      : [h('option', { value: '' }, dbInfo && dbInfo.conns.length ? 'Todas las conexiones están desactivadas' : 'Sin conexiones — agrégalas en el panel derecho')]));
     conn.value = state.db.connId || '';
-    const c = dbConnById(state.db.connId);
+    const cc = dbConnById(state.db.connId);
+    const c = cc && cc.enabled ? cc : null;
     writeLabel.classList.toggle('hidden', !(c && c.uiWrite));
     if (!(c && c.uiWrite)) write.checked = false;
     mode.className = `badge ${write.checked ? 'st-error' : 'st-on'}`;
@@ -2226,8 +2265,9 @@
   async function loadDbTables() {
     if (!dbPane) return;
     const list = dbPane.tableList;
-    const c = dbConnById(state.db.connId);
-    if (!c || !Bridge.ready) { list.replaceChildren(h('p.muted', c ? 'Bridge desconectado.' : 'Elige una conexión.')); return; }
+    const cc = dbConnById(state.db.connId);
+    const c = cc && cc.enabled ? cc : null;
+    if (!c || !Bridge.ready) { list.replaceChildren(h('p.muted', c ? 'Bridge desconectado.' : 'Elige una conexión activa.')); return; }
     list.replaceChildren(h('p.muted', 'Cargando tablas…'));
     try {
       const tables = await Bridge.call('db.tables', { id: c.id });

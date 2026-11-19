@@ -21,6 +21,7 @@
 - [x] Acciones: comandos con nombre e interruptor encender/apagar (VPN…), patrón de "lista", log e indicador en la barra de estado
 - [x] Páginas: accesos nombre + URL, abrir en pestaña del navegador (por defecto) o pestaña interna (iframe), modo por página y global
 - [x] Bases de datos: conexiones en `.env` (0600), pestaña DB (tablas, editor, resultados, historial, CSV), CLI `frap-db` de solo lectura para agentes y skill para claude/codex
+- [x] Interruptores por conexión de BD: activa / uso por IA (`db.toggle`; `frap-db` solo ve las habilitadas)
 - [x] Música: archivos (IndexedDB) y YouTube (relé `/yt-player`), bucle (lista/canción), aleatorio sin repetir, arrastrar para reordenar, dock persistente y teclas multimedia
 - [x] Logos de claude, codex, opencode y DB en lanzadores, pestañas y panel izquierdo; favicon propio
 - [x] Temporizador: recordatorios recurrentes o de una vez, aviso simple o bloqueante (posponer), ícono/título/descripción, plantillas, sonido y notificación del sistema

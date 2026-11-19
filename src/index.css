@@ -361,6 +361,9 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .badge.db-postgres { color: #7aa2f7; }
 .badge.db-sqlite { color: #9ece6a; }
 .db-agents { border-style: dashed; }
+.db-card.off { opacity: .55; }
+.db-flags { display: flex; gap: 16px; margin-top: 6px; }
+.db-flag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-2); cursor: default; }
 .db-pane { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); z-index: 1; }
 .db-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--bg-2); flex-wrap: wrap; }
 .db-bar select { padding: 3px 6px; font-size: 12px; max-width: 260px; }

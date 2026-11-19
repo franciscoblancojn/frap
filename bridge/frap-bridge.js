@@ -483,6 +483,8 @@ function dbNormalize(input, existing) {
     password: input.password == null ? (existing ? existing.password : '') : String(input.password),
     database: String(input.database || '').trim(),
     uiWrite: !!input.uiWrite,
+    enabled: input.enabled !== undefined ? input.enabled !== false : existing ? existing.enabled !== false : true,
+    ai: input.ai !== undefined ? input.ai !== false : existing ? existing.ai !== false : true,
   };
   if (c.port && !/^\d{1,5}$/.test(c.port)) throw new Error('Puerto inválido');
   if (engine === 'sqlite') {
@@ -512,6 +514,7 @@ ${cli} <id> "SELECT …" --json --limit 500
 \`\`\`
 
 Reglas:
+- \`list\` muestra solo las conexiones que el usuario habilitó para agentes; las demás se rechazan.
 - Una sola sentencia de lectura por llamada (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN). INSERT/UPDATE/DELETE/DDL se rechazan.
 - Usa siempre LIMIT y pide solo las columnas necesarias.
 - No leas, muestres ni copies el archivo de credenciales (${DB_ENV}).
@@ -625,6 +628,16 @@ const ops = {
     db.saveConnections(DB_ENV, conns, DB_CLI);
     return db.publicConn(c);
   },
+  /** Cambia solo los interruptores de una conexión: `enabled` (activa) y/o `ai` (usable por agentes). */
+  'db.toggle': ({ id, enabled, ai }) => {
+    const conns = dbConns();
+    const c = conns.find((x) => x.id === id);
+    if (!c) throw new Error(`Conexión no encontrada: ${id}`);
+    if (enabled !== undefined) c.enabled = !!enabled;
+    if (ai !== undefined) c.ai = !!ai;
+    db.saveConnections(DB_ENV, conns, DB_CLI);
+    return db.publicConn(c);
+  },
   'db.delete': ({ id }) => {
     const conns = dbConns();
     if (!conns.some((c) => c.id === id)) throw new Error(`Conexión no encontrada: ${id}`);
@@ -633,7 +646,7 @@ const ops = {
   },
   'db.test': async ({ id, conn }) => {
     const existing = id ? dbConn(id) : conn && conn.id ? dbConns().find((c) => c.id === conn.id) : null;
-    const c = conn ? dbNormalize(conn, existing) : existing;
+    const c = { ...(conn ? dbNormalize(conn, existing) : existing), enabled: true };
     const r = await db.runQuery(c, c.engine === 'mysql' ? 'SELECT VERSION() AS version' : c.engine === 'postgres' ? 'SELECT version()' : 'SELECT sqlite_version() AS version', { timeoutMs: 15000 });
     return { ms: r.ms, version: r.rows[0] ? r.rows[0][0] : '' };
   },

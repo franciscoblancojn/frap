@@ -47,12 +47,13 @@ navegador (file://src/index.html)                     máquina local
 
 ## Bases de datos
 
-- `bridge/db.js` es el núcleo compartido. Lee y escribe `FRAP_HOME/databases.env` (claves `FRAP_DB_<ID>_{NAME,ENGINE,HOST,PORT,USER,PASSWORD,DATABASE,UI_WRITE}`, archivo 0600), clasifica el SQL y ejecuta con los clientes del sistema. No hay drivers npm.
+- `bridge/db.js` es el núcleo compartido. Lee y escribe `FRAP_HOME/databases.env` (claves `FRAP_DB_<ID>_{NAME,ENGINE,HOST,PORT,USER,PASSWORD,DATABASE,UI_WRITE,ENABLED,AI}`, archivo 0600), clasifica el SQL y ejecuta con los clientes del sistema. No hay drivers npm.
   - **MySQL / MariaDB:** `mysql --xml --comments`. `--xml` distingue NULL de `'NULL'`. La contraseña va en un `--defaults-extra-file` temporal 0600, nunca en argv. El tiempo límite se fija con una sola sentencia compatible con los dos motores: `SET /*!50708 SESSION MAX_EXECUTION_TIME=… */ /*M!100108 SESSION max_statement_time=… */ @frap=1`. MySQL ignora `/*M!`, MariaDB ignora los `/*!5xxxx` de MySQL 5.7+, y `@frap` evita una sentencia vacía. Verificado con MySQL 8.0 y MariaDB 10.11.
   - **PostgreSQL:** `psql --csv` con un marcador de NULL. La contraseña va en `PGPASSWORD`.
   - **SQLite:** `sqlite3 -csv -safe`.
 - La UI nunca recibe contraseñas: `db.list` y `db.save` devuelven `publicConn`.
 - `bridge/frap-db.js` es el CLI de los agentes. Llama a `runQuery` sin `write`, así que siempre es solo lectura, sin ningún flag que lo cambie.
+- Interruptores por conexión: `ENABLED=0` la desactiva (la UI y `frap-db` la rechazan; `db.test` sí funciona). `AI=0` la oculta a los agentes: `frap-db list` no la muestra y las consultas a ese id fallan. Si faltan, valen 1.
 - Lo que hace la pestaña DB de la UI: lee en modo solo lectura por defecto. Escribe solo si la conexión tiene `UI_WRITE=1`, el usuario marca "escritura" y confirma.
 
 ## Protocolo
@@ -82,6 +83,7 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `db.save` | `{conn}` | crea, o edita si viene `id`; `password: null` conserva la guardada |
 | `db.delete` | `{id}` | `true` |
 | `db.test` | `{id}` o `{conn}` | `{ms, version}`; permite probar antes de guardar |
+| `db.toggle` | `{id, enabled?, ai?}` | conexión pública; cambia solo los interruptores (activa / uso por IA) |
 | `db.query` | `{id, sql, write?, limit?}` | `{columns, rows, rowCount, truncated, ms, readOnly}`; `write` solo si la conexión tiene `uiWrite` |
 | `db.tables` | `{id}` | `[{name, view}]` |
 | `paths.check` | `{cwd, paths}` | `[{input, path, dir}]` de las rutas que existen (las relativas se resuelven contra `cwd`; solo dentro de `FRAP_FS_ROOT`) |

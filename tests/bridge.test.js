@@ -105,7 +105,7 @@ test('rechaza origins web', async () => {
 test('hello', async () => {
   const info = await client.call('hello');
   assert.equal(info.version, '1.2.0');
-  for (const op of ['db.list', 'db.save', 'git.run', 'music.ytInfo']) assert.ok(info.ops.includes(op), op);
+  for (const op of ['db.list', 'db.save', 'db.toggle', 'git.run', 'music.ytInfo']) assert.ok(info.ops.includes(op), op);
   assert.equal(info.fsRoot, root);
 });
 
@@ -251,6 +251,24 @@ test('db.*: guardar (sin exponer contraseña), probar, consultar, tablas, skill 
   await assert.rejects(client.call('db.query', { id: 'app_local', sql: 'DELETE FROM t' }), /Solo lectura/);
   await assert.rejects(client.call('db.query', { id: 'app_local', sql: 'DELETE FROM t', write: true }), /no permite escritura/);
   assert.deepEqual(await client.call('db.tables', { id: 'app_local' }), [{ name: 't', view: false }]);
+
+  // interruptores: por defecto activa y con uso por IA; desactivada no consulta (pero sí se puede probar)
+  assert.equal(saved.enabled, true);
+  assert.equal(saved.ai, true);
+  const off = await client.call('db.toggle', { id: 'app_local', enabled: false });
+  assert.equal(off.enabled, false);
+  assert.equal(off.ai, true);
+  assert.match(fs.readFileSync(list.envFile, 'utf8'), /FRAP_DB_APP_LOCAL_ENABLED=0/);
+  await assert.rejects(client.call('db.query', { id: 'app_local', sql: 'SELECT x FROM t' }), /desactivada/);
+  await assert.rejects(client.call('db.tables', { id: 'app_local' }), /desactivada/);
+  assert.ok((await client.call('db.test', { id: 'app_local' })).version);
+  const noAi = await client.call('db.toggle', { id: 'app_local', enabled: true, ai: false });
+  assert.deepEqual([noAi.enabled, noAi.ai], [true, false]);
+  // editar sin mandar los interruptores los conserva
+  await client.call('db.save', { conn: { id: 'app_local', name: 'App Local', engine: 'sqlite', database: file } });
+  assert.equal((await client.call('db.list')).conns[0].ai, false);
+  await client.call('db.toggle', { id: 'app_local', ai: true });
+  await assert.rejects(client.call('db.toggle', { id: 'nope', ai: true }), /no encontrada/);
 
   // sqlite fuera de FRAP_FS_ROOT se rechaza
   await assert.rejects(client.call('db.save', { conn: { name: 'x', engine: 'sqlite', database: '/etc/x.db' } }), /fuera/);
