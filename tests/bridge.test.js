@@ -120,7 +120,7 @@ test('rechaza origins web', async () => {
 test('hello', async () => {
   const info = await client.call('hello');
   assert.equal(info.version, '1.3.0');
-  for (const op of ['db.list', 'db.save', 'db.toggle', 'ssh.list', 'ssh.connect', 'session.seen', 'git.run', 'music.ytInfo']) assert.ok(info.ops.includes(op), op);
+  for (const op of ['db.list', 'db.save', 'db.toggle', 'ssh.list', 'ssh.connect', 'session.seen', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo']) assert.ok(info.ops.includes(op), op);
   assert.equal(info.fsRoot, root);
 });
 
@@ -468,4 +468,43 @@ test('avisos de agentes: $FRAP_NOTIFY → evento notice, sessions.list lo incluy
   await client.call('session.seen', { sid: s.sid });
   assert.equal((await client.call('sessions.list')).find((x) => x.sid === s.sid).notice, null);
   await client.call('session.kill', { sid: s.sid });
+});
+
+test('export.creds / import.creds: sin clave no salen contraseñas; con clave van cifradas y se restauran', async () => {
+  await client.call('db.save', { conn: { name: 'Exp BD', engine: 'mysql', host: 'db.local', user: 'lector', password: 'pw-bd-1', ai: false } });
+  await client.call('ssh.save', { host: { name: 'Exp SSH', host: '10.1.1.1', user: 'ops', password: 'pw-ssh-2', ai: true } });
+
+  const plain = await client.call('export.creds', { db: ['exp_bd'], ssh: ['exp_ssh'] });
+  assert.equal(plain.secrets, undefined);
+  assert.equal(JSON.stringify(plain).includes('pw-'), false);
+  assert.equal(plain.db[0].ai, false);
+
+  await assert.rejects(client.call('export.creds', { db: ['exp_bd'], passphrase: '123' }), /al menos 6/);
+  const sealed = await client.call('export.creds', { db: ['exp_bd'], ssh: ['exp_ssh'], passphrase: 'clave-larga' });
+  assert.equal(JSON.stringify(sealed).includes('pw-'), false);
+  assert.equal(sealed.secrets.alg, 'aes-256-gcm');
+
+  // se borran y se importan de nuevo
+  await client.call('db.delete', { id: 'exp_bd' });
+  await client.call('ssh.delete', { id: 'exp_ssh' });
+  await assert.rejects(client.call('import.creds', { ...sealed, passphrase: 'otra-clave' }), /Clave incorrecta/);
+  const r = await client.call('import.creds', { ...sealed, passphrase: 'clave-larga' });
+  assert.deepEqual([r.db, r.ssh, r.errors], [1, 1, []]);
+  const cfg = path.join(root, 'cfg');
+  assert.match(fs.readFileSync(path.join(cfg, 'databases.env'), 'utf8'), /FRAP_DB_EXP_BD_PASSWORD="pw-bd-1"/);
+  assert.match(fs.readFileSync(path.join(cfg, 'ssh.env'), 'utf8'), /FRAP_SSH_EXP_SSH_PASSWORD="pw-ssh-2"/);
+  assert.equal((await client.call('db.list')).conns.find((c) => c.id === 'exp_bd').ai, false);
+
+  // sin clave: se importa y conserva la contraseña que ya había
+  const again = await client.call('import.creds', { db: [{ ...sealed.db[0], host: 'db2.local' }], secrets: sealed.secrets });
+  assert.equal(again.db, 1);
+  const env = fs.readFileSync(path.join(cfg, 'databases.env'), 'utf8');
+  assert.match(env, /FRAP_DB_EXP_BD_HOST="db2.local"/);
+  assert.match(env, /FRAP_DB_EXP_BD_PASSWORD="pw-bd-1"/);
+  // inválidos se reportan sin romper el resto
+  const bad = await client.call('import.creds', { ssh: [{ id: 'malo', name: 'Malo', host: '-oProxyCommand=x', user: 'u' }] });
+  assert.equal(bad.ssh, 0);
+  assert.match(bad.errors[0], /Host inválido/);
+  await client.call('db.delete', { id: 'exp_bd' });
+  await client.call('ssh.delete', { id: 'exp_ssh' });
 });

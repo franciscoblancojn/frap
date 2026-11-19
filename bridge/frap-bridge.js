@@ -588,6 +588,28 @@ Reglas:
 `;
 }
 
+// ---------- exportar / importar credenciales (BD y SSH) ----------
+// Las contraseñas solo salen cifradas con una clave del usuario: scrypt + AES-256-GCM.
+function sealSecrets(obj, passphrase) {
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const key = crypto.scryptSync(String(passphrase), salt, 32);
+  const c = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const data = Buffer.concat([c.update(JSON.stringify(obj), 'utf8'), c.final()]);
+  return { alg: 'aes-256-gcm', kdf: 'scrypt', salt: salt.toString('base64'), iv: iv.toString('base64'), tag: c.getAuthTag().toString('base64'), data: data.toString('base64') };
+}
+function openSecrets(sealed, passphrase) {
+  if (!sealed || sealed.alg !== 'aes-256-gcm' || sealed.kdf !== 'scrypt') throw new Error('Formato de contraseñas cifradas no reconocido');
+  try {
+    const key = crypto.scryptSync(String(passphrase || ''), Buffer.from(sealed.salt, 'base64'), 32);
+    const d = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(sealed.iv, 'base64'));
+    d.setAuthTag(Buffer.from(sealed.tag, 'base64'));
+    return JSON.parse(Buffer.concat([d.update(Buffer.from(sealed.data, 'base64')), d.final()]).toString('utf8'));
+  } catch (_) {
+    throw new Error('Clave incorrecta: no se pudieron descifrar las contraseñas');
+  }
+}
+
 function skillText() {
   const cli = `node ${DB_CLI}`;
   return `---
@@ -842,6 +864,59 @@ const ops = {
       written.push(f);
     }
     return written;
+  },
+  /**
+   * Exporta conexiones de BD y servidores SSH elegidos. Sin `passphrase` no salen contraseñas;
+   * con ella, van en `secrets` cifradas.
+   */
+  'export.creds': ({ db: dbIds = [], ssh: sshIds = [], passphrase } = {}) => {
+    const strip = (c) => { const { password, ...rest } = c; return rest; };
+    const conns = dbConns().filter((c) => dbIds.includes(c.id));
+    const hosts = sshHosts().filter((c) => sshIds.includes(c.id));
+    const out = { db: conns.map(strip), ssh: hosts.map(strip) };
+    if (passphrase) {
+      if (String(passphrase).length < 6) throw new Error('La clave de cifrado debe tener al menos 6 caracteres');
+      out.secrets = sealSecrets({
+        db: Object.fromEntries(conns.filter((c) => c.password).map((c) => [c.id, c.password])),
+        ssh: Object.fromEntries(hosts.filter((c) => c.password).map((c) => [c.id, c.password])),
+      }, passphrase);
+    }
+    return out;
+  },
+  /**
+   * Importa conexiones y servidores (mismo id = se reemplaza). Si traen `secrets`, hace falta
+   * `passphrase`; sin ella se importan sin contraseña (o se conserva la que ya existía).
+   */
+  'import.creds': ({ db: inDb = [], ssh: inSsh = [], secrets, passphrase } = {}) => {
+    const pw = secrets && passphrase != null && passphrase !== '' ? openSecrets(secrets, passphrase) : { db: {}, ssh: {} };
+    const result = { db: 0, ssh: 0, errors: [] };
+    const conns = dbConns();
+    for (const raw of inDb) {
+      try {
+        const id = db.slugify(String(raw.id || raw.name || ''), new Set()).slice(0, 60);
+        const existing = conns.find((c) => c.id === id);
+        const password = Object.prototype.hasOwnProperty.call(pw.db || {}, raw.id) ? pw.db[raw.id] : null;
+        const c = dbNormalize({ ...raw, password }, existing || { id, password: '' });
+        c.id = id;
+        if (existing) conns[conns.indexOf(existing)] = c; else conns.push(c);
+        result.db++;
+      } catch (e) { result.errors.push(`BD ${raw.name || raw.id}: ${e.message}`); }
+    }
+    if (inDb.length) db.saveConnections(DB_ENV, conns, DB_CLI);
+    const hosts = sshHosts();
+    for (const raw of inSsh) {
+      try {
+        const id = db.slugify(String(raw.id || raw.name || ''), new Set()).slice(0, 60);
+        const existing = hosts.find((c) => c.id === id);
+        const password = Object.prototype.hasOwnProperty.call(pw.ssh || {}, raw.id) ? pw.ssh[raw.id] : null;
+        const c = sshNormalize({ ...raw, password }, existing || { id, password: '' });
+        c.id = id;
+        if (existing) hosts[hosts.indexOf(existing)] = c; else hosts.push(c);
+        result.ssh++;
+      } catch (e) { result.errors.push(`SSH ${raw.name || raw.id}: ${e.message}`); }
+    }
+    if (inSsh.length) ssh.saveHosts(SSH_ENV, hosts, SSH_CLI);
+    return result;
   },
   /**
    * Ejecuta `git <args>` en `cwd` (sin shell). Nunca lanza por código de salida distinto de 0:

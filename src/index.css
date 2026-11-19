@@ -645,3 +645,20 @@ textarea.prompt-body { min-height: 180px; font: 12.5px/1.5 var(--mono); resize: 
 .notice-dot.waiting { background: var(--warn); animation: notice-pulse 1.6s ease-in-out infinite; }
 @keyframes notice-pulse { 50% { opacity: .45; } }
 @media (prefers-reduced-motion: reduce) { .notice.waiting, .notice-dot.waiting { animation: none; } }
+
+/* ---------- exportar / importar ---------- */
+.xp-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+.xp-big { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 16px; text-align: left; height: auto; }
+.xp-big b { font-size: 15px; }
+.xp-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+.xp-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.xp-col h4 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--fg-2); }
+.xp-group { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.xp-head { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.xp-items { display: flex; flex-direction: column; gap: 2px; max-height: 42vh; overflow: auto; }
+.xp-item { display: flex; align-items: center; gap: 8px; padding: 2px 0; min-width: 0; }
+.xp-item span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xp-item .muted { font-size: 11px; flex: 1; min-width: 0; }
+.xp-kid { padding-left: 22px; }
+.xp-note { font-size: 11px; }
+@media (max-width: 760px) { .xp-cols, .xp-choice { grid-template-columns: 1fr; } }

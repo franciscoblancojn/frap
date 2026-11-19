@@ -242,7 +242,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -3756,7 +3756,297 @@
   // Arranque
   // ======================================================================
   $('#btn-new-project').onclick = newProject;
+  // ======================================================================
+  // Exportar / importar (botón ⇅ del panel izquierdo)
+  // ======================================================================
+  const EXPORT_FORMAT = 'frap-export';
+  const RESUME = { claude: ' --continue', opencode: ' --continue' }; // codex: `codex resume --last`
+
+  /**
+   * Grupo de casillas con una casilla padre (todas/ninguna, con estado intermedio).
+   * items: [{ value, label, sub?, children?: [{value, label, sub?}] }]
+   * Devuelve { el, selected(): [{value, children: [values]}] }.
+   */
+  function checkGroup(title, items, { note } = {}) {
+    const rows = [];
+    const all = h('input', { type: 'checkbox' });
+    all.checked = true;
+    const sync = () => {
+      const boxes = rows.flatMap((r) => [r.box, ...r.kids.map((k) => k.box)]);
+      const n = boxes.filter((b) => b.checked).length;
+      all.checked = n === boxes.length && n > 0;
+      all.indeterminate = n > 0 && n < boxes.length;
+    };
+    const list = h('div.xp-items');
+    for (const it of items) {
+      const box = h('input', { type: 'checkbox' });
+      box.checked = true;
+      const kids = (it.children || []).map((c) => {
+        const kb = h('input', { type: 'checkbox' });
+        kb.checked = true;
+        kb.addEventListener('change', () => {
+          if (kb.checked) box.checked = true;
+          box.indeterminate = kids.some((k) => !k.box.checked) && kids.some((k) => k.box.checked);
+          sync();
+        });
+        return { value: c.value, box: kb, el: h('label.xp-item.xp-kid', kb, h('span', c.label), c.sub ? h('span.muted', c.sub) : null) };
+      });
+      box.addEventListener('change', () => { box.indeterminate = false; for (const k of kids) k.box.checked = box.checked; sync(); });
+      rows.push({ value: it.value, box, kids });
+      list.append(h('label.xp-item', box, h('span', it.label), it.sub ? h('span.muted', it.sub) : null), ...kids.map((k) => k.el));
+    }
+    all.addEventListener('change', () => {
+      for (const r of rows) { r.box.checked = all.checked; r.box.indeterminate = false; for (const k of r.kids) k.box.checked = all.checked; }
+      all.indeterminate = false;
+    });
+    const el = h('div.xp-group',
+      h('label.xp-head', all, h('span', title), h('span.muted', `(${items.length})`)),
+      note ? h('div.muted.xp-note', note) : null,
+      items.length ? list : h('div.muted.xp-note', 'Nada que mostrar.'));
+    if (!items.length) { all.checked = false; all.disabled = true; }
+    return {
+      el,
+      selected: () => rows.filter((r) => r.box.checked || r.box.indeterminate || r.kids.some((k) => k.box.checked))
+        .map((r) => ({ value: r.value, children: r.kids.filter((k) => k.box.checked).map((k) => k.value) })),
+    };
+  }
+
+  const CONFIG_PARTS = [
+    { key: 'prompts', label: 'Prompts', count: (c) => (c.prompts || []).length },
+    { key: 'actions', label: 'Acciones', count: (c) => (c.actions || []).length },
+    { key: 'pages', label: 'Páginas', count: (c) => (c.pages || []).length },
+    { key: 'timers', label: 'Temporizadores', count: (c) => (c.timers || []).length },
+    { key: 'music', label: 'Música', count: (c) => ((c.music || {}).tracks || []).filter((t) => t.type === 'youtube').length, sub: 'solo enlaces de YouTube' },
+    { key: 'settings', label: 'Ajustes', sub: 'fuente, editor, lanzadores de claude/codex/opencode' },
+  ];
+
+  function pickConfig(src, key) {
+    if (key === 'timers') return (src.timers || []).map(({ nextAt, startedAt, ...t }) => t);
+    if (key === 'music') {
+      const m = src.music || {};
+      return { tracks: (m.tracks || []).filter((t) => t.type === 'youtube'), loop: m.loop, shuffle: m.shuffle, volume: m.volume };
+    }
+    return JSON.parse(JSON.stringify(src[key]));
+  }
+
+  function openTransfer() {
+    openModal({
+      title: 'Exportar / importar',
+      body: [
+        h('p.muted', { style: 'margin:0' }, 'Lleva tus proyectos, terminales y configuración a otro equipo, o guarda una copia.'),
+        h('div.xp-choice',
+          h('button.xp-big', { onclick: openExport }, h('b', '⇩ Exportar'), h('span.muted', 'Elige qué llevar y descarga un archivo .json')),
+          h('button.xp-big', { onclick: pickImportFile }, h('b', '⇧ Importar'), h('span.muted', 'Abre un archivo exportado y elige qué traer'))),
+      ],
+      foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cerrar')],
+    });
+  }
+
+  async function openExport() {
+    if (Bridge.ready) await Promise.all([dbInfo ? null : loadDbs(), sshInfo ? null : loadSsh()]);
+    const projects = checkGroup('Proyectos y terminales', state.projects.map((p) => ({
+      value: p.id, label: p.name, sub: p.folders.map(tilde).join(', '),
+      children: sessionsOf(p.id).filter((t) => termKind(t) !== 'action').map((t) => ({ value: t.sid, label: termTitle(t), sub: termKind(t) })),
+    })), { note: 'Al importar se pueden reabrir las terminales y retomar la última conversación de cada IA en esa carpeta.' });
+    const config = checkGroup('Configuración', CONFIG_PARTS.map((c) => ({
+      value: c.key, label: c.count ? `${c.label} (${c.count(state)})` : c.label, sub: c.sub,
+    })));
+    const dbs = checkGroup('Bases de datos', ((dbInfo && dbInfo.conns) || []).map((c) => ({ value: c.id, label: c.name, sub: dbTarget(c) })));
+    const sshs = checkGroup('SSH', ((sshInfo && sshInfo.hosts) || []).map((c) => ({ value: c.id, label: c.name, sub: sshTarget(c) })));
+    const withPw = h('input', { type: 'checkbox' });
+    withPw.checked = true;
+    const pass1 = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'clave para cifrar (mín. 6)' });
+    const pass2 = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'repite la clave' });
+    const passRow = h('div.field-row', h('span.grow', pass1), h('span.grow', pass2));
+    withPw.addEventListener('change', () => passRow.classList.toggle('hidden', !withPw.checked));
+    const credsBox = h('div.xp-group',
+      h('label.xp-head', withPw, h('span', 'Incluir contraseñas de BD y SSH, cifradas')),
+      h('div.muted.xp-note', 'Se cifran con esta clave (AES-256-GCM); te la pedirá al importar. Sin contraseñas, tendrás que escribirlas de nuevo.'),
+      passRow);
+
+    const doExport = async () => {
+      const selDb = dbs.selected().map((x) => x.value);
+      const selSsh = sshs.selected().map((x) => x.value);
+      const out = { format: EXPORT_FORMAT, version: 1, exportedAt: new Date().toISOString(), from: (Bridge.info && Bridge.info.hostname) || '' };
+      out.projects = projects.selected().map(({ value, children }) => {
+        const p = project(value);
+        return {
+          id: p.id, name: p.name, folders: p.folders.slice(),
+          terminals: children.map((sid) => terms.get(sid)).filter(Boolean).map((t) => {
+            const m = t.info.meta || {};
+            return { kind: termKind(t), title: termTitle(t), cwd: m.cwd || p.folders[0], ...(m.sshId ? { sshId: m.sshId } : {}) };
+          }),
+        };
+      });
+      out.config = {};
+      for (const { value } of config.selected()) out.config[value] = pickConfig(state, value);
+      if (selDb.length || selSsh.length) {
+        if (!Bridge.ready) { toast('Bridge desconectado: no se pueden exportar BD ni SSH', 'err'); return; }
+        let passphrase = '';
+        if (withPw.checked) {
+          if (pass1.value.length < 6) { toast('La clave de cifrado debe tener al menos 6 caracteres', 'err'); pass1.focus(); return; }
+          if (pass1.value !== pass2.value) { toast('Las claves no coinciden', 'err'); pass2.focus(); return; }
+          passphrase = pass1.value;
+        }
+        try { Object.assign(out, await Bridge.call('export.creds', { db: selDb, ssh: selSsh, passphrase })); } catch (e) { toast(e.message, 'err'); return; }
+      }
+      const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = h('a', { href: url, download: `frap-export-${new Date().toISOString().slice(0, 10)}.json` });
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      modalClose(true);
+      const nTerms = out.projects.reduce((n, p) => n + p.terminals.length, 0);
+      toast(`Exportado: ${out.projects.length} proyecto(s), ${nTerms} terminal(es), ${Object.keys(out.config).length} sección(es) de configuración, ${(out.db || []).length} BD, ${(out.ssh || []).length} SSH${out.secrets ? ' (contraseñas cifradas)' : ''}`, 'ok');
+    };
+    openModal({
+      title: 'Exportar',
+      wide: true,
+      body: h('div.xp-cols',
+        h('div.xp-col', h('h4', 'Panel izquierdo'), projects.el),
+        h('div.xp-col', h('h4', 'Panel derecho'), config.el, dbs.el, sshs.el, credsBox)),
+      foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doExport }, '⇩ Exportar')],
+    });
+  }
+
+  function pickImportFile() {
+    const input = h('input', { type: 'file', accept: '.json,application/json' });
+    input.addEventListener('change', async () => {
+      const f = input.files && input.files[0];
+      if (!f) return;
+      let data;
+      try { data = JSON.parse(await f.text()); } catch (_) { toast('El archivo no es un JSON válido', 'err'); return; }
+      if (!data || data.format !== EXPORT_FORMAT) { toast('Este archivo no es una exportación de FRAP', 'err'); return; }
+      openImport(data, f.name);
+    });
+    input.click();
+  }
+
+  function openImport(data, fileName) {
+    const projs = Array.isArray(data.projects) ? data.projects.filter((p) => p && p.id && Array.isArray(p.folders)) : [];
+    const cfg = data.config && typeof data.config === 'object' ? data.config : {};
+    const projects = checkGroup('Proyectos y terminales', projs.map((p) => ({
+      value: p.id, label: `${p.name}${project(p.id) ? ' (reemplaza)' : ''}`, sub: p.folders.map(tilde).join(', '),
+      children: (p.terminals || []).map((t, i) => ({ value: i, label: t.title || t.kind, sub: t.kind })),
+    })));
+    const config = checkGroup('Configuración', CONFIG_PARTS.filter((c) => cfg[c.key] != null).map((c) => ({
+      value: c.key, label: c.count ? `${c.label} (${c.count(cfg)})` : c.label, sub: c.key === 'settings' ? 'reemplaza tus ajustes' : 'se agrega; mismo id se reemplaza',
+    })));
+    const dbs = checkGroup('Bases de datos', (data.db || []).map((c) => ({ value: c.id, label: c.name, sub: c.engine === 'sqlite' ? c.database : `${c.user}@${c.host}` })));
+    const sshs = checkGroup('SSH', (data.ssh || []).map((c) => ({ value: c.id, label: c.name, sub: `${c.user}@${c.host}` })));
+    const openTerms = h('input', { type: 'checkbox' });
+    openTerms.checked = true;
+    const resume = h('input', { type: 'checkbox' });
+    resume.checked = true;
+    const pass = h('input', { type: 'password', autocomplete: 'off', placeholder: 'clave con la que se exportó' });
+    const termOpts = h('div.xp-group',
+      h('label.xp-head', openTerms, h('span', 'Abrir las terminales al importar')),
+      h('label.xp-item', resume, h('span', 'Retomar la última conversación'), h('span.muted', 'claude --continue · codex resume --last · opencode --continue')),
+      h('div.muted.xp-note', 'Las conversaciones viven en cada equipo (~/.claude, ~/.codex…): en otro equipo, la IA empieza de cero si no tiene historial en esa carpeta.'));
+    const secretsBox = data.secrets ? h('div.xp-group',
+      h('div.xp-head', h('span', '🔒 Contraseñas cifradas')),
+      h('div.muted.xp-note', 'Escribe la clave de la exportación. Si la dejas vacía, se importan sin contraseña.'),
+      pass) : null;
+
+    const doImport = async () => {
+      const selDb = new Set(dbs.selected().map((x) => x.value));
+      const selSsh = new Set(sshs.selected().map((x) => x.value));
+      const report = [];
+      if (selDb.size || selSsh.size) {
+        if (!Bridge.ready) { toast('Bridge desconectado: no se pueden importar BD ni SSH', 'err'); return; }
+        try {
+          const r = await Bridge.call('import.creds', {
+            db: (data.db || []).filter((c) => selDb.has(c.id)),
+            ssh: (data.ssh || []).filter((c) => selSsh.has(c.id)),
+            secrets: data.secrets, passphrase: pass.value,
+          });
+          if (r.db) report.push(`${r.db} BD`);
+          if (r.ssh) report.push(`${r.ssh} SSH`);
+          if (r.errors.length) toast(r.errors.join('\n'), 'err');
+        } catch (e) { toast(e.message, 'err'); pass.focus(); return; }
+      }
+      // configuración: se agrega por id (mismo id = se reemplaza)
+      const mergeById = (cur, inc) => {
+        const byId = new Map(cur.map((x) => [x.id, x]));
+        for (const x of inc || []) if (x && x.id) byId.set(x.id, x);
+        return [...byId.values()];
+      };
+      for (const { value: key } of config.selected()) {
+        const v = cfg[key];
+        if (key === 'settings') {
+          state.settings = { ...state.settings, ...v, launchers: { ...state.settings.launchers, ...(v.launchers || {}) } };
+        } else if (key === 'music') {
+          const have = new Set(state.music.tracks.filter((t) => t.type === 'youtube').map((t) => t.videoId));
+          for (const t of v.tracks || []) if (t.videoId && !have.has(t.videoId)) state.music.tracks.push({ ...t, id: uid() });
+          for (const k of ['loop', 'shuffle', 'volume']) if (v[k] != null) state.music[k] = v[k];
+        } else if (key === 'timers') {
+          state.timers = mergeById(state.timers, v);
+          for (const t of state.timers) if (t.enabled && !t.nextAt) startTimer(t);
+        } else if (Array.isArray(v)) {
+          state[key] = mergeById(state[key], v);
+        }
+        report.push(CONFIG_PARTS.find((c) => c.key === key).label.toLowerCase());
+      }
+      // proyectos
+      const chosen = projects.selected().map(({ value, children }) => {
+        const p = projs.find((x) => x.id === value);
+        return { p, terminals: children.map((i) => (p.terminals || [])[i]).filter(Boolean) };
+      });
+      for (const { p } of chosen) {
+        const cur = project(p.id);
+        if (cur) { cur.name = p.name; cur.folders = p.folders.slice(); } else state.projects.push({ id: p.id, name: p.name, folders: p.folders.slice() });
+      }
+      if (chosen.length) report.unshift(`${chosen.length} proyecto(s)`);
+      if (chosen.length && !project()) state.activeProject = chosen[0].p.id;
+      save();
+      modalClose(true);
+      renderAll();
+      renderRight();
+      loadDbs();
+      await loadSsh();
+      toast(`Importado de ${fileName}: ${report.join(', ') || 'nada'}`, 'ok');
+      if (openTerms.checked) await reopenTerminals(chosen, resume.checked);
+    };
+    openModal({
+      title: `Importar · ${fileName}`,
+      wide: true,
+      body: [
+        h('p.muted', { style: 'margin:0' }, `Exportado ${data.exportedAt ? new Date(data.exportedAt).toLocaleString() : ''}${data.from ? ' desde ' + data.from : ''}. Lo que ya existe con el mismo id se reemplaza.`),
+        h('div.xp-cols',
+          h('div.xp-col', h('h4', 'Panel izquierdo'), projects.el, termOpts),
+          h('div.xp-col', h('h4', 'Panel derecho'), config.el, dbs.el, sshs.el, secretsBox)),
+      ],
+      foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doImport }, '⇧ Importar')],
+    });
+  }
+
+  /** Reabre las terminales importadas; las IA pueden retomar su última conversación. */
+  async function reopenTerminals(chosen, resume) {
+    if (!Bridge.ready) return;
+    const prev = state.activeProject;
+    for (const { p, terminals } of chosen) {
+      state.activeProject = p.id;
+      for (const t of terminals) {
+        if (t.kind === 'ssh') {
+          if (t.sshId && sshInfo && sshInfo.hosts.some((x) => x.id === t.sshId && x.enabled)) await connectSsh(t.sshId);
+          continue;
+        }
+        const proj = project(p.id);
+        let init;
+        if (resume && t.kind === 'codex') init = `${(state.settings.launchers.codex || { cmd: 'codex' }).cmd} resume --last`;
+        else if (resume && RESUME[t.kind]) init = buildLaunch(t.kind, proj) + RESUME[t.kind];
+        await launch(['shell', 'claude', 'codex', 'opencode'].includes(t.kind) ? t.kind : 'shell', { title: t.title, cwd: t.cwd, init });
+      }
+    }
+    if (prev && project(prev)) state.activeProject = prev;
+    save();
+    renderAll();
+  }
+
   $('#btn-settings').onclick = openSettings;
+  $('#btn-transfer').onclick = openTransfer;
   $('#toggle-left').onclick = () => togglePanel('left');
   $('#toggle-right').onclick = () => togglePanel('right');
   for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : b.dataset.launch === 'git' ? openGitView() : b.dataset.launch === 'ssh' ? pickSsh() : launch(b.dataset.launch));

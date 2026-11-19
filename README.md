@@ -84,6 +84,16 @@ El modo solo lectura tiene varias capas:
 
 Requiere los clientes del sistema: `mysql`, `psql` o `sqlite3`.
 
+## Exportar e importar
+
+El botón **⇅** del panel izquierdo abre exportar/importar. Por defecto va todo marcado y puedes desmarcar lo que no quieras llevar:
+
+- **Panel izquierdo:** proyectos y, dentro de cada uno, sus terminales (claude, codex, opencode, shell, ssh).
+- **Panel derecho:** prompts, acciones, páginas, temporizadores, música (solo enlaces de YouTube; los archivos locales no viajan) y ajustes; cada conexión de base de datos y cada servidor SSH.
+- **Contraseñas de BD y SSH:** solo salen **cifradas** con una clave que eliges (AES-256-GCM + scrypt). Sin clave, se exportan sin contraseña.
+
+Al importar eliges qué traer de ese archivo; lo que tenga el mismo id se reemplaza. Puede reabrir las terminales y retomar la última conversación de cada IA en esa carpeta (`claude --continue`, `codex resume --last`, `opencode --continue`). El historial de las conversaciones vive en cada equipo: en otro equipo, la IA empieza de cero en esa carpeta.
+
 ## Aviso cuando un agente termina
 
 En el panel izquierdo, la terminal de un agente que terminó muestra **✓ terminó**, y la que espera tu respuesta (permisos, preguntas) muestra **● espera**. El título de la pestaña del navegador cuenta las pendientes: `(2) FRAP`. La marca se borra al abrir esa terminal. Para activarlo, los hooks `Stop` y `Notification` de claude escriben en `$FRAP_NOTIFY` (ver `docs/ARCHITECTURE.md`). Funciona en las terminales abiertas después de reiniciar el bridge.

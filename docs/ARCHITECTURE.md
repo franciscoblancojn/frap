@@ -56,6 +56,10 @@ navegador (file://src/index.html)                     máquina local
 - Interruptores por conexión: `ENABLED=0` la desactiva (la UI y `frap-db` la rechazan; `db.test` sí funciona). `AI=0` la oculta a los agentes: `frap-db list` no la muestra y las consultas a ese id fallan. Si faltan, valen 1.
 - Lo que hace la pestaña DB de la UI: lee en modo solo lectura por defecto. Escribe solo si la conexión tiene `UI_WRITE=1`, el usuario marca "escritura" y confirma.
 
+## Exportar / importar
+
+Todo se arma en la UI (`openExport` / `openImport`) y se descarga como `frap-export-AAAA-MM-DD.json` (`format: "frap-export", version: 1`): `projects` (con `terminals: [{kind, title, cwd, sshId?}]`), `config` (prompts, actions, pages, timers, music —solo YouTube—, settings) y, vía bridge, `db`, `ssh` y `secrets`. Las contraseñas nunca pasan por la UI en claro: `export.creds` las cifra e `import.creds` las descifra dentro del bridge.
+
 ## Avisos de agentes
 
 Cada sesión recibe `FRAP_NOTIFY=<SOCK_DIR>/<sid>.notify`. Un hook del agente escribe ahí una línea `done` o `waiting <mensaje>`. El bridge vigila el directorio (`fs.watch`), consume el archivo, guarda `notice = {kind, msg, at}` en la sesión (va en `sessions.list`) y emite el evento `{ev: 'notice', sid, notice}`. La UI marca la terminal (✓ terminó / ● espera) y muestra el total en el título hasta que se abre; `session.seen` lo borra. Fuera de FRAP la variable no existe y el hook no hace nada.
@@ -118,6 +122,8 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `ssh.test` | `{id}` o `{host}` | `{ms, system}`; error con pista si falla |
 | `ssh.connect` | `{id, cwd?, projectId?, cols, rows}` | info de la sesión nueva (rechaza si está desactivado) |
 | `ssh.installSkill` | `{tools}` | escribe la skill `frap-ssh` en `~/.claude/skills` y `~/.codex/skills` |
+| `export.creds` | `{db: ids, ssh: ids, passphrase?}` | `{db, ssh, secrets?}` sin contraseñas; con `passphrase` (≥6) van en `secrets` cifradas (scrypt + AES-256-GCM) |
+| `import.creds` | `{db, ssh, secrets?, passphrase?}` | `{db, ssh, errors}`; mismo id se reemplaza; clave incorrecta → error; sin clave conserva la contraseña existente |
 | `db.installSkill` | `{tools}` | escribe `~/.claude/skills/frap-db/SKILL.md` y `~/.codex/skills/frap-db/SKILL.md` |
 
 ## Dónde se busca la configuración (`config.scan`)
