@@ -23,6 +23,12 @@ navegador (file://src/index.html)                     máquina local
 - **YouTube:** rechaza embeds desde `file://` (error 153, sin Referer). Por eso el bridge sirve `GET /yt-player`, un relé en `http://127.0.0.1:<puerto>` que carga la IFrame API de YouTube. La UI lo incrusta y le habla por `postMessage` (`{frap:'yt', cmd:'load'|'play'|'pause'|'seek'|'volume'}`), y recibe de vuelta `ready`, `state`, `time` y `error`. La UI valida `event.source` y `event.origin`, y el relé solo acepta mensajes de su ventana padre. El relé no usa token, y el WebSocket rechaza su Origin http, así que no da acceso al bridge.
 - El reproductor (dock) vive fuera de `#rbody`, así que re-renderizar el panel no corta la música. Fuera de la pestaña Música el video se minimiza, pero sigue sonando.
 
+## Git
+
+- La vista es solo UI sobre `git.run`. El bridge ejecuta el binario `git` con `GIT_TERMINAL_PROMPT=0` (si faltan credenciales falla en lugar de colgarse), `GIT_EDITOR=true` (sin editor en merges) y `color.ui=false`.
+- `GIT_ALLOWED` limita los subcomandos a los de uso diario. `config`, `submodule`, hooks, etc. se rechazan, igual que las opciones que permiten ejecutar comandos arbitrarios (`-c core.sshCommand=…`, `--upload-pack`, `--exec`, `-C`, `--git-dir`).
+- El status se lee con `git status --porcelain=v1 -b -z` (independiente del idioma). La vista se refresca cada 5 s mientras está visible y al volver el foco a la ventana.
+
 ## Temporizador
 
 - Vive solo en la UI, en `state.timers`. Cada temporizador guarda `nextAt` (marca de tiempo absoluta), así que sobrevive a recargas. Si al volver a abrir FRAP alguno ya venció, avisa una vez marcado como "atrasado" y se reprograma desde ese momento, sin acumular avisos.
@@ -69,6 +75,7 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `db.test` | `{id}` o `{conn}` | `{ms, version}`; permite probar antes de guardar |
 | `db.query` | `{id, sql, write?, limit?}` | `{columns, rows, rowCount, truncated, ms, readOnly}`; `write` solo si la conexión tiene `uiWrite` |
 | `db.tables` | `{id}` | `[{name, view}]` |
+| `git.run` | `{cwd, args}` | `{code, stdout, stderr}`; ejecuta `git` sin shell, solo subcomandos de `GIT_ALLOWED`, sin `-c`/`--upload-pack`/`--exec`…; un código distinto de 0 no lanza error |
 | `music.ytInfo` | `{id}` | `{title, author}` vía oEmbed público de YouTube |
 | `db.installSkill` | `{tools}` | escribe `~/.claude/skills/frap-db/SKILL.md` y `~/.codex/skills/frap-db/SKILL.md` |
 

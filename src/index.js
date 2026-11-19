@@ -46,6 +46,7 @@
     codex: 'vendor/icons/codex.svg',
     opencode: 'vendor/icons/opencode.svg',
     db: 'vendor/icons/db.svg',
+    git: 'vendor/icons/git.svg',
   };
   const kindIcon = (kind) => (ICONS[kind] ? h('img.ico', { src: ICONS[kind], alt: kind, title: kind }) : null);
   const uid = () => Math.random().toString(36).slice(2, 10);
@@ -104,6 +105,7 @@
     db: { open: false, connId: null, sql: '', limit: 500, history: [] }, // pestaña DB del panel central
     // música: tracks = [{id, type: 'file'|'youtube', title, videoId?, duration?}]; los archivos viven en IndexedDB
     music: { tracks: [], current: null, loop: 'all', shuffle: false, volume: 80 },
+    git: { open: false, repo: null, tab: 'diff' }, // pestaña Git del panel central
     // temporizadores: [{id, icon, title, desc, kind: 'repeat'|'once', every (seg), mode: 'toast'|'modal', sound, enabled, nextAt, startedAt}]
     timers: [],
     settings: {
@@ -131,6 +133,7 @@
       ui: { ...base.ui, ...(saved.ui || {}) },
       db: { ...base.db, ...(saved.db || {}) },
       music: { ...base.music, ...(saved.music || {}) },
+      git: { ...base.git, ...(saved.git || {}) },
     };
   }
 
@@ -657,6 +660,16 @@
       h('span.tname', 'DB'),
       h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeDbView(); } }, '✕')));
     }
+    if (state.git.open) {
+      tabs.append(h(`div.tab.git-tab${state.activeSid === GIT_VIEW ? '.active' : ''}`, {
+        dataset: { sid: GIT_VIEW }, title: 'Git (Alt+Shift+G)',
+        onclick: () => openGitView(),
+        onauxclick: (e) => { if (e.button === 1) closeGitView(); },
+      },
+      kindIcon('git'),
+      h('span.tname', 'Git'),
+      h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeGitView(); } }, '✕')));
+    }
   }
 
   function renderPanes() {
@@ -667,11 +680,14 @@
     const dbActive = state.activeSid === DB_VIEW;
     if (dbActive) ensureDbPane();
     if (dbPane) dbPane.root.classList.toggle('hidden', !dbActive);
+    const gitActive = state.activeSid === GIT_VIEW;
+    if (gitActive) { ensureGitPane(); gitSyncProject(); }
+    if (gitPane) gitPane.root.classList.toggle('hidden', !gitActive);
     const p = project();
-    $('#empty').classList.toggle('hidden', !!activeTerm() || !!pg || dbActive);
+    $('#empty').classList.toggle('hidden', !!activeTerm() || !!pg || dbActive || gitActive);
     $('#st-project').textContent = p ? p.name : '—';
     const t = activeTerm();
-    $('#st-cwd').textContent = dbActive ? dbStatusLine() : pg ? pg.url : t ? tilde((t.info.meta || {}).cwd || '') : p ? p.folders.map(tilde).join('  +  ') : '';
+    $('#st-cwd').textContent = gitActive ? (state.git.repo ? tilde(state.git.repo) : 'Git') : dbActive ? dbStatusLine() : pg ? pg.url : t ? tilde((t.info.meta || {}).cwd || '') : p ? p.folders.map(tilde).join('  +  ') : '';
     renderStatusActions();
   }
 
@@ -1373,9 +1389,444 @@
     renderRight();
   }
 
+  // ---------- git: interfaz guiada (status, add, commit, ramas, pull/push…) en el panel central ----------
+  const GIT_VIEW = 'git:main';
+  let gitPane = null;
+  const Git = {
+    repos: [], // repos detectados en las carpetas del proyecto
+    projectId: null,
+    status: null, // { branch, upstream, ahead, behind, staged, unstaged, untracked, noCommits, detached }
+    branches: [],
+    remotes: [],
+    log: [],
+    out: [], // salida de comandos ejecutados (la "guía")
+    busy: false,
+    selected: null, // { path, area } del diff mostrado
+  };
+  const gitArgsLabel = (args) => 'git ' + args.map((a) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`)).join(' ');
+
+  /** Ejecuta git en el repo actual. log=true lo registra en "Salida" (comandos que hace el usuario). */
+  async function git(args, { log = true, repo = state.git.repo, quiet = false } = {}) {
+    if (!Bridge.ready) throw new Error('Bridge desconectado');
+    if (!repo) throw new Error('No hay repositorio seleccionado');
+    const r = await Bridge.call('git.run', { cwd: repo, args });
+    if (log) {
+      Git.out.push({ cmd: gitArgsLabel(args), code: r.code, text: (r.stdout + (r.stderr ? (r.stdout ? '\n' : '') + r.stderr : '')).trimEnd(), at: Date.now() });
+      if (Git.out.length > 100) Git.out.shift();
+      if (state.git.tab === 'out') renderGitRight();
+      if (r.code !== 0 && !quiet) {
+        const msg = (r.stderr || r.stdout).trim().split('\n').filter(Boolean).slice(-2).join(' · ');
+        toast(`${gitArgsLabel(args)} → ${msg || 'código ' + r.code}`, 'err');
+      }
+    }
+    return r;
+  }
+
+  function openGitView() {
+    state.git.open = true;
+    state.activeSid = GIT_VIEW;
+    save();
+    renderAll();
+    gitRefresh();
+  }
+  function closeGitView() {
+    state.git.open = false;
+    if (state.activeSid === GIT_VIEW) {
+      const list = sessionsOf(state.activeProject);
+      state.activeSid = list.length ? list[list.length - 1].sid : null;
+    }
+    save();
+    renderAll();
+  }
+
+  /** Detecta los repos de las carpetas del proyecto activo (cuando cambia el proyecto). */
+  async function gitSyncProject(force = false) {
+    const p = project();
+    if (!p || !Bridge.ready) return;
+    if (!force && Git.projectId === p.id) return;
+    Git.projectId = p.id;
+    const repos = [];
+    for (const f of p.folders) {
+      try {
+        const r = await git(['rev-parse', '--show-toplevel'], { log: false, repo: f });
+        const top = r.stdout.trim();
+        if (r.code === 0 && top && !repos.includes(top)) repos.push(top);
+      } catch (_) { /* sin acceso */ }
+    }
+    Git.repos = repos;
+    if (!repos.includes(state.git.repo)) state.git.repo = repos[0] || null;
+    save();
+    gitRefresh();
+  }
+
+  function parseGitStatus(out) {
+    const parts = out.split('\0');
+    const st = { branch: '', upstream: '', ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], noCommits: false, detached: false };
+    let i = 0;
+    if (parts[0] && parts[0].startsWith('## ')) {
+      const line = parts[0].slice(3);
+      i = 1;
+      let m;
+      if ((m = line.match(/^No commits yet on (.+)$/)) || (m = line.match(/^Initial commit on (.+)$/))) { st.branch = m[1]; st.noCommits = true; }
+      else if (line.startsWith('HEAD (no branch)')) { st.branch = 'HEAD'; st.detached = true; }
+      else {
+        m = line.match(/^(.+?)(?:\.\.\.(\S+))?(?: \[(.+)\])?$/);
+        if (m) {
+          st.branch = m[1];
+          st.upstream = m[2] || '';
+          const a = (m[3] || '').match(/ahead (\d+)/);
+          const b = (m[3] || '').match(/behind (\d+)/);
+          st.ahead = a ? +a[1] : 0;
+          st.behind = b ? +b[1] : 0;
+        }
+      }
+    }
+    for (; i < parts.length; i++) {
+      const e = parts[i];
+      if (!e || e.length < 4) continue;
+      const x = e[0];
+      const y = e[1];
+      const file = e.slice(3);
+      if (x === 'R' || x === 'C') i++; // -z: el origen del renombrado va en la siguiente entrada
+      if (x === '?' && y === '?') { st.untracked.push({ path: file, code: '?' }); continue; }
+      const conflict = x === 'U' || y === 'U' || (x === 'A' && y === 'A') || (x === 'D' && y === 'D');
+      if (conflict) { st.unstaged.push({ path: file, code: 'U', conflict: true }); continue; }
+      if (x !== ' ') st.staged.push({ path: file, code: x });
+      if (y !== ' ') st.unstaged.push({ path: file, code: y });
+    }
+    return st;
+  }
+
+  async function gitRefresh() {
+    if (!gitPane || state.activeSid !== GIT_VIEW) return;
+    if (!state.git.repo) { Git.status = null; renderGit(); return; }
+    try {
+      const [st, br, rbr, rem, lg] = await Promise.all([
+        git(['status', '--porcelain=v1', '-b', '-z', '--untracked-files=all'], { log: false }),
+        git(['branch', '--format=%(HEAD)%09%(refname:short)%09%(upstream:short)%09%(upstream:track)'], { log: false }),
+        git(['branch', '-r', '--format=%(refname:short)'], { log: false }),
+        git(['remote'], { log: false }),
+        git(['log', '-n', '60', '--pretty=format:%h%x1f%an%x1f%ar%x1f%D%x1f%s'], { log: false }),
+      ]);
+      if (st.code !== 0) { Git.status = { error: st.stderr.trim() }; renderGit(); return; }
+      Git.status = parseGitStatus(st.stdout);
+      Git.branches = br.stdout.split('\n').filter(Boolean).map((l) => {
+        const [head, name, upstream, track] = l.split('\t');
+        return { name, current: head === '*', upstream, track };
+      });
+      Git.remoteBranches = rbr.stdout.split('\n').map((s) => s.trim()).filter((s) => s && !s.endsWith('/HEAD') && s.includes('/'));
+      Git.remotes = rem.stdout.split('\n').filter(Boolean);
+      Git.log = lg.code === 0 ? lg.stdout.split('\n').filter(Boolean).map((l) => {
+        const [hash, author, when, refs, subject] = l.split('\x1f');
+        return { hash, author, when, refs, subject };
+      }) : [];
+    } catch (e) { Git.status = { error: e.message }; }
+    renderGit();
+  }
+
+  /** Ejecuta una acción guiada: bloquea botones, refresca al terminar. */
+  async function gitAction(label, fn) {
+    if (Git.busy) return;
+    Git.busy = true;
+    gitPane.root.classList.add('busy');
+    gitPane.busy.textContent = `${label}…`;
+    try { await fn(); } catch (e) { toast(e.message, 'err'); }
+    Git.busy = false;
+    gitPane.root.classList.remove('busy');
+    gitPane.busy.textContent = '';
+    await gitRefresh();
+  }
+  const okToast = (r, msg) => { if (r.code === 0) toast(msg, 'ok'); return r.code === 0; };
+
+  // ----- acciones -----
+  const gitAdd = (paths) => gitAction('git add', async () => okToast(await git(['add', '--', ...paths]), paths.length > 1 ? `${paths.length} archivos agregados` : `Agregado: ${paths[0]}`));
+  const gitAddAll = () => gitAction('git add -A', async () => okToast(await git(['add', '-A']), 'Todos los cambios agregados'));
+  const gitUnstage = (paths) => gitAction('git restore --staged', async () => {
+    const r = Git.status && Git.status.noCommits ? await git(['rm', '--cached', '-r', '-q', '--', ...paths]) : await git(['restore', '--staged', '--', ...paths]);
+    okToast(r, paths.length > 1 ? `${paths.length} archivos quitados del stage` : `Quitado del stage: ${paths[0]}`);
+  });
+  async function gitDiscard(f) {
+    const untracked = f.code === '?';
+    if (!(await confirmBox(`¿Descartar los cambios de "${f.path}"?`, untracked ? 'El archivo sin seguimiento se BORRARÁ del disco (git clean -f). No se puede deshacer.' : 'Se perderán los cambios sin preparar (git restore). No se puede deshacer.'))) return;
+    gitAction('descartar', async () => okToast(untracked ? await git(['clean', '-f', '--', f.path]) : await git(['restore', '--', f.path]), `Descartado: ${f.path}`));
+  }
+  async function gitCommit(andPush) {
+    const msg = gitPane.msg.value.trim();
+    if (!msg) { toast('Escribe un mensaje de commit', 'err'); gitPane.msg.focus(); return; }
+    const st = Git.status || {};
+    let addAll = false;
+    if (!(st.staged || []).length) {
+      if (!(st.unstaged || []).length && !(st.untracked || []).length) { toast('No hay cambios para commitear'); return; }
+      if (!(await confirmBox('No hay archivos preparados', '¿Agregar TODOS los cambios (git add -A) y hacer commit?'))) return;
+      addAll = true;
+    }
+    gitAction('git commit', async () => {
+      if (addAll && (await git(['add', '-A'])).code !== 0) return;
+      const r = await git(['commit', '-m', msg]);
+      if (r.code !== 0) return;
+      gitPane.msg.value = '';
+      toast(`Commit creado: ${msg.split('\n')[0]}`, 'ok');
+      if (andPush) await doPush();
+    });
+  }
+  async function doPush() {
+    const st = Git.status || {};
+    if (!Git.remotes.length) { toast('El repositorio no tiene remotos (git remote add origin <url>)', 'err'); return; }
+    // sin upstream: publica la rama en el primer remoto y la enlaza
+    const args = st.upstream ? ['push'] : ['push', '-u', Git.remotes.includes('origin') ? 'origin' : Git.remotes[0], 'HEAD'];
+    okToast(await git(args), 'Push completado');
+  }
+  const gitPush = () => gitAction('git push', doPush);
+  const gitPull = () => gitAction('git pull', async () => okToast(await git(['pull', '--no-edit']), 'Pull completado'));
+  const gitFetch = () => gitAction('git fetch', async () => okToast(await git(['fetch', '--all', '--prune']), 'Fetch completado'));
+  const gitStash = () => gitAction('git stash', async () => okToast(await git(['stash', 'push', '-u', '-m', `FRAP ${new Date().toLocaleString()}`]), 'Cambios guardados en el stash'));
+  const gitStashPop = () => gitAction('git stash pop', async () => okToast(await git(['stash', 'pop']), 'Stash aplicado'));
+  const gitInit = () => gitAction('git init', async () => {
+    const p = project();
+    if (!p) return;
+    if ((await git(['init'], { repo: p.folders[0] })).code === 0) { toast('Repositorio creado', 'ok'); await gitSyncProject(true); }
+  });
+
+  async function gitCheckout(name, isRemote) {
+    const st = Git.status || {};
+    if ((st.staged || []).length || (st.unstaged || []).length) {
+      if (!(await confirmBox(`¿Cambiar a "${name}" con cambios sin commitear?`, 'Git los llevará a la otra rama si no hay conflicto; si lo hay, el cambio fallará y nada se pierde. También puedes usar Stash antes.'))) return;
+    }
+    // rama remota (origin/x) -> rama local que la sigue
+    const args = isRemote ? ['checkout', '--track', name] : ['checkout', name];
+    gitAction(gitArgsLabel(args), async () => okToast(await git(args), `Ahora en ${isRemote ? name.split('/').slice(1).join('/') : name}`));
+  }
+  function gitNewBranch() {
+    const name = gitPane.newBranch.value.trim();
+    if (!name) { toast('Escribe el nombre de la nueva rama', 'err'); gitPane.newBranch.focus(); return; }
+    if (!/^(?!-)(?!.*\.\.)(?!.*\/\/)[\w./-]+(?<![./])$/.test(name)) { toast('Nombre de rama inválido', 'err'); return; }
+    gitAction('git checkout -b', async () => {
+      if (okToast(await git(['checkout', '-b', name]), `Rama "${name}" creada`)) gitPane.newBranch.value = '';
+    });
+  }
+  async function gitDeleteBranch(b) {
+    if (!(await confirmBox(`¿Eliminar la rama "${b.name}"?`, 'Usa git branch -d: si tiene commits sin fusionar, git se negará y no se pierde nada.'))) return;
+    gitAction('git branch -d', async () => okToast(await git(['branch', '-d', b.name]), `Rama "${b.name}" eliminada`));
+  }
+
+  /** Comando libre: "git log --oneline -5" o "log --oneline -5". */
+  function splitArgs(s) {
+    const out = [];
+    let cur = '';
+    let q = null;
+    let any = false;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (q) { if (c === q) q = null; else if (c === '\\' && q === '"' && i + 1 < s.length) cur += s[++i]; else cur += c; continue; }
+      if (c === '"' || c === "'") { q = c; any = true; continue; }
+      if (/\s/.test(c)) { if (cur || any) { out.push(cur); cur = ''; any = false; } continue; }
+      cur += c;
+    }
+    if (cur || any) out.push(cur);
+    return out;
+  }
+  function gitFree() {
+    let args = splitArgs(gitPane.free.value.trim());
+    if (args[0] === 'git') args = args.slice(1);
+    if (!args.length) return;
+    state.git.tab = 'out';
+    gitAction(gitArgsLabel(args), async () => {
+      const r = await git(args, { quiet: true });
+      if (r.code === 0) gitPane.free.value = '';
+      renderGitRight();
+    });
+  }
+
+  // ----- diff / historial -----
+  async function gitShowDiff(f, area) {
+    Git.selected = { path: f.path, area };
+    state.git.tab = 'diff';
+    let args;
+    if (area === 'untracked') args = ['diff', '--no-index', '--', '/dev/null', f.path];
+    else if (area === 'staged') args = ['diff', '--cached', '--', f.path];
+    else args = ['diff', '--', f.path];
+    const r = await git(args, { log: false });
+    Git.diff = { title: `${f.path} · ${area === 'staged' ? 'preparado' : area === 'untracked' ? 'nuevo' : 'sin preparar'}`, cmd: gitArgsLabel(args), text: r.stdout || r.stderr || '(sin diferencias)' };
+    renderGit();
+  }
+  async function gitShowCommit(c) {
+    state.git.tab = 'diff';
+    Git.selected = null;
+    const args = ['show', '--stat', '--patch', '--format=commit %H%nAutor: %an <%ae>%nFecha: %ad%n%n    %s%n%n%b', c.hash];
+    const r = await git(args, { log: false });
+    Git.diff = { title: `${c.hash} · ${c.subject}`, cmd: gitArgsLabel(args), text: r.stdout || r.stderr };
+    renderGit();
+  }
+
+  function diffView(text) {
+    const pre = h('pre.git-diff');
+    const lines = text.split('\n').slice(0, 5000);
+    for (const l of lines) {
+      let cls = '';
+      if (/^(\+\+\+|---) /.test(l) || /^(diff|index|commit|Autor|Fecha|new file|deleted file|similarity|rename) /.test(l)) cls = 'meta';
+      else if (l.startsWith('@@')) cls = 'hunk';
+      else if (l.startsWith('+')) cls = 'add';
+      else if (l.startsWith('-')) cls = 'del';
+      pre.append(h(`span${cls ? '.' + cls : ''}`, l + '\n'));
+    }
+    if (text.split('\n').length > 5000) pre.append(h('span.meta', '… (diff truncado a 5000 líneas)\n'));
+    return pre;
+  }
+
+  // ----- render -----
+  function ensureGitPane() {
+    if (gitPane) return gitPane;
+    const repo = h('select.git-repo', { title: 'Repositorio' });
+    repo.addEventListener('change', () => { state.git.repo = repo.value; Git.diff = null; save(); gitRefresh(); renderPanes(); });
+    const btn = (label, title, fn, cls = '') => h(`button${cls}`, { title, onclick: fn }, label);
+    const branch = h('span.git-branch');
+    const busy = h('span.git-busy.muted');
+    const msg = h('textarea.git-msg', { placeholder: 'Mensaje del commit (Ctrl+Enter = commit)', spellcheck: 'true' });
+    msg.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); gitCommit(false); } });
+    const newBranch = h('input.mono', { placeholder: 'nueva-rama', spellcheck: 'false' });
+    newBranch.addEventListener('keydown', (e) => { if (e.key === 'Enter') gitNewBranch(); });
+    const free = h('input.mono.grow', { placeholder: 'status · log --oneline -10 · diff HEAD~1 · branch -a …', spellcheck: 'false' });
+    free.addEventListener('keydown', (e) => { if (e.key === 'Enter') gitFree(); });
+    const left = h('div.git-left');
+    const rtabs = h('div.git-rtabs');
+    const right = h('div.git-right-body');
+    const root = h('div.git-pane.hidden',
+      h('div.git-bar',
+        repo, branch,
+        h('span.grow'), busy,
+        btn('⟳', 'Actualizar (git status)', () => gitRefresh(), '.icon'),
+        btn('⤓ Fetch', 'git fetch --all --prune', gitFetch),
+        btn('⬇ Pull', 'git pull --no-edit', gitPull),
+        btn('⬆ Push', 'git push (o push -u origin HEAD si la rama no tiene upstream)', gitPush),
+        btn('📦 Stash', 'git stash push -u (guarda los cambios y limpia el directorio)', gitStash),
+        btn('📤 Pop', 'git stash pop (recupera lo último guardado)', gitStashPop)),
+      h('div.git-main',
+        left,
+        h('div.git-right', rtabs, right,
+          h('div.git-free', h('span.mono.muted', '$ git'), free, h('button', { onclick: gitFree, title: 'Ejecutar el comando (Enter)' }, 'Ejecutar')))));
+    $('#term-host').append(root);
+    gitPane = { root, repo, branch, busy, msg, newBranch, free, left, rtabs, right };
+    // refresco automático mientras la pestaña está visible
+    setInterval(() => { if (state.activeSid === GIT_VIEW && !document.hidden && !Git.busy && !modalClose) gitRefresh(); }, 5000);
+    window.addEventListener('focus', () => { if (state.activeSid === GIT_VIEW) gitRefresh(); });
+    return gitPane;
+  }
+
+  function fileRow(f, area) {
+    const sel = Git.selected && Git.selected.path === f.path && Git.selected.area === area;
+    const acts = [];
+    if (area === 'staged') acts.push(h('button.icon.mini', { title: `git restore --staged -- ${f.path}`, onclick: (e) => { e.stopPropagation(); gitUnstage([f.path]); } }, '−'));
+    else {
+      acts.push(h('button.icon.mini.danger', { title: area === 'untracked' ? `git clean -f -- ${f.path} (borra el archivo)` : `git restore -- ${f.path} (descarta cambios)`, onclick: (e) => { e.stopPropagation(); gitDiscard(f); } }, '↶'));
+      acts.push(h('button.icon.mini', { title: `git add -- ${f.path}`, onclick: (e) => { e.stopPropagation(); gitAdd([f.path]); } }, '+'));
+    }
+    const slash = f.path.lastIndexOf('/');
+    return h(`div.git-file${sel ? '.sel' : ''}${f.conflict ? '.conflict' : ''}`, { title: `${f.path}\nClic: ver diff`, onclick: () => gitShowDiff(f, area) },
+      h(`span.git-code.c-${f.code === '?' ? 'U2' : f.code}`, f.code === '?' ? 'U' : f.code),
+      h('span.git-fname', slash === -1 ? f.path : f.path.slice(slash + 1)),
+      slash === -1 ? null : h('span.git-fdir', f.path.slice(0, slash)),
+      h('span.grow'),
+      ...acts);
+  }
+  function fileSection(title, files, area, bulk) {
+    if (!files.length) return null;
+    return h('div.git-sec',
+      h('div.git-sec-head', h('span.grow', `${title} (${files.length})`), bulk),
+      files.map((f) => fileRow(f, area)));
+  }
+
+  function renderGit() {
+    if (!gitPane) return;
+    const p = gitPane;
+    const st = Git.status;
+    p.repo.replaceChildren(...(Git.repos.length ? Git.repos.map((r) => h('option', { value: r, title: tilde(r) }, `📁 ${basename(r)}`)) : [h('option', { value: '' }, 'Sin repositorio')]));
+    p.repo.value = state.git.repo || '';
+    p.repo.title = state.git.repo ? tilde(state.git.repo) : '';
+    if (!st || st.error || !state.git.repo) {
+      p.branch.replaceChildren();
+      const proj = project();
+      p.left.replaceChildren(h('div.git-empty',
+        st && st.error ? h('p', { style: 'color:var(--err)' }, st.error) : h('p.muted', proj ? 'Las carpetas de este proyecto no son un repositorio git.' : 'Selecciona un proyecto.'),
+        proj && !state.git.repo ? h('button.primary', { onclick: gitInit, title: `git init en ${proj.folders[0]}` }, `git init en ${basename(proj.folders[0])}`) : null));
+      renderGitRight();
+      return;
+    }
+    const sync = [];
+    if (st.ahead) sync.push(h('span.git-ahead', { title: `${st.ahead} commit(s) por subir` }, `↑${st.ahead}`));
+    if (st.behind) sync.push(h('span.git-behind', { title: `${st.behind} commit(s) por bajar` }, `↓${st.behind}`));
+    p.branch.replaceChildren(
+      h('span.git-branch-name', { title: st.upstream ? `sigue a ${st.upstream}` : 'sin upstream (el primer push lo publica)' }, `⎇ ${st.branch}`),
+      st.upstream ? h('span.muted', `→ ${st.upstream}`) : h('span.badge', 'sin upstream'),
+      ...sync);
+    const total = st.staged.length + st.unstaged.length + st.untracked.length;
+    const unstagedPaths = [...new Set(st.unstaged.map((f) => f.path))];
+    p.left.replaceChildren(...[
+      h('div.git-commit',
+        p.msg,
+        h('div.field-row',
+          h('button.primary.grow', { onclick: () => gitCommit(false), title: 'git commit -m "<mensaje>"' }, `✓ Commit${st.staged.length ? ` (${st.staged.length})` : ''}`),
+          h('button', { onclick: () => gitCommit(true), title: 'git commit -m "<mensaje>" && git push' }, 'Commit y push'))),
+      total ? null : h('p.muted.git-clean', '✓ Sin cambios: el árbol de trabajo está limpio.'),
+      fileSection('Preparados', st.staged, 'staged',
+        h('button.mini', { title: 'git restore --staged -- <todos>', onclick: () => gitUnstage(st.staged.map((f) => f.path)) }, '− todos')),
+      fileSection('Cambios', st.unstaged, 'unstaged',
+        h('button.mini', { title: 'git add -- <todos los modificados>', onclick: () => gitAdd(unstagedPaths) }, '+ todos')),
+      fileSection('Sin seguimiento', st.untracked, 'untracked',
+        h('button.mini', { title: 'git add -- <todos los nuevos>', onclick: () => gitAdd(st.untracked.map((f) => f.path)) }, '+ todos')),
+      total > 1 ? h('div.git-addall', h('button.mini', { title: 'git add -A', onclick: gitAddAll }, '+ Agregar todo (git add -A)')) : null,
+      h('div.git-sec',
+        h('div.git-sec-head', h('span.grow', 'Ramas')),
+        h('div.field-row.git-newbranch', p.newBranch, h('button.mini', { onclick: gitNewBranch, title: 'git checkout -b <nueva-rama>' }, 'checkout -b')),
+        Git.branches.map((b) => h(`div.git-branch-row${b.current ? '.current' : ''}`, {
+          title: b.current ? 'Rama actual' : `git checkout ${b.name}`,
+          onclick: () => { if (!b.current) gitCheckout(b.name, false); },
+        },
+        h('span', b.current ? '●' : '○'),
+        h('span.grow.mono', b.name),
+        b.track ? h('span.muted.mono', b.track) : null,
+        b.current ? null : h('button.icon.mini', { title: `git branch -d ${b.name}`, onclick: (e) => { e.stopPropagation(); gitDeleteBranch(b); } }, '✕'))),
+        (Git.remoteBranches || []).filter((r) => !Git.branches.some((b) => b.name === r.split('/').slice(1).join('/'))).length
+          ? h('details.git-remotes',
+            h('summary.muted', 'Ramas remotas'),
+            Git.remoteBranches
+              .filter((r) => !Git.branches.some((b) => b.name === r.split('/').slice(1).join('/')))
+              .map((r) => h('div.git-branch-row', { title: `git checkout --track ${r}`, onclick: () => gitCheckout(r, true) }, h('span', '☁'), h('span.grow.mono', r))))
+          : null),
+    ].filter(Boolean));
+    renderGitRight();
+  }
+
+  function renderGitRight() {
+    if (!gitPane) return;
+    const p = gitPane;
+    const tab = state.git.tab || 'diff';
+    const tb = (id, label) => h(`button${tab === id ? '.active' : ''}`, { onclick: () => { state.git.tab = id; save(); renderGitRight(); } }, label);
+    p.rtabs.replaceChildren(tb('diff', 'Diff'), tb('log', `Historial${Git.log.length ? ` (${Git.log.length})` : ''}`), tb('out', `Salida${Git.out.length ? ` (${Git.out.length})` : ''}`));
+    let body;
+    if (tab === 'diff') {
+      body = Git.diff
+        ? [h('div.git-diff-head', h('span.grow', Git.diff.title), h('span.mono.muted', `$ ${Git.diff.cmd}`)), diffView(Git.diff.text)]
+        : [h('p.muted.git-hint', 'Haz clic en un archivo de la izquierda para ver sus cambios, o en un commit del historial.')];
+    } else if (tab === 'log') {
+      body = Git.log.length
+        ? [h('div.git-log', Git.log.map((c) => h('div.git-commit-row', { title: 'Ver el commit (git show)', onclick: () => gitShowCommit(c) },
+          h('span.mono.git-hash', c.hash),
+          h('span.git-subject', c.subject, c.refs ? h('span.git-refs', c.refs) : null),
+          h('span.muted.git-when', `${c.author} · ${c.when}`))))]
+        : [h('p.muted.git-hint', 'Aún no hay commits.')];
+    } else {
+      body = Git.out.length
+        ? [h('div.git-out', [...Git.out].reverse().map((o) => h('div.git-out-item',
+          h('div.mono', h(`span.${o.code === 0 ? 'ok' : 'err'}`, o.code === 0 ? '✓' : '✗'), ` $ ${o.cmd}`),
+          o.text ? h('pre', o.text) : null)))]
+        : [h('p.muted.git-hint', 'Aquí aparece cada comando git que ejecutes desde esta vista, con su salida. Así ves exactamente qué hace cada botón.')];
+    }
+    p.right.replaceChildren(...body);
+  }
+
   // ---------- bases de datos: conexiones (.env del bridge) + pestaña DB en el centro ----------
   const DB_VIEW = 'db:main';
-  const isViewSid = (sid) => isPageView(sid) || sid === DB_VIEW;
+  const isViewSid = (sid) => isPageView(sid) || sid === DB_VIEW || sid === GIT_VIEW;
   const DB_ENGINES = { mysql: 'MySQL / MariaDB', postgres: 'PostgreSQL', sqlite: 'SQLite' };
   const DB_PORTS = { mysql: '3306', postgres: '5432' };
   /** Respuesta de db.list: { envFile, cli, clients, skills, conns } (sin contraseñas). */
@@ -2808,7 +3259,7 @@
           h('div.field', { style: 'width:150px' }, h('label', 'flag carpeta extra'), l.add))),
         h('h4', { style: 'margin:8px 0 0' }, 'Atajos'),
         h('p.muted.mono', { style: 'margin:0;font-size:11px;white-space:pre-line' },
-          'Alt+1…9  ir a pestaña\nAlt+Shift+T  nueva shell   ·   Alt+Shift+C/X/O  claude/codex/opencode   ·   Alt+Shift+D  DB   ·   Alt+Shift+M  música ⏯\nAlt+Shift+W  cerrar pestaña   ·   Alt+Shift+B / P  ocultar paneles\nCtrl+Shift+C  copiar selección   ·   Ctrl+Shift+V  pegar'),
+          'Alt+1…9  ir a pestaña\nAlt+Shift+T  nueva shell   ·   Alt+Shift+C/X/O  claude/codex/opencode   ·   Alt+Shift+D  DB   ·   Alt+Shift+G  Git   ·   Alt+Shift+M  música ⏯\nAlt+Shift+W  cerrar pestaña   ·   Alt+Shift+B / P  ocultar paneles\nCtrl+Shift+C  copiar selección   ·   Ctrl+Shift+V  pegar'),
       ],
       foot: [h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
     });
@@ -2820,7 +3271,7 @@
   function isAppShortcut(e) {
     if (!e.altKey || e.ctrlKey || e.metaKey) return false;
     if (!e.shiftKey && /^Digit[1-9]$/.test(e.code)) return true;
-    return e.shiftKey && ['KeyT', 'KeyW', 'KeyB', 'KeyP', 'KeyC', 'KeyX', 'KeyO', 'KeyD', 'KeyM'].includes(e.code);
+    return e.shiftKey && ['KeyT', 'KeyW', 'KeyB', 'KeyP', 'KeyC', 'KeyX', 'KeyO', 'KeyD', 'KeyM', 'KeyG'].includes(e.code);
   }
   document.addEventListener('keydown', (e) => {
     if (!$('#alarm').classList.contains('hidden')) return; // el aviso bloqueante tiene prioridad
@@ -2838,9 +3289,11 @@
       case 'KeyX': launch('codex'); break;
       case 'KeyO': launch('opencode'); break;
       case 'KeyD': openDbView(); break;
+      case 'KeyG': openGitView(); break;
       case 'KeyM': togglePlay(); break;
       case 'KeyW':
         if (state.activeSid === DB_VIEW) closeDbView();
+        else if (state.activeSid === GIT_VIEW) closeGitView();
         else if (isPageView(state.activeSid)) closePageView(state.activeSid.slice(PAGE_PREFIX.length));
         else if (state.activeSid) closeTerm(state.activeSid);
         break;
@@ -2872,7 +3325,7 @@
   $('#btn-settings').onclick = openSettings;
   $('#toggle-left').onclick = () => togglePanel('left');
   $('#toggle-right').onclick = () => togglePanel('right');
-  for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : launch(b.dataset.launch));
+  for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : b.dataset.launch === 'git' ? openGitView() : launch(b.dataset.launch));
   for (const b of $$('#rtabs button')) b.onclick = () => setRtab(b.dataset.rtab);
   $('#token-input').value = conn.token;
   $('#port-input').value = conn.port;

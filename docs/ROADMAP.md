@@ -24,6 +24,7 @@
 - [x] Música: archivos (IndexedDB) y YouTube (relé `/yt-player`), bucle (lista/canción), aleatorio sin repetir, arrastrar para reordenar, dock persistente y teclas multimedia
 - [x] Logos de claude, codex, opencode y DB en lanzadores, pestañas y panel izquierdo; favicon propio
 - [x] Temporizador: recordatorios recurrentes o de una vez, aviso simple o bloqueante (posponer), ícono/título/descripción, plantillas, sonido y notificación del sistema
+- [x] Git guiado: status, add/restore, commit (y push), ramas (checkout, checkout -b, track remoto, borrar), fetch/pull/push, stash, diff, historial, comandos libres con salida visible
 - [ ] Paneles redimensionables arrastrando el borde
 - [ ] Buscar en la terminal (xterm addon-search vendorizado)
 - [ ] Notificación del navegador cuando un agente termina o pide atención (pasa de activo a inactivo)
@@ -41,7 +42,7 @@
 - [ ] Música: importar playlists de YouTube, varias listas, ecualizador
 - [ ] Temporizador: horario activo (p. ej. solo de 9 a 18 h), días de la semana, estadísticas de cumplimiento
 - [ ] MCP servers: listar y editar (`.mcp.json`, `~/.claude.json`, `~/.codex/config.toml`)
-- [ ] Git por proyecto: rama, cambios y diff en el panel derecho
+- [ ] Git: stage por líneas (hunks), resolver conflictos, generar el mensaje de commit con claude
 - [ ] Lanzar con worktrees: un agente por rama en paralelo
 
 ## Ideas

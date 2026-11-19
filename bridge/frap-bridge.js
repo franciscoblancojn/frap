@@ -321,6 +321,14 @@ function write(s, data) {
 // ---------- estado persistente de la UI ----------
 const STATE_FILE = path.join(FRAP_HOME, 'state.json');
 
+// ---------- git ----------
+// Subcomandos que la vista Git puede ejecutar (el resto, desde una terminal).
+const GIT_ALLOWED = new Set([
+  'status', 'add', 'restore', 'reset', 'rm', 'mv', 'commit', 'checkout', 'switch', 'branch', 'merge',
+  'log', 'show', 'diff', 'pull', 'push', 'fetch', 'stash', 'remote', 'rev-parse', 'tag', 'clean',
+  'init', 'blame', 'shortlog', 'describe', 'cherry-pick', 'revert', 'ls-files',
+]);
+
 // ---------- bases de datos ----------
 const DB_ENV = path.join(FRAP_HOME, 'databases.env');
 const DB_CLI = path.join(__dirname, 'frap-db.js');
@@ -515,6 +523,38 @@ const ops = {
       written.push(f);
     }
     return written;
+  },
+  /**
+   * Ejecuta `git <args>` en `cwd` (sin shell). Nunca lanza por código de salida distinto de 0:
+   * devuelve {code, stdout, stderr} para que la UI muestre el error de git tal cual.
+   */
+  'git.run': ({ cwd, args }) => {
+    const dir = safePath(cwd);
+    if (!Array.isArray(args) || !args.length || args.some((a) => typeof a !== 'string')) throw new Error('Argumentos de git inválidos');
+    // opciones que permiten ejecutar comandos arbitrarios (-c core.sshCommand=…, --upload-pack=…)
+    if (args.some((a) => /^--(exec|upload-pack|receive-pack)\b|^-c$|^--config-env|^-C$|^--git-dir|^--work-tree/.test(a))) {
+      throw new Error('Opción de git no permitida desde la UI');
+    }
+    const sub = args.find((a) => !a.startsWith('-'));
+    if (!GIT_ALLOWED.has(sub)) throw new Error(`Subcomando de git no permitido desde la UI: ${sub || '(ninguno)'}. Usa una terminal para eso.`);
+    return new Promise((resolve, reject) => {
+      execFile('git', ['-c', 'core.quotepath=off', '-c', 'color.ui=false', ...args], {
+        cwd: dir,
+        timeout: 120000,
+        maxBuffer: 8 * 1024 * 1024,
+        env: childEnv({
+          GIT_TERMINAL_PROMPT: '0', // sin credenciales: falla en vez de colgarse esperando
+          GIT_EDITOR: 'true', // merges/rebases no abren editor
+          GIT_PAGER: 'cat',
+          GIT_OPTIONAL_LOCKS: '0',
+          SSH_ASKPASS_REQUIRE: 'never',
+        }),
+      }, (err, stdout, stderr) => {
+        if (err && err.code === 'ENOENT') { reject(new Error('git no está instalado')); return; }
+        if (err && err.killed) { reject(new Error('git tardó demasiado (¿pide credenciales? usa una terminal)')); return; }
+        resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout, stderr });
+      });
+    });
   },
   /** Título/autor de un video (oEmbed público de YouTube, sin API key). */
   'music.ytInfo': async ({ id }) => {

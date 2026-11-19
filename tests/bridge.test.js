@@ -73,6 +73,7 @@ test.before(async () => {
       ...process.env,
       FRAP_PORT: '0', FRAP_TOKEN: TOKEN, HOME: root, CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', FRAP_HOME: path.join(root, 'cfg'),
       FRAP_FS_ROOT: root, FRAP_QUIET: '1', SHELL: '/bin/sh',
+      GIT_AUTHOR_NAME: 'FRAP Test', GIT_AUTHOR_EMAIL: 'test@frap.local', GIT_COMMITTER_NAME: 'FRAP Test', GIT_COMMITTER_EMAIL: 'test@frap.local',
     },
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
@@ -272,4 +273,29 @@ test('música: /yt-player sirve el relé de YouTube y music.ytInfo valida el ID'
   await assert.rejects(client.call('music.ytInfo', { id: 'no-valido!' }), /inválido/);
   // el Origin http del relé no puede abrir el WebSocket del bridge
   await assert.rejects(ws.connect(port, `/?token=${TOKEN}`, { Origin: `http://127.0.0.1:${port}` }), { status: 403 });
+});
+
+test('git.run: flujo status → add → commit → checkout -b, errores y lista blanca', async () => {
+  const repo = path.join(root, 'repo');
+  fs.mkdirSync(repo, { recursive: true });
+  const git = (...args) => client.call('git.run', { cwd: repo, args });
+  assert.equal((await git('init', '-b', 'main')).code, 0);
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'hola\n');
+  assert.match((await git('status', '--porcelain=v1', '-b')).stdout, /\?\? a\.txt/);
+  assert.equal((await git('add', '--', 'a.txt')).code, 0);
+  assert.match((await git('status', '--porcelain=v1')).stdout, /^A {2}a\.txt/m);
+  const c = await git('commit', '-m', 'primero');
+  assert.equal(c.code, 0, c.stderr);
+  assert.equal((await git('checkout', '-b', 'feature/x')).code, 0);
+  assert.equal((await git('rev-parse', '--abbrev-ref', 'HEAD')).stdout.trim(), 'feature/x');
+  assert.match((await git('log', '-n', '1', '--pretty=format:%s')).stdout, /primero/);
+  // errores de git vuelven como code != 0 con stderr, no como excepción
+  const bad = await git('checkout', 'no-existe');
+  assert.notEqual(bad.code, 0);
+  assert.match(bad.stderr, /no-existe/);
+  // lista blanca y opciones peligrosas
+  await assert.rejects(git('config', 'user.name', 'x'), /no permitido/);
+  await assert.rejects(git('-c', 'core.sshCommand=touch /tmp/pwn', 'fetch'), /no permitida/);
+  await assert.rejects(git('push', '--receive-pack=touch /tmp/pwn'), /no permitida/);
+  await assert.rejects(client.call('git.run', { cwd: '/etc', args: ['status'] }), /fuera/);
 });

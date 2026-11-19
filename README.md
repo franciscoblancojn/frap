@@ -28,6 +28,13 @@ Requisitos: Node ≥ 18, Python 3, Linux (macOS debería funcionar; no está pro
 
 - **Izquierdo, proyectos.** Cada proyecto tiene una o más carpetas y sus terminales. ＋ crea un proyecto desde una carpeta y ⊕ le agrega otra. La primera carpeta es el `cwd`; las demás se pasan con `--add-dir` a claude y codex.
 - **Central, terminal.** Pestañas por proyecto. Los botones lanzan `shell`, `claude`, `codex` u `opencode` en una terminal nueva. El punto verde indica actividad.
+  - **git** (logo de Git, `Alt+Shift+G`) abre una interfaz guiada sobre el repositorio del proyecto:
+    - Archivos *preparados*, *cambios* y *sin seguimiento*, con `add` / `restore --staged` / descartar por archivo o todos.
+    - Commit (o *commit y push*). Si no hay nada preparado, ofrece `git add -A`.
+    - Ramas: `checkout`, `checkout -b`, `branch -d`, y `checkout --track` desde ramas remotas.
+    - Fetch, pull, push y stash. El push hace `push -u origin HEAD` si la rama no tiene upstream.
+    - Diff coloreado por archivo, historial (clic = `git show`) y una entrada para comandos libres (`$ git log --oneline -5`).
+    - **Salida** muestra cada comando ejecutado con su resultado; el tooltip de cada botón dice qué comando corre.
   - **db** abre la pestaña de consultas SQL. Tiene selector de conexión, lista de tablas (clic = `SELECT * … LIMIT 100`), editor (Ctrl+Enter ejecuta, o ejecuta solo la selección), resultados en tabla (clic en una celda la copia), historial y exportación a CSV. Es **solo lectura** salvo que la conexión permita escritura en la UI, y entonces cada ejecución pide confirmación.
 - **Derecho**:
   - **Procesos:** árbol de procesos de cada terminal (CPU, memoria, tiempo), con los agentes resaltados. Se pueden terminar.
@@ -48,6 +55,7 @@ Requisitos: Node ≥ 18, Python 3, Linux (macOS debería funcionar; no está pro
 | `Alt+1…9` | ir a la pestaña N |
 | `Alt+Shift+T` / `C` / `X` / `O` | nueva shell / claude / codex / opencode |
 | `Alt+Shift+D` | pestaña DB |
+| `Alt+Shift+G` | pestaña Git |
 | `Alt+Shift+M` | música: reproducir / pausa |
 | `Ctrl+Enter` (DB) | ejecutar consulta o selección |
 | `Alt+Shift+W` | cerrar pestaña |
