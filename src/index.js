@@ -110,6 +110,7 @@
     timers: [],
     settings: {
       fontSize: 13,
+      editor: 'code', // comando para abrir archivos clicados en la terminal (VS Code)
       pageMode: 'tab', // cómo se abren las páginas por defecto: 'tab' (navegador) | 'iframe' (pestaña interna)
       launchers: {
         claude: { cmd: 'claude', addDir: '--add-dir' },
@@ -240,7 +241,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'config.scan', 'db.list', 'db.save', 'db.query', 'git.run', 'music.ytInfo'];
+  const REQUIRED_OPS = ['session.create', 'config.scan', 'db.list', 'db.save', 'db.query', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -303,6 +304,7 @@
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open(pane);
+    term.registerLinkProvider(pathLinkProvider(() => t));
     t = { sid: info.sid, info, term, fit, pane, attaching: true, lastOut: info.lastOutput || 0, liveTitle: '' };
     terms.set(info.sid, t);
 
@@ -524,6 +526,127 @@
     ta.select();
     try { document.execCommand('copy'); } catch (_) { /* nada */ }
     ta.remove();
+  }
+
+  // ======================================================================
+  // Rutas clicables en la terminal: clic = abrir en el editor (VS Code)
+  // ======================================================================
+  // Candidatas: /abs/ruta, ~/ruta, ./ruta, ../ruta, dir/archivo y archivo.ext, con :línea:col opcional.
+  // Solo se subrayan las que el bridge confirma que existen.
+  const PATH_RE = /(?:(?:~|\.{1,2})?\/|[\w@+-][\w@.+-]*\/)[^\s'"`<>()[\]{}|,;:*?]*|[\w@+-][\w@.+-]*\.[A-Za-z][\w]{0,7}/g;
+  const pathCache = new Map(); // `${cwd}\0${ruta}` -> { hit: {path, dir} | null, at }
+  const PATH_TTL = 15000;
+
+  /** Texto de la línea lógica (une filas partidas) con un mapa índice -> celda {x, y} (1-based). */
+  function logicalLine(buffer, row) {
+    let start = row;
+    while (start > 0 && buffer.getLine(start) && buffer.getLine(start).isWrapped) start--;
+    let end = row;
+    while (buffer.getLine(end + 1) && buffer.getLine(end + 1).isWrapped) end++;
+    let text = '';
+    const map = [];
+    for (let y = start; y <= end; y++) {
+      const line = buffer.getLine(y);
+      if (!line) continue;
+      for (let x = 0; x < line.length; x++) {
+        const cell = line.getCell(x);
+        if (!cell || cell.getWidth() === 0) continue; // segunda mitad de un carácter ancho
+        const ch = cell.getChars() || ' ';
+        for (let k = 0; k < ch.length; k++) map.push({ x: x + 1, y: y + 1, w: cell.getWidth() });
+        text += ch;
+      }
+    }
+    return { text, map };
+  }
+
+  function pathCandidates(text) {
+    const out = [];
+    PATH_RE.lastIndex = 0;
+    let m;
+    while ((m = PATH_RE.exec(text))) {
+      let raw = m[0];
+      const startIdx = m.index;
+      // puntuación final que no es parte de la ruta ("…/archivo.sql." al final de una frase)
+      raw = raw.replace(/[.,;:!?'"]+$/, '');
+      if (raw.length < 3 || /^\.+\/?$/.test(raw) || /^\/+$/.test(raw)) continue;
+      if (/^[a-z][\w+.-]*:\/\//i.test(text.slice(Math.max(0, startIdx - 10), startIdx + 3))) continue; // parte de una URL
+      // :línea[:columna] o (línea,col) justo después
+      const rest = text.slice(startIdx + raw.length);
+      const lc = rest.match(/^:(\d+)(?::(\d+))?/) || rest.match(/^\((\d+),\s*(\d+)\)/);
+      const len = raw.length + (lc ? lc[0].length : 0);
+      out.push({ raw, start: startIdx, end: startIdx + len - 1, line: lc ? +lc[1] : 0, col: lc && lc[2] ? +lc[2] : 0 });
+    }
+    return out;
+  }
+
+  async function resolvePaths(cwd, raws) {
+    const now = Date.now();
+    const need = [...new Set(raws)].filter((r) => {
+      const c = pathCache.get(`${cwd}\0${r}`);
+      return !c || now - c.at > PATH_TTL;
+    });
+    if (need.length && Bridge.ready) {
+      try {
+        const found = await Bridge.call('paths.check', { cwd, paths: need });
+        const hit = new Map(found.map((f) => [f.input, f]));
+        for (const r of need) pathCache.set(`${cwd}\0${r}`, { hit: hit.get(r) || null, at: now });
+      } catch (_) { /* bridge viejo o caído: sin enlaces */ }
+      if (pathCache.size > 3000) pathCache.clear();
+    }
+    const res = new Map();
+    for (const r of raws) { const c = pathCache.get(`${cwd}\0${r}`); if (c && c.hit) res.set(r, c.hit); }
+    return res;
+  }
+
+  function pathLinkProvider(getTerm) {
+    return {
+      provideLinks(y, callback) {
+        const t = getTerm();
+        if (!t || !Bridge.ready) { callback(undefined); return; }
+        const buffer = t.term.buffer.active;
+        const { text, map } = logicalLine(buffer, y - 1);
+        const cands = pathCandidates(text);
+        if (!cands.length) { callback(undefined); return; }
+        const cwd = (t.info.meta || {}).cwd || '';
+        resolvePaths(cwd, cands.map((c) => c.raw)).then((found) => {
+          const links = [];
+          for (const c of cands) {
+            const f = found.get(c.raw);
+            if (!f) continue;
+            const a = map[c.start];
+            const b = map[c.end];
+            if (!a || !b || a.y > y || b.y < y) continue; // solo los que tocan esta fila
+            const label = f.dir ? 'carpeta' : c.line ? `línea ${c.line}` : 'archivo';
+            links.push({
+              range: { start: { x: a.x, y: a.y }, end: { x: b.x + (b.w > 1 ? b.w - 1 : 0), y: b.y } },
+              text: c.raw,
+              decorations: { underline: true, pointerCursor: true },
+              activate: (ev) => {
+                if (ev && ev.button !== 0) return;
+                openInEditor(f.path, c.line, c.col);
+              },
+              hover: () => { t.pane.title = `Clic: abrir ${label} en ${editorName()} — ${f.path}${c.line ? ':' + c.line : ''}`; },
+              leave: () => { t.pane.title = ''; },
+            });
+          }
+          callback(links.length ? links : undefined);
+        });
+      },
+    };
+  }
+
+  // gancho de depuración (solo con localStorage frap.debug = true)
+  if (storeGet('frap.debug', false)) window.__frap = { terms, logicalLine, pathCandidates, resolvePaths };
+
+  const editorName = () => {
+    const e = basename((state.settings.editor || 'code').split(/\s+/)[0]);
+    return { code: 'VS Code', 'code-insiders': 'VS Code Insiders', codium: 'VSCodium', cursor: 'Cursor', windsurf: 'Windsurf' }[e] || e;
+  };
+  async function openInEditor(p, line, col) {
+    try {
+      await Bridge.call('open.editor', { path: p, line, col, editor: state.settings.editor || 'code' });
+      toast(`Abriendo ${basename(p)}${line ? ':' + line : ''} en ${editorName()}`, 'ok');
+    } catch (e) { toast(e.message, 'err'); }
   }
 
   // ======================================================================
@@ -3255,6 +3378,7 @@
   function openSettings() {
     const s = state.settings;
     const font = h('input', { type: 'number', min: 9, max: 24, value: s.fontSize });
+    const editor = h('input.mono', { value: s.editor || 'code', placeholder: 'code' });
     const pmode = h('select', h('option', { value: 'tab' }, 'Pestaña del navegador'), h('option', { value: 'iframe' }, 'Pestaña interna (iframe)'));
     pmode.value = s.pageMode || 'tab';
     const port = h('input', { type: 'number', min: 1, max: 65535, value: conn.port });
@@ -3266,6 +3390,7 @@
     const doSave = () => {
       s.fontSize = Math.max(9, Math.min(24, Number(font.value) || 13));
       s.pageMode = pmode.value;
+      s.editor = editor.value.trim() || 'code';
       for (const l of launchers) s.launchers[l.k] = { cmd: l.cmd.value.trim() || l.k, addDir: l.add.value.trim() };
       for (const t of terms.values()) { t.term.options.fontSize = s.fontSize; fitTerm(t); }
       const reconnect = Number(port.value) !== conn.port || token.value !== conn.token;
@@ -3283,6 +3408,8 @@
         h('div.field-row', h('div.field.grow', h('label', 'Puerto del bridge'), port), h('div.field', h('label', 'Tamaño de fuente'), font)),
         h('div.field', h('label', 'Token del bridge'), token),
         h('div.field', h('label', 'Abrir páginas por defecto en'), pmode),
+        h('div.field', h('label', 'Editor para rutas clicadas en la terminal'), editor,
+          h('span.muted', { style: 'font-size:11px' }, 'code (VS Code), cursor, codium, windsurf… o cualquier comando que reciba la ruta.')),
         h('h4', { style: 'margin:8px 0 0' }, 'Lanzadores'),
         h('p.muted', { style: 'margin:0' }, 'Comando que se escribe en una shell nueva. La primera carpeta del proyecto es el cwd; las demás se pasan con el flag de "carpeta extra".'),
         ...launchers.map((l) => h('div.field-row',

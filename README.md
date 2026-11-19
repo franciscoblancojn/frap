@@ -29,7 +29,7 @@ Requisitos: Node ≥ 18, Python 3, Linux (macOS debería funcionar; no está pro
 ## Paneles
 
 - **Izquierdo, proyectos.** Cada proyecto tiene una o más carpetas y sus terminales. ＋ crea un proyecto desde una carpeta y ⊕ le agrega otra. La primera carpeta es el `cwd`; las demás se pasan con `--add-dir` a claude y codex.
-- **Central, terminal.** Pestañas por proyecto. Los botones lanzan `shell`, `claude`, `codex` u `opencode` en una terminal nueva. El punto verde indica actividad.
+- **Central, terminal.** Pestañas por proyecto. **Las rutas de archivos en la salida son clicables:** al pasar el ratón se subrayan, y un clic abre el archivo en VS Code, en la línea indicada si viene como `archivo.ts:42:7`. Funciona con rutas absolutas, `~/…` y relativas a la carpeta de la terminal, también dentro de claude y con rutas partidas en varias líneas. Solo se subrayan las que existen. El editor se cambia en ⚙ Ajustes (`code`, `cursor`, `codium`…). Los botones lanzan `shell`, `claude`, `codex` u `opencode` en una terminal nueva. El punto verde indica actividad.
   - **git** (logo de Git, `Alt+Shift+G`) abre una interfaz guiada sobre el repositorio del proyecto:
     - Archivos *preparados*, *cambios* y *sin seguimiento*, con `add` / `restore --staged` / descartar por archivo o todos.
     - Commit (o *commit y push*). Si no hay nada preparado, ofrece `git add -A`.

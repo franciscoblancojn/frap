@@ -104,7 +104,7 @@ test('rechaza origins web', async () => {
 
 test('hello', async () => {
   const info = await client.call('hello');
-  assert.equal(info.version, '1.1.0');
+  assert.equal(info.version, '1.2.0');
   for (const op of ['db.list', 'db.save', 'git.run', 'music.ytInfo']) assert.ok(info.ops.includes(op), op);
   assert.equal(info.fsRoot, root);
 });
@@ -351,4 +351,27 @@ test('persistencia: las terminales sobreviven a reiniciar el bridge (historial, 
   try {
     assert.equal((await c.call('sessions.list')).some((x) => x.sid === s.sid), false);
   } finally { await stop(b); }
+});
+
+test('paths.check y open.editor: rutas detectadas en la terminal', async () => {
+  const dir = path.join(root, 'proj', 'salida');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'backfill.sql');
+  fs.writeFileSync(file, 'select 1;\n');
+  const found = await client.call('paths.check', {
+    cwd: path.join(root, 'proj'),
+    paths: [file, 'salida/backfill.sql', '~/proj/salida', 'no/existe.txt', '/etc/passwd'],
+  });
+  assert.deepEqual(found.map((f) => [f.input, f.path, f.dir]), [
+    [file, file, false],
+    ['salida/backfill.sql', file, false],
+    ['~/proj/salida', dir, true],
+  ]);
+  // "editor" de prueba: un comando que existe y termina enseguida
+  const r = await client.call('open.editor', { path: file, line: 12, col: 3, editor: 'true' });
+  assert.equal(r.opened, file);
+  await assert.rejects(client.call('open.editor', { path: file, editor: 'no-existe-este-editor' }), /No se encontró/);
+  await assert.rejects(client.call('open.editor', { path: file, editor: 'code; rm -rf ~' }), /inválido/);
+  await assert.rejects(client.call('open.editor', { path: '/etc/passwd' }), /fuera/);
+  await assert.rejects(client.call('open.editor', { path: path.join(root, 'nada.txt'), editor: 'true' }), /No existe/);
 });

@@ -27,6 +27,11 @@ navegador (file://src/index.html)                     máquina local
 - **YouTube:** rechaza embeds desde `file://` (error 153, sin Referer). Por eso el bridge sirve `GET /yt-player`, un relé en `http://127.0.0.1:<puerto>` que carga la IFrame API de YouTube. La UI lo incrusta y le habla por `postMessage` (`{frap:'yt', cmd:'load'|'play'|'pause'|'seek'|'volume'}`), y recibe de vuelta `ready`, `state`, `time` y `error`. La UI valida `event.source` y `event.origin`, y el relé solo acepta mensajes de su ventana padre. El relé no usa token, y el WebSocket rechaza su Origin http, así que no da acceso al bridge.
 - El reproductor (dock) vive fuera de `#rbody`, así que re-renderizar el panel no corta la música. Fuera de la pestaña Música el video se minimiza, pero sigue sonando.
 
+## Rutas clicables
+
+- Cada xterm registra un *link provider* (`pathLinkProvider`). Por cada fila, `logicalLine()` une las filas partidas (`isWrapped`) y arma un mapa índice → celda que respeta los caracteres anchos (emoji, CJK). `pathCandidates()` busca rutas con un `:línea:col` opcional, y `paths.check` filtra las que existen, con una caché de 15 s.
+- El clic llama a `open.editor`. Funciona aunque la app tenga el modo ratón activo, como Claude Code (`?1000h`…).
+
 ## Git
 
 - La vista es solo UI sobre `git.run`. El bridge ejecuta el binario `git` con `GIT_TERMINAL_PROMPT=0` (si faltan credenciales falla en lugar de colgarse), `GIT_EDITOR=true` (sin editor en merges) y `color.ui=false`.
@@ -79,6 +84,8 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `db.test` | `{id}` o `{conn}` | `{ms, version}`; permite probar antes de guardar |
 | `db.query` | `{id, sql, write?, limit?}` | `{columns, rows, rowCount, truncated, ms, readOnly}`; `write` solo si la conexión tiene `uiWrite` |
 | `db.tables` | `{id}` | `[{name, view}]` |
+| `paths.check` | `{cwd, paths}` | `[{input, path, dir}]` de las rutas que existen (las relativas se resuelven contra `cwd`; solo dentro de `FRAP_FS_ROOT`) |
+| `open.editor` | `{path, line?, col?, editor?}` | abre en el editor sin shell; la familia VS Code recibe `--goto ruta:línea:col` |
 | `git.run` | `{cwd, args}` | `{code, stdout, stderr}`; ejecuta `git` sin shell, solo subcomandos de `GIT_ALLOWED`, sin `-c`/`--upload-pack`/`--exec`…; un código distinto de 0 no lanza error |
 | `music.ytInfo` | `{id}` | `{title, author}` vía oEmbed público de YouTube |
 | `db.installSkill` | `{tools}` | escribe `~/.claude/skills/frap-db/SKILL.md` y `~/.codex/skills/frap-db/SKILL.md` |

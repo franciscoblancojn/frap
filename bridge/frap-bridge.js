@@ -19,7 +19,7 @@ const { StringDecoder } = require('string_decoder');
 const ws = require('./ws');
 const db = require('./db');
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const STARTED_AT = Date.now();
 const HOME = os.homedir();
 
@@ -684,6 +684,42 @@ const ops = {
         if (err && err.killed) { reject(new Error('git tardó demasiado (¿pide credenciales? usa una terminal)')); return; }
         resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout, stderr });
       });
+    });
+  },
+  /**
+   * De una lista de rutas candidatas (detectadas en la salida de una terminal), devuelve las que
+   * existen. Las relativas se resuelven contra `cwd` (la carpeta de la terminal).
+   */
+  'paths.check': ({ cwd, paths }) => {
+    const base = cwd ? safePath(cwd) : HOME;
+    const out = [];
+    for (const raw of (Array.isArray(paths) ? paths : []).slice(0, 80)) {
+      if (typeof raw !== 'string' || !raw || raw.length > 1024) continue;
+      const p = raw.startsWith('~') ? expand(raw) : path.resolve(base, raw);
+      let abs;
+      try { abs = safePath(p); } catch (_) { continue; }
+      try {
+        const st = fs.statSync(abs);
+        out.push({ input: raw, path: abs, dir: st.isDirectory() });
+      } catch (_) { /* no existe */ }
+    }
+    return out;
+  },
+  /** Abre un archivo/carpeta en el editor (por defecto VS Code: `code -g ruta:línea:col`). */
+  'open.editor': ({ path: p, line, col, editor = 'code' }) => {
+    const abs = safePath(p);
+    if (!exists(abs)) throw new Error(`No existe: ${abs}`);
+    const [cmd, ...extra] = String(editor || 'code').trim().split(/\s+/);
+    if (!cmd || /[;&|`$<>]/.test(editor)) throw new Error('Comando de editor inválido');
+    const ln = Number(line) > 0 ? Math.floor(Number(line)) : 0;
+    const cl = Number(col) > 0 ? Math.floor(Number(col)) : 0;
+    // editores de la familia VS Code entienden --goto ruta:línea:columna
+    const vscodeLike = /^(code|code-insiders|codium|vscodium|cursor|windsurf)$/.test(path.basename(cmd));
+    const args = vscodeLike && ln ? [...extra, '--goto', `${abs}:${ln}${cl ? ':' + cl : ''}`] : [...extra, abs];
+    return new Promise((resolve, reject) => {
+      const child = spawn(cmd, args, { detached: true, stdio: 'ignore', env: childEnv({}) });
+      child.once('error', (e) => reject(new Error(e.code === 'ENOENT' ? `No se encontró el editor "${cmd}". Cámbialo en ⚙ Ajustes.` : e.message)));
+      child.once('spawn', () => { child.unref(); resolve({ opened: abs, cmd: [cmd, ...args].join(' ') }); });
     });
   },
   /** Título/autor de un video (oEmbed público de YouTube, sin API key). */

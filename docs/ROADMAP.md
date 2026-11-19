@@ -26,6 +26,7 @@
 - [x] Temporizador: recordatorios recurrentes o de una vez, aviso simple o bloqueante (posponer), ícono/título/descripción, plantillas, sonido y notificación del sistema
 - [x] Git guiado: status, add/restore, commit (y push), ramas (checkout, checkout -b, track remoto, borrar), fetch/pull/push, stash, diff, historial, comandos libres con salida visible
 - [x] Terminales persistentes de verdad: sobreviven a reiniciar o perder el bridge (procesos desligados + socket Unix + historial propio); la UI se reconecta sola
+- [x] Rutas de archivos clicables en la terminal → abrir en VS Code (línea y columna), con rutas partidas y caracteres anchos
 - [x] Aviso de bridge desactualizado (el bridge anuncia sus operaciones)
 - [ ] Paneles redimensionables arrastrando el borde
 - [ ] Buscar en la terminal (xterm addon-search vendorizado)
