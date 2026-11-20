@@ -35,7 +35,7 @@
 - [ ] Paneles redimensionables arrastrando el borde
 - [ ] Buscar en la terminal (xterm addon-search vendorizado)
 - [ ] Notificación del navegador cuando un agente termina o pide atención (pasa de activo a inactivo)
-- [ ] Split de terminales (2 en paralelo en el panel central)
+- [x] Pantalla dividida: botón con contador (1 → 2 → 3 → 4 → 1) que muestra a la vez las primeras 4 terminales del proyecto (shell, agentes, ssh; no git ni DB), con borde en la activa y marcas de grupo en el panel izquierdo y pestañas
 - [ ] Paleta de comandos (Ctrl+K): proyectos, prompts, lanzadores
 - [ ] Prompts por proyecto, además de los globales
 - [ ] Tema claro

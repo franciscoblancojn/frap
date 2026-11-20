@@ -119,7 +119,7 @@
         opencode: { cmd: 'opencode', addDir: '' },
       },
     },
-    ui: { rtab: 'procs', hideLeft: false, hideRight: false, procsAll: false },
+    ui: { rtab: 'procs', hideLeft: false, hideRight: false, procsAll: false, split: 1 }, // split: 1-4 terminales a la vez
   });
 
   function mergeState(base, saved) {
@@ -309,6 +309,9 @@
     t = { sid: info.sid, info, term, fit, pane, attaching: true, lastOut: info.lastOutput || 0, liveTitle: '' };
     terms.set(info.sid, t);
 
+    const focusSplit = () => { if (t.sid !== state.activeSid && pane.classList.contains('split')) activate(t.sid); };
+    pane.addEventListener('mousedown', focusSplit);
+    pane.addEventListener('focusin', focusSplit);
     term.onData((data) => Bridge.send('session.input', { sid: t.sid, data }));
     term.onTitleChange((title) => { t.liveTitle = title; renderTabs(); renderProjects(); });
     term.attachCustomKeyEventHandler((e) => {
@@ -731,7 +734,8 @@
     if (state.activeProject === id) return;
     state.activeProject = id;
     const list = sessionsOf(id);
-    state.activeSid = list.length ? list[list.length - 1].sid : null;
+    const group = splitGroup();
+    state.activeSid = group.length ? group[0].sid : list.length ? list[list.length - 1].sid : null;
     save();
     renderAll();
     loadConfig();
@@ -745,15 +749,18 @@
   function isBusy(t) { return t.info.alive !== false && Date.now() - t.lastOut < 1500; }
   function dotClass(t) { return t.info.alive === false ? 'dot dead' : isBusy(t) ? 'dot busy' : 'dot'; }
 
-  function termItem(t) {
+  /** slot = posición (0-3) en la pantalla dividida, o undefined si no está agrupada. */
+  function termItem(t, slot) {
+    const grouped = slot != null;
     return h('div.term-item', {
-      class: `term-item${t.sid === state.activeSid ? ' active' : ''}`,
+      class: `term-item${t.sid === state.activeSid ? ' active' : ''}${grouped ? ' grouped' : ''}`,
       dataset: { sid: t.sid },
       title: (t.info.meta || {}).cwd || '',
       onclick: () => activate(t.sid),
       ondblclick: () => renameTerm(t.sid),
     },
     h('span', { class: dotClass(t) }),
+    grouped ? h('span.slot', { title: `Pantalla dividida: panel ${slot + 1}` }, String(slot + 1)) : null,
     h('span.tname', termTitle(t)),
     noticeBadge(t),
     kindIcon(termKind(t)) || h(`span.kind.${termKind(t)}`, termKind(t)));
@@ -789,6 +796,7 @@
     if (!state.projects.length) {
       root.append(h('div.empty-list', 'Sin proyectos. Pulsa ＋ para agregar una carpeta.'));
     }
+    const slots = splitSlots();
     for (const p of state.projects) {
       const active = p.id === state.activeProject;
       const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
@@ -803,13 +811,13 @@
           h('div.folder', { title: f },
             h('span', (i === 0 ? '▸ ' : '+ ') + tilde(f)),
             h('button.icon.mini', { title: 'Quitar carpeta', onclick: () => removeFolder(p, f) }, '✕')))),
-        h('div.terms', sessionsOf(p.id).map(termItem))));
+        h('div.terms', sessionsOf(p.id).map((t) => termItem(t, slots.get(t.sid))))));
     }
     const orphans = orphanSessions();
     if (orphans.length) {
       root.append(h('div.project',
         h('div.project-head', h('span.pname.muted', 'Sin proyecto')),
-        h('div.terms', orphans.map(termItem))));
+        h('div.terms', orphans.map((t) => termItem(t)))));
     }
   }
 
@@ -824,8 +832,10 @@
         h('span.tname', `⚡ ${termTitle(at)}`),
         h('span.x', { title: 'Cerrar log (la acción sigue)', onclick: (e) => { e.stopPropagation(); leaveActionLog(); } }, '✕')));
     }
+    const slots = splitSlots();
     for (const t of tabSessions()) {
-      tabs.append(h(`div.tab${t.sid === state.activeSid ? '.active' : ''}`, {
+      const slot = slots.get(t.sid);
+      tabs.append(h(`div.tab${t.sid === state.activeSid ? '.active' : ''}${slot != null ? '.grouped' : ''}`, {
         dataset: { sid: t.sid },
         title: `${(t.info.meta || {}).cwd || ''}\nDoble clic: renombrar`,
         onclick: () => activate(t.sid),
@@ -833,6 +843,7 @@
         onauxclick: (e) => { if (e.button === 1) closeTerm(t.sid); },
       },
       h('span', { class: dotClass(t) }),
+      slot != null ? h('span.slot', String(slot + 1)) : null,
       kindIcon(termKind(t)),
       h('span.tname', termTitle(t)),
       t.info.notice ? h(`span.notice-dot.${t.info.notice.kind}`, { title: t.info.notice.kind === 'done' ? 'Terminó' : 'Espera tu respuesta' }) : null,
@@ -873,8 +884,65 @@
     }
   }
 
+  // ---------- pantalla dividida ----------
+  // Muestra a la vez las primeras N terminales (shell/agentes/ssh) del proyecto activo.
+  // Ciclo del botón: 1 → 2 (1 arriba, 1 abajo) → 3 (2 arriba, 1 abajo) → 4 (2×2) → 1.
+  const SPLIT_KINDS = ['shell', 'claude', 'codex', 'opencode', 'ssh'];
+  const SPLIT_MAX = 4;
+  const SPLIT_RECTS = { // [left, top, width, height] en %
+    2: [[0, 0, 100, 50], [0, 50, 100, 50]],
+    3: [[0, 0, 50, 50], [50, 0, 50, 50], [0, 50, 100, 50]],
+    4: [[0, 0, 50, 50], [50, 0, 50, 50], [0, 50, 50, 50], [50, 50, 50, 50]],
+  };
+  const splitN = () => Math.min(SPLIT_MAX, Math.max(1, Number(state.ui.split) || 1));
+  /** Terminales agrupadas (vacío si no hay división o hay menos de 2). */
+  function splitGroup() {
+    const n = splitN();
+    if (n < 2 || !project()) return [];
+    const list = sessionsOf(state.activeProject).filter((t) => SPLIT_KINDS.includes(termKind(t))).slice(0, n);
+    return list.length > 1 ? list : [];
+  }
+  const splitSlots = () => new Map(splitGroup().map((t, i) => [t.sid, i]));
+  function cycleSplit() {
+    state.ui.split = (splitN() % SPLIT_MAX) + 1;
+    save();
+    const group = splitGroup();
+    if (group.length && !group.some((t) => t.sid === state.activeSid)) { activate(group[0].sid); return; }
+    renderAll();
+    const t = activeTerm();
+    if (t) requestAnimationFrame(() => t.term.focus());
+  }
+  function renderSplitBtn() {
+    const n = splitN();
+    const b = $('#btn-split');
+    b.replaceChildren(h('span.split-ico', '⊞'), h('span.split-n', String(n)));
+    b.classList.toggle('on', n > 1);
+    b.title = `Pantalla dividida: ${n} ${n === 1 ? 'panel' : 'paneles'} (clic para cambiar)\nToma las primeras ${SPLIT_MAX} terminales del proyecto (shell, agentes, ssh)`;
+  }
+
   function renderPanes() {
-    for (const t of terms.values()) t.pane.style.visibility = t.sid === state.activeSid ? 'visible' : 'hidden';
+    // el grupo solo se muestra si la terminal activa es parte de él (git, DB, páginas o una 5.ª terminal van solas)
+    let group = splitGroup();
+    if (!group.some((t) => t.sid === state.activeSid)) group = [];
+    const rects = SPLIT_RECTS[group.length];
+    const refit = [];
+    for (const t of terms.values()) {
+      const slot = group.indexOf(t);
+      const r = slot >= 0 ? rects[slot] : null;
+      const key = r ? r.join(',') : '';
+      if (t.rect !== key) {
+        t.rect = key;
+        Object.assign(t.pane.style, r
+          ? { left: `${r[0]}%`, top: `${r[1]}%`, width: `${r[2]}%`, height: `${r[3]}%`, right: 'auto', bottom: 'auto' }
+          : { left: '', top: '', width: '', height: '', right: '', bottom: '' });
+        refit.push(t);
+      }
+      t.pane.classList.toggle('split', !!r);
+      t.pane.classList.toggle('focused', !!r && t.sid === state.activeSid);
+      t.pane.style.visibility = r || t.sid === state.activeSid ? 'visible' : 'hidden';
+    }
+    if (refit.length) requestAnimationFrame(() => refit.forEach(fitTerm));
+    renderSplitBtn();
     const pg = isPageView(state.activeSid) ? pageById(state.activeSid.slice(PAGE_PREFIX.length)) : null;
     if (pg) ensurePagePane(pg);
     for (const [id, pane] of pagePanes) pane.classList.toggle('hidden', !pg || pg.id !== id);
@@ -4047,6 +4115,7 @@
 
   $('#btn-settings').onclick = openSettings;
   $('#btn-transfer').onclick = openTransfer;
+  $('#btn-split').onclick = cycleSplit;
   $('#toggle-left').onclick = () => togglePanel('left');
   $('#toggle-right').onclick = () => togglePanel('right');
   for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : b.dataset.launch === 'git' ? openGitView() : b.dataset.launch === 'ssh' ? pickSsh() : launch(b.dataset.launch));
