@@ -595,6 +595,7 @@ function sshNormalize(input, existing) {
     user: String(input.user || '').trim(),
     password: input.password == null ? (existing ? existing.password : '') : String(input.password),
     key: String(input.key || '').trim(),
+    dir: String(input.dir == null ? (existing && existing.dir) || '' : input.dir).trim().replace(/(.)\/+$/, '$1'),
     enabled: input.enabled !== undefined ? input.enabled !== false : existing ? existing.enabled !== false : true,
     ai: input.ai !== undefined ? input.ai !== false : existing ? existing.ai !== false : false,
   };
@@ -904,13 +905,26 @@ const ops = {
       meta: { projectId: projectId || null, kind: 'ssh', title: c.name, sshId: c.id },
     });
   },
-  /** Lista un directorio remoto (`path` absoluto; vacío = carpeta de inicio del usuario). */
+  /**
+   * Lista un directorio remoto (`path` absoluto). Sin `path`: la ruta inicial del servidor
+   * (si no existe, la carpeta de inicio del usuario, con `startError`).
+   */
   'sftp.list': async ({ id, path: p }) => {
-    const lines = p ? [`cd ${sftp.quote(sftp.remotePath(p))}`] : [];
-    const r = await sftpRun(id, [...lines, 'pwd', 'ls -la'], { timeoutMs: 30000 });
+    let lines = p ? [`cd ${sftp.quote(sftp.remotePath(p))}`] : [];
+    let startError = '';
+    const dir = p ? '' : sshHost(id).dir;
+    if (dir && dir !== '~') lines = [`cd ${sftp.quote(dir.startsWith('~/') ? dir.slice(2) || '.' : sftp.remotePath(dir))}`];
+    let r;
+    try {
+      r = await sftpRun(id, [...lines, 'pwd', 'ls -la'], { timeoutMs: 30000 });
+    } catch (e) {
+      if (!dir || dir === '~' || /desactivado|cancelada|Sin respuesta/.test(e.message)) throw e;
+      startError = `No se pudo abrir la ruta inicial ${dir}: ${e.message}`;
+      r = await sftpRun(id, ['pwd', 'ls -la'], { timeoutMs: 30000 });
+    }
     const m = r.stdout.match(/^Remote working directory: (.*)$/m);
     const cwd = m ? m[1] : p || '/';
-    return { path: cwd, parent: cwd === '/' ? null : sftp.remotePath(`${cwd}/..`), entries: sftp.parseLs(r.stdout) };
+    return { path: cwd, parent: cwd === '/' ? null : sftp.remotePath(`${cwd}/..`), entries: sftp.parseLs(r.stdout), startError };
   },
   /** Descarga `remote` (archivo o carpeta) a la ruta local completa `local` (dentro de FRAP_FS_ROOT). */
   'sftp.get': async ({ id, remote, local, dir = false, tid }) => {

@@ -466,6 +466,7 @@ test('ssh.*: guardar sin exponer contraseña, validar, probar, conectar con askp
   await assert.rejects(client.call('ssh.save', { host: { name: 'x', host: '-oProxyCommand=touch /tmp/pwn', user: 'a' } }), /Host inválido/);
   await assert.rejects(client.call('ssh.save', { host: { name: 'x', host: 'h', user: '-oX' } }), /Usuario inválido/);
   await assert.rejects(client.call('ssh.save', { host: { name: 'x', host: 'h', user: 'a b' } }), /Usuario inválido/);
+  await assert.rejects(client.call('ssh.save', { host: { name: 'x', host: 'h', user: 'a', dir: 'relativa' } }), /Ruta inicial inválida/);
 
   // editar sin contraseña la conserva
   await client.call('ssh.save', { host: { id: 'servidor_app', name: 'Servidor App', host: '10.0.0.9', port: '2222', user: 'lector', password: null } });
@@ -485,6 +486,16 @@ test('ssh.*: guardar sin exponer contraseña, validar, probar, conectar con askp
   assert.match(out, /PASS:cl4ve "ssh"/); // askpass la lee del .env por id
   assert.match(out, /HOSTKEY:1/); // otras preguntas no se responden
   await client.call('session.kill', { sid: s.sid }).catch(() => {});
+
+  // ruta inicial: se guarda, se conserva al editar sin enviarla y ssh entra con cd antes de la shell
+  const withDir = await client.call('ssh.save', { host: { id: 'servidor_app', name: 'Servidor App', host: '10.0.0.9', port: '2222', user: 'lector', password: null, dir: '/var/www/mi app/' } });
+  assert.equal(withDir.dir, '/var/www/mi app');
+  assert.equal((await client.call('ssh.save', { host: { id: 'servidor_app', name: 'Servidor App', host: '10.0.0.9', port: '2222', user: 'lector', password: null } })).dir, '/var/www/mi app');
+  assert.match(fs.readFileSync(list.envFile, 'utf8'), /FRAP_SSH_SERVIDOR_APP_DIR="\/var\/www\/mi app"/);
+  const sd = await client.call('ssh.connect', { id: 'servidor_app', cols: 80, rows: 24 });
+  const outd = await client.waitOutput(sd.sid, /HOSTKEY:\d/);
+  assert.match(outd, /-t -- lector@10\.0\.0\.9 cd '\/var\/www\/mi app' \|\|/);
+  await client.call('session.kill', { sid: sd.sid }).catch(() => {});
 
   const off = await client.call('ssh.toggle', { id: 'servidor_app', enabled: false });
   assert.equal(off.enabled, false);
@@ -518,6 +529,17 @@ test('sftp.*: listar, subir, descargar, carpetas, renombrar, borrar y límites l
   assert.match(log, /-l ops/);
   assert.match(log, /pw "sftp"/); // la contraseña llega por askpass, no por argv
   assert.equal((await client.call('sftp.list', { id: 'archivos' })).path.length > 0, true); // sin ruta: carpeta de inicio
+  // ruta inicial: sin path, abre ahí; si no existe, vuelve al home con startError
+  await client.call('ssh.save', { host: { id: 'archivos', name: 'Archivos', host: '10.0.0.7', port: '2200', user: 'ops', password: null, dir: `${rem}/sub` } });
+  const sl = await client.call('sftp.list', { id: 'archivos' });
+  assert.equal(sl.path, path.join(rem, 'sub'));
+  assert.equal(sl.startError, '');
+  assert.equal((await client.call('sftp.list', { id: 'archivos', path: rem })).path, rem); // con path explícito manda el path
+  await client.call('ssh.save', { host: { id: 'archivos', name: 'Archivos', host: '10.0.0.7', port: '2200', user: 'ops', password: null, dir: `${rem}/no existe` } });
+  const nf = await client.call('sftp.list', { id: 'archivos' });
+  assert.match(nf.startError, /no existe/);
+  assert.notEqual(nf.path, `${rem}/no existe`);
+  await client.call('ssh.save', { host: { id: 'archivos', name: 'Archivos', host: '10.0.0.7', port: '2200', user: 'ops', password: null, dir: '' } });
 
   await client.call('sftp.get', { id: 'archivos', remote: `${rem}/hola mundo.txt`, local: path.join(loc, 'bajado.txt') });
   assert.equal(fs.readFileSync(path.join(loc, 'bajado.txt'), 'utf8'), 'hola');

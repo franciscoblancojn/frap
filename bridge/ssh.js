@@ -10,14 +10,14 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { parseEnvValue, quoteEnvValue, isOff, slugify } = require('./db');
 
-const FIELDS = ['NAME', 'HOST', 'PORT', 'USER', 'PASSWORD', 'KEY', 'ENABLED', 'AI'];
+const FIELDS = ['NAME', 'HOST', 'PORT', 'USER', 'PASSWORD', 'KEY', 'DIR', 'ENABLED', 'AI'];
 const KEY_RE = new RegExp(`^FRAP_SSH_([A-Z0-9_]+?)_(${FIELDS.join('|')})$`);
 const ASKPASS_JS = path.join(__dirname, 'frap-askpass.js');
 // host: nombre, IPv4 o IPv6; usuario: sin espacios. Ninguno puede empezar por "-" (inyección de opciones).
 const HOST_RE = /^[A-Za-z0-9_.:[\]%-]+$/;
 const USER_RE = /^[A-Za-z0-9_.][A-Za-z0-9_.@\\$-]*$/;
 
-/** Lee el .env y devuelve [{id, name, host, port, user, password, key, enabled, ai}]. */
+/** Lee el .env y devuelve [{id, name, host, port, user, password, key, dir, enabled, ai}]. */
 function loadHosts(envFile) {
   let text = '';
   try { text = fs.readFileSync(envFile, 'utf8'); } catch (_) { return []; }
@@ -39,6 +39,7 @@ function loadHosts(envFile) {
     user: c.USER || '',
     password: c.PASSWORD || '',
     key: c.KEY || '',
+    dir: c.DIR || '',
     enabled: !isOff(c.ENABLED),
     ai: !isOff(c.AI),
   }));
@@ -62,6 +63,7 @@ function saveHosts(envFile, hosts, cliPath) {
     lines.push(`${p}USER=${quoteEnvValue(c.user)}`);
     lines.push(`${p}PASSWORD=${quoteEnvValue(c.password)}`);
     lines.push(`${p}KEY=${quoteEnvValue(c.key)}`);
+    lines.push(`${p}DIR=${quoteEnvValue(c.dir || '')}`);
     lines.push(`${p}ENABLED=${c.enabled === false ? 0 : 1}`);
     lines.push(`${p}AI=${c.ai === false ? 0 : 1}`);
     lines.push('');
@@ -85,11 +87,32 @@ function validateHost(c) {
   if (!c.user || !USER_RE.test(c.user)) throw new Error('Usuario inválido');
   if (c.port && !/^\d{1,5}$/.test(c.port)) throw new Error('Puerto inválido');
   if (c.key && c.key.startsWith('-')) throw new Error('Ruta de llave inválida');
+  if (c.dir) checkDir(c.dir);
+}
+
+/** Ruta inicial: absoluta ("/srv/app") o en el home ("~", "~/app"); sin saltos de línea. */
+function checkDir(d) {
+  const s = String(d);
+  if (!(s.startsWith('/') || s === '~' || s.startsWith('~/')) || /[\r\n\0]/.test(s) || s.length > 1024) {
+    throw new Error('Ruta inicial inválida: usa una ruta absoluta (/var/www) o del home (~/app)');
+  }
+  return s;
+}
+
+/** Comilla simple para sh: 'a'\''b'. */
+function shQuote(s) { return `'${String(s).replace(/'/g, `'\\''`)}'`; }
+
+/** Comando remoto que entra a la ruta inicial y abre la shell de login del usuario. */
+function startDirCommand(dir) {
+  const d = checkDir(dir);
+  const target = d === '~' ? '~' : d.startsWith('~/') ? `~/${shQuote(d.slice(2))}` : shQuote(d);
+  return `cd ${target} || echo "FRAP: no se pudo entrar a la ruta inicial"; exec "\${SHELL:-/bin/sh}" -l`;
 }
 
 /**
  * Argumentos de `ssh` para el servidor `c`.
  * opts: { command?: string (ejecuta y sale), batch?: bool (sin preguntas), connectTimeout?: s }
+ * Sin `command` y con `c.dir`, entra a esa ruta y abre la shell de login.
  */
 function sshArgs(c, opts = {}) {
   validateHost(c);
@@ -100,8 +123,12 @@ function sshArgs(c, opts = {}) {
   else if (opts.batch) a.push('-o', 'BatchMode=yes');
   if (opts.connectTimeout) a.push('-o', `ConnectTimeout=${opts.connectTimeout}`);
   if (opts.command != null) a.push('-T');
+  // interactivo con ruta inicial: terminal forzada (-t) y `cd` antes de la shell
+  const start = opts.command == null && c.dir && c.dir !== '~' ? startDirCommand(c.dir) : null;
+  if (start) a.push('-t');
   a.push('--', `${c.user}@${c.host}`);
   if (opts.command != null) a.push(opts.command);
+  else if (start) a.push(start);
   return a;
 }
 
@@ -178,5 +205,5 @@ function runRemote(c, command, opts = {}) {
 }
 
 module.exports = {
-  loadHosts, saveHosts, publicHost, validateHost, sshArgs, askpassPath, askpassEnv, sshHint, runRemote, slugify,
+  loadHosts, saveHosts, publicHost, validateHost, checkDir, shQuote, startDirCommand, sshArgs, askpassPath, askpassEnv, sshHint, runRemote, slugify,
 };

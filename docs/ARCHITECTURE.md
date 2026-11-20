@@ -75,7 +75,8 @@ jq -r '.message' | { read -r m; [ -n "$FRAP_NOTIFY" ] && printf 'waiting %s\n' "
 
 ## SSH
 
-- `bridge/ssh.js` lee y escribe `FRAP_HOME/ssh.env` (claves `FRAP_SSH_<ID>_{NAME,HOST,PORT,USER,PASSWORD,KEY,ENABLED,AI}`, 0600) y arma los argumentos de `ssh`. Valida host y usuario (sin espacios ni `-` inicial) y pone `--` antes del destino para evitar inyección de opciones.
+- `bridge/ssh.js` lee y escribe `FRAP_HOME/ssh.env` (claves `FRAP_SSH_<ID>_{NAME,HOST,PORT,USER,PASSWORD,KEY,DIR,ENABLED,AI}`, 0600) y arma los argumentos de `ssh`. Valida host y usuario (sin espacios ni `-` inicial) y pone `--` antes del destino para evitar inyección de opciones.
+- `DIR` (ruta inicial, opcional): absoluta (`/var/www`) o del home (`~`, `~/app`), sin saltos de línea. En la terminal, `ssh -t … -- user@host "cd '<dir>' || echo …; exec \"${SHELL:-/bin/sh}\" -l"` (la ruta va entre comillas simples con `'\''`); si el cd falla, igual abre la shell. No se usa en `frap-ssh` (comandos de agentes) ni en `ssh.test`.
 - Contraseña: `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` apuntan a `FRAP_HOME/askpass.sh` (envoltorio que ejecuta `bridge/frap-askpass.js` con el mismo node). El askpass busca la contraseña por `FRAP_SSH_ID` en el `.env` y solo responde preguntas de contraseña o passphrase; cualquier otra (p. ej. confirmar una llave de servidor) la rechaza. `ssh.test` con un formulario sin guardar la pasa en `FRAP_SSH_PASS` a ese proceso corto.
 - `ssh.connect` crea una sesión PTY normal (`meta.kind = 'ssh'`, `meta.sshId`) con `ssh` como comando, en el proyecto activo o en "Sin proyecto".
 - **Archivos (SFTP)**: `bridge/sftp.js` ejecuta el binario `sftp` del sistema en modo batch (`-b -`, comandos por stdin) contra los mismos servidores. La UI muestra dos paneles tipo FileZilla, local y servidor, con una cola de transferencias que corren de a una. Detalles de seguridad:
@@ -128,7 +129,7 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `ssh.toggle` | `{id, enabled?, ai?}` | servidor público |
 | `ssh.test` | `{id}` o `{host}` | `{ms, system}`; error con pista si falla |
 | `ssh.connect` | `{id, cwd?, projectId?, cols, rows}` | info de la sesión nueva (rechaza si está desactivado) |
-| `sftp.list` | `{id, path?}` | `{path, parent, entries:[{name, dir, link, size, mtime, perm, owner}]}`; sin `path` lista la carpeta de inicio |
+| `sftp.list` | `{id, path?}` | `{path, parent, entries:[{name, dir, link, size, mtime, perm, owner}]}`; sin `path` lista la ruta inicial (`DIR`) o, si no hay o no existe, la carpeta de inicio; en ese caso `startError` explica por qué |
 | `sftp.get` | `{id, remote, local, dir?, tid?}` | `{local}`; descarga a la ruta local completa (dentro de `FRAP_FS_ROOT`); `dir` = `get -R` |
 | `sftp.put` | `{id, local, remote, tid?}` | `{remote}`; sube un archivo o una carpeta (`put -R`) a la ruta remota completa |
 | `sftp.cancel` | `{tid}` | `true` si había una transferencia con ese id en curso |

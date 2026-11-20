@@ -12,13 +12,13 @@ const ssh = require('../bridge/ssh');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'frap-ssh-test-'));
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
-const base = { host: '10.0.0.5', port: '', user: 'deploy', password: '', key: '', enabled: true, ai: true };
+const base = { host: '10.0.0.5', port: '', user: 'deploy', password: '', key: '', dir: '', enabled: true, ai: true };
 
 test('.env: guardar y leer conserva caracteres especiales; ENABLED/AI faltantes valen 1', () => {
   const env = path.join(root, 'cfg', 'ssh.env');
   const hosts = [
     { ...base, id: 'web', name: 'Web "prod"', port: '2222', password: 'p@ss "x" \\ $HOME #no', ai: false },
-    { ...base, id: 'bd', name: 'BD', key: '/home/u/.ssh/id_ed25519', enabled: false },
+    { ...base, id: 'bd', name: 'BD', key: '/home/u/.ssh/id_ed25519', dir: "/srv/it's app", enabled: false },
   ];
   ssh.saveHosts(env, hosts, '/x/frap-ssh.js');
   assert.deepEqual(ssh.loadHosts(env), hosts);
@@ -46,6 +46,26 @@ test('sshArgs: opciones seguras y sin inyección', () => {
   assert.equal(i[i.length - 1], 'deploy@10.0.0.5');
   for (const bad of [{ host: '-oProxyCommand=x' }, { host: 'a b' }, { user: '-l' }, { user: '' }, { port: '22; rm' }, { key: '-oX' }]) {
     assert.throws(() => ssh.sshArgs({ ...base, ...bad }), /inválid/, JSON.stringify(bad));
+  }
+});
+
+test('ruta inicial: validación y cd seguro antes de la shell', () => {
+  // interactivo: -t y el comando con cd va tras el destino
+  const a = ssh.sshArgs({ ...base, dir: "/srv/it's app; rm -rf /" });
+  assert.ok(a.includes('-t'));
+  assert.deepEqual(a.slice(-3, -1), ['--', 'deploy@10.0.0.5']);
+  assert.equal(a[a.length - 1], `cd '/srv/it'\\''s app; rm -rf /' || echo "FRAP: no se pudo entrar a la ruta inicial"; exec "\${SHELL:-/bin/sh}" -l`);
+  // la comilla cierra bien en sh: el cd recibe exactamente la ruta
+  const r = spawnSync('sh', ['-c', `set -- ${ssh.shQuote("a'b $HOME `x` \\")}; printf %s "$1"`]);
+  assert.equal(r.stdout.toString(), "a'b $HOME `x` \\");
+  assert.match(ssh.startDirCommand('~/mis apps'), /^cd ~\/'mis apps' \|\|/);
+  // "~" = home: sin comando extra; con command no se usa la ruta inicial
+  assert.equal(ssh.sshArgs({ ...base, dir: '~' }).includes('-t'), false);
+  const c = ssh.sshArgs({ ...base, dir: '/srv' }, { command: 'uptime' });
+  assert.equal(c[c.length - 1], 'uptime');
+  assert.equal(c.includes('-t'), false);
+  for (const bad of ['relativa', '-oX', '/a\nb', '~usuario', `/${'x'.repeat(1100)}`]) {
+    assert.throws(() => ssh.sshArgs({ ...base, dir: bad }), /Ruta inicial inválida/, bad);
   }
 });
 

@@ -2352,7 +2352,7 @@
         h('button.icon.mini', { title: 'Probar conexión', onclick: (e) => { e.stopPropagation(); testSsh({ id: c.id }, c.name); } }, '⚡'),
         h('button.icon.mini', { title: 'Editar', onclick: (e) => { e.stopPropagation(); editSsh(c); } }, '✎'),
         h('button.icon.mini', { title: 'Eliminar', onclick: (e) => { e.stopPropagation(); deleteSsh(c); } }, '✕')),
-      h('div.path', { title: c.id }, `${sshTarget(c)} · id: ${c.id}`),
+      h('div.path', { title: c.dir ? `id: ${c.id} · ruta inicial: ${c.dir}` : `id: ${c.id}` }, `${sshTarget(c)}${c.dir ? ` · 📂 ${c.dir}` : ''} · id: ${c.id}`),
       h('div.db-flags',
         h('label.db-flag', { onclick: (e) => e.stopPropagation() },
           sshSwitch(c, 'enabled', c.enabled ? 'Desactivar (no se podrá conectar ni usar por agentes)' : 'Activar'),
@@ -2441,6 +2441,7 @@
     pass.style.width = '100%';
     const showPass = h('button.icon.mini', { title: 'Mostrar/ocultar', onclick: () => { pass.type = pass.type === 'password' ? 'text' : 'password'; } }, '👁');
     const key = h('input.mono', { value: c ? c.key : '', placeholder: '~/.ssh/id_ed25519 (opcional)' });
+    const dir = h('input.mono', { value: c ? c.dir || '' : '', placeholder: '/var/www/app o ~/proyecto (opcional)' });
     const enabled = h('input', { type: 'checkbox' });
     enabled.checked = !c || c.enabled !== false;
     const ai = h('input', { type: 'checkbox' });
@@ -2450,11 +2451,13 @@
       name: name.value.trim(), host: host.value.trim(), port: port.value.trim(), user: user.value.trim(),
       password: c && !pass.value ? null : pass.value,
       key: key.value.trim().replace(/^~(?=\/|$)/, (Bridge.info && Bridge.info.home) || '~'),
+      dir: dir.value.trim(),
       enabled: enabled.checked, ai: ai.checked,
     });
     const doSave = async () => {
       try {
-        await Bridge.call('ssh.save', { host: collect() });
+        const saved = await Bridge.call('ssh.save', { host: collect() });
+        if (c && (c.dir || '') !== (saved.dir || '')) { delete state.sftp.remote[saved.id]; save(); } // SFTP arranca en la nueva ruta
         modalClose(true);
         toast(`Guardado en ${tilde(sshInfo ? sshInfo.envFile : 'ssh.env')}`, 'ok');
         loadSsh();
@@ -2469,6 +2472,7 @@
           h('div.field.grow', h('label', 'Usuario'), user),
           h('div.field.grow', h('label', 'Contraseña'), h('div.field-row', h('span.grow', pass), showPass))),
         h('div.field', h('label', 'Llave privada (opcional)'), key),
+        h('div.field', h('label', { title: 'Al conectar por SSH se hace cd a esta carpeta; el gestor SFTP abre aquí' }, 'Ruta inicial (opcional): donde empiezan SSH y SFTP'), dir),
         h('label.muted', enabled, ' Activo (desactivado, no se puede conectar ni lo usan los agentes)'),
         h('label.muted', ai, ' Uso por IA: claude, codex, opencode… pueden ejecutar comandos en este servidor con frap-ssh'),
         h('p.muted', { style: 'margin:0;font-size:11px' },
@@ -2519,6 +2523,8 @@
     (sshInfo ? Promise.resolve() : loadSsh()).then(() => {
       const hosts = sftpHosts();
       if (!sftpHost() && hosts.length) state.sftp.hostId = hosts[0].id;
+      const c0 = sftpHost();
+      if (c0 && c0.dir) delete state.sftp.remote[c0.id]; // al abrir, empieza en la ruta inicial
       renderSftpBar();
       sftpLoad('local');
       sftpLoad('remote');
@@ -2568,7 +2574,8 @@
         h('span.sftp-title', remote ? '🖧 Servidor' : '💻 Local'),
         h('button.icon.mini', { title: 'Subir un nivel (Retroceso)', onclick: () => sftpUp(key) }, '↑'),
         s.pathInput,
-        h('button.icon.mini', { title: 'Recargar', onclick: () => sftpLoad(key) }, '⟳')),
+        h('button.icon.mini', { title: 'Recargar', onclick: () => sftpLoad(key) }, '⟳'),
+        remote ? h('button.icon.mini', { title: 'Ir a la ruta inicial del servidor', onclick: () => sftpLoad('remote', '') }, '⌂') : null),
       h('div.sftp-tools',
         s.sendBtn,
         remote ? h('button.mini', { title: 'Nueva carpeta en el servidor', onclick: sftpMkdir }, '+ Carpeta') : null,
@@ -2586,7 +2593,7 @@
   function ensureSftpPane() {
     if (sftpPane) return sftpPane;
     const host = h('select.db-conn', { title: 'Servidor (los de la pestaña SSH que estén activos)' });
-    host.addEventListener('change', () => { state.sftp.hostId = host.value; save(); renderSftpBar(); sftpLoad('remote'); renderPanes(); });
+    host.addEventListener('change', () => { state.sftp.hostId = host.value; const hc = sftpHost(); if (hc && hc.dir) delete state.sftp.remote[hc.id]; save(); renderSftpBar(); sftpLoad('remote'); renderPanes(); });
     const hidden = h('input', { type: 'checkbox' });
     hidden.checked = !!state.sftp.hidden;
     hidden.addEventListener('change', () => { state.sftp.hidden = hidden.checked; save(); sftpLoad('local'); renderSftpList('remote'); });
@@ -2641,6 +2648,7 @@
       s.entries = r.entries;
       s.error = '';
       if (remote) state.sftp.remote[c.id] = r.path;
+      if (r.startError) toast(r.startError, 'err');
       else state.sftp.local = r.path;
       save();
     } catch (e) {
