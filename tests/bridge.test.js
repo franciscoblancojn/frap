@@ -18,6 +18,13 @@ let root;
 let client;
 
 const FAKE_SSH = `#!/bin/sh
+for last; do :; done
+# sftp: conecta con el sftp-server local (si lo hay) y deja constancia de argumentos y contraseña
+if [ "$last" = sftp ] && [ -n "$FRAP_TEST_SFTP_SERVER" ]; then
+  echo "$*" > "$FRAP_TEST_SFTP_LOG"
+  [ -n "$SSH_ASKPASS" ] && "$SSH_ASKPASS" "password:" >> "$FRAP_TEST_SFTP_LOG"
+  exec "$FRAP_TEST_SFTP_SERVER"
+fi
 echo "ARGS:$*"
 if [ -n "$SSH_ASKPASS" ]; then
   echo "PASS:$("$SSH_ASKPASS" "lector@host's password: ")"
@@ -27,6 +34,19 @@ for last; do :; done
 case "$last" in *FRAP_OK*) echo FRAP_OK; echo "Linux falso 6.0";; esac
 exit 0
 `;
+
+/** sftp-server real del sistema (los tests de sftp.* se saltan si no hay). */
+const SFTP_SERVER = (() => {
+  const c = ['/usr/lib/openssh/sftp-server', '/usr/libexec/openssh/sftp-server', '/usr/libexec/sftp-server', '/usr/lib/ssh/sftp-server'];
+  try {
+    for (const d of fs.readdirSync('/snap')) {
+      if (!/^core\d*$/.test(d)) continue;
+      for (const v of fs.readdirSync(path.join('/snap', d))) c.push(path.join('/snap', d, v, 'usr/lib/openssh/sftp-server'));
+    }
+  } catch (_) { /* sin snap */ }
+  return c.find((f) => { try { fs.accessSync(f, fs.constants.X_OK); return !require('child_process').spawnSync(f, ['-h']).error; } catch (_) { return false; } }) || null;
+})();
+const HAS_SFTP = !require('child_process').spawnSync('sftp', ['-h']).error;
 
 function rpcClient(conn) {
   let seq = 0;
@@ -87,6 +107,7 @@ test.before(async () => {
     env: {
       ...process.env,
       FRAP_PORT: '0', FRAP_TOKEN: TOKEN, HOME: root, CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', FRAP_HOME: path.join(root, 'cfg'),
+      FRAP_TEST_SFTP_SERVER: SFTP_SERVER || '', FRAP_TEST_SFTP_LOG: path.join(root, 'sftp.log'),
       FRAP_FS_ROOT: root, FRAP_QUIET: '1', SHELL: '/bin/sh', PATH: `${path.join(root, 'fakebin')}${path.delimiter}${process.env.PATH}`,
       GIT_AUTHOR_NAME: 'FRAP Test', GIT_AUTHOR_EMAIL: 'test@frap.local', GIT_COMMITTER_NAME: 'FRAP Test', GIT_COMMITTER_EMAIL: 'test@frap.local',
     },
@@ -476,6 +497,61 @@ test('ssh.*: guardar sin exponer contraseña, validar, probar, conectar con askp
   assert.equal((await client.call('ssh.list')).skills.claude, true);
   await client.call('ssh.delete', { id: 'servidor_app' });
   assert.equal((await client.call('ssh.list')).hosts.length, 0);
+});
+
+test('sftp.*: listar, subir, descargar, carpetas, renombrar, borrar y límites locales', { skip: !SFTP_SERVER || !HAS_SFTP }, async () => {
+  await client.call('ssh.save', { host: { name: 'Archivos', host: '10.0.0.7', port: '2200', user: 'ops', password: 'pw "sftp"' } });
+  const rem = path.join(root, 'remoto');
+  const loc = path.join(root, 'proj', 'sftp-local');
+  fs.mkdirSync(path.join(rem, 'sub'), { recursive: true });
+  fs.mkdirSync(path.join(loc, 'carpeta'), { recursive: true });
+  fs.writeFileSync(path.join(rem, 'hola mundo.txt'), 'hola');
+  fs.writeFileSync(path.join(loc, 'subir *.txt'), 'arriba');
+  fs.writeFileSync(path.join(loc, 'carpeta', 'x.txt'), 'x');
+
+  const l = await client.call('sftp.list', { id: 'archivos', path: rem });
+  assert.equal(l.path, rem);
+  assert.equal(l.parent, path.dirname(rem));
+  assert.deepEqual(l.entries.map((e) => [e.name, e.dir]), [['sub', true], ['hola mundo.txt', false]]);
+  const log = fs.readFileSync(path.join(root, 'sftp.log'), 'utf8');
+  assert.match(log, /-oPort 2200/);
+  assert.match(log, /-l ops/);
+  assert.match(log, /pw "sftp"/); // la contraseña llega por askpass, no por argv
+  assert.equal((await client.call('sftp.list', { id: 'archivos' })).path.length > 0, true); // sin ruta: carpeta de inicio
+
+  await client.call('sftp.get', { id: 'archivos', remote: `${rem}/hola mundo.txt`, local: path.join(loc, 'bajado.txt') });
+  assert.equal(fs.readFileSync(path.join(loc, 'bajado.txt'), 'utf8'), 'hola');
+  await client.call('sftp.put', { id: 'archivos', local: path.join(loc, 'subir *.txt'), remote: `${rem}/sub/subir *.txt` });
+  assert.equal(fs.readFileSync(path.join(rem, 'sub', 'subir *.txt'), 'utf8'), 'arriba');
+  await client.call('sftp.put', { id: 'archivos', local: path.join(loc, 'carpeta'), remote: `${rem}/carpeta` });
+  assert.equal(fs.readFileSync(path.join(rem, 'carpeta', 'x.txt'), 'utf8'), 'x');
+  await client.call('sftp.get', { id: 'archivos', remote: `${rem}/sub`, local: path.join(loc, 'sub-bajada'), dir: true });
+  assert.equal(fs.readFileSync(path.join(loc, 'sub-bajada', 'subir *.txt'), 'utf8'), 'arriba');
+
+  await client.call('sftp.mkdir', { id: 'archivos', path: `${rem}/nueva` });
+  await client.call('sftp.rename', { id: 'archivos', from: `${rem}/nueva`, to: `${rem}/renombrada` });
+  assert.ok(fs.statSync(path.join(rem, 'renombrada')).isDirectory());
+  await client.call('sftp.remove', { id: 'archivos', path: `${rem}/renombrada`, dir: true });
+  await client.call('sftp.remove', { id: 'archivos', path: `${rem}/hola mundo.txt` });
+  assert.deepEqual(fs.readdirSync(rem).sort(), ['carpeta', 'sub']);
+  // nunca borra carpetas con contenido
+  await assert.rejects(client.call('sftp.remove', { id: 'archivos', path: `${rem}/carpeta`, dir: true }), /./);
+  assert.ok(fs.existsSync(path.join(rem, 'carpeta', 'x.txt')));
+
+  // límites: local fuera de FRAP_FS_ROOT (también vía enlace simbólico), rutas remotas relativas o con saltos de línea
+  await assert.rejects(client.call('sftp.get', { id: 'archivos', remote: `${rem}/sub/subir *.txt`, local: '/etc/frap-x' }), /fuera/);
+  await assert.rejects(client.call('sftp.put', { id: 'archivos', local: '/etc/hostname', remote: `${rem}/h` }), /fuera/);
+  fs.symlinkSync('/etc', path.join(loc, 'enlace'));
+  await assert.rejects(client.call('sftp.put', { id: 'archivos', local: path.join(loc, 'enlace', 'hostname'), remote: `${rem}/h` }), /fuera/);
+  await assert.rejects(client.call('sftp.get', { id: 'archivos', remote: `${rem}/sub/subir *.txt`, local: path.join(loc, 'enlace', 'x') }), /fuera/);
+  await assert.rejects(client.call('sftp.list', { id: 'archivos', path: 'relativa' }), /inválida/);
+  await assert.rejects(client.call('sftp.mkdir', { id: 'archivos', path: `${rem}/a\nput /etc/passwd /tmp/x` }), /inválida/);
+  await assert.rejects(client.call('sftp.remove', { id: 'archivos', path: '/' }), /raíz/);
+  assert.equal(await client.call('sftp.cancel', { tid: 'no-existe' }), false);
+
+  await client.call('ssh.toggle', { id: 'archivos', enabled: false });
+  await assert.rejects(client.call('sftp.list', { id: 'archivos', path: rem }), /desactivado/);
+  await client.call('ssh.delete', { id: 'archivos' });
 });
 
 test('avisos de agentes: $FRAP_NOTIFY → evento notice, sessions.list lo incluye y session.seen lo borra', async () => {

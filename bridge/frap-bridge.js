@@ -19,6 +19,7 @@ const { StringDecoder } = require('string_decoder');
 const ws = require('./ws');
 const db = require('./db');
 const ssh = require('./ssh');
+const sftp = require('./sftp');
 
 const VERSION = '1.3.0';
 const STARTED_AT = Date.now();
@@ -543,6 +544,45 @@ function sshHost(id) {
   if (!c) throw new Error(`Servidor no encontrado: ${id}`);
   return c;
 }
+
+// ---------- SFTP (gestor de archivos) ----------
+const sftpTransfers = new Map(); // tid -> proceso sftp en curso (para cancelar)
+/** Ejecuta comandos sftp en un servidor activo; lanza un Error legible si falla. */
+async function sftpRun(id, lines, { timeoutMs, tid } = {}) {
+  const c = sshHost(id);
+  if (!c.enabled) throw new Error(`El servidor "${c.name}" está desactivado. Actívalo en el panel SSH.`);
+  const sshBin = which('ssh');
+  if (!sshBin) throw new Error('No se encontró el cliente ssh en el sistema');
+  const r = await sftp.runSftp(c, lines, {
+    sshBin, timeoutMs, env: ssh.askpassEnv(c, FRAP_HOME, SSH_ENV),
+    onSpawn: (child) => { if (tid) sftpTransfers.set(String(tid), child); },
+  });
+  if (tid) sftpTransfers.delete(String(tid));
+  if (r.killed) throw new Error('Transferencia cancelada');
+  if (r.timedOut) throw new Error(`Sin respuesta en ${Math.round(timeoutMs / 1000)} s: revisa la IP, la VPN o el firewall.`);
+  if (r.code !== 0) {
+    const msg = sftp.sftpError(r.stderr, r.code);
+    const hint = ssh.sshHint(r.stderr);
+    throw new Error(hint ? `${msg}\n→ ${hint}` : msg);
+  }
+  return r;
+}
+/** Ruta local para una transferencia: dentro de FRAP_FS_ROOT también tras resolver enlaces simbólicos. */
+function sftpLocal(p, { mustExist }) {
+  const abs = safePath(p);
+  const realRoot = fs.realpathSync(FS_ROOT);
+  const inRoot = (r) => r === realRoot || r.startsWith(realRoot + path.sep);
+  let st = null;
+  try { st = fs.lstatSync(abs); } catch (_) { /* no existe */ }
+  if (mustExist) {
+    if (!st) throw new Error(`No existe: ${abs}`);
+    if (!inRoot(fs.realpathSync(abs))) throw new Error(`Ruta fuera de ${FS_ROOT}: ${abs}`);
+  } else {
+    if (st && st.isSymbolicLink()) throw new Error(`El destino es un enlace simbólico: ${abs}`);
+    if (!inRoot(fs.realpathSync(path.dirname(abs)))) throw new Error(`Ruta fuera de ${FS_ROOT}: ${abs}`);
+  }
+  return { abs, dir: st ? st.isDirectory() : false };
+}
 /** Valida y normaliza un servidor que viene de la UI. `password: null` = conservar la guardada. */
 function sshNormalize(input, existing) {
   const name = String(input.name || '').trim();
@@ -705,14 +745,15 @@ const ops = {
       return true;
     });
   },
-  'fs.list': ({ path: p, dirsOnly = true, hidden = false }) => {
+  'fs.list': ({ path: p, dirsOnly = true, hidden = false, details = false }) => {
     const dir = safePath(p);
     const ents = fs.readdirSync(dir, { withFileTypes: true })
       .filter((e) => hidden || !e.name.startsWith('.'))
       .map((e) => {
         let isDir = e.isDirectory();
-        if (e.isSymbolicLink()) { try { isDir = fs.statSync(path.join(dir, e.name)).isDirectory(); } catch (_) { /* roto */ } }
-        return { name: e.name, dir: isDir };
+        let st = null;
+        if (e.isSymbolicLink() || details) { try { st = fs.statSync(path.join(dir, e.name)); isDir = st.isDirectory(); } catch (_) { /* roto */ } }
+        return details ? { name: e.name, dir: isDir, link: e.isSymbolicLink(), size: st ? st.size : 0, mtime: st ? st.mtimeMs : 0 } : { name: e.name, dir: isDir };
       })
       .filter((e) => !dirsOnly || e.dir)
       .sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
@@ -862,6 +903,47 @@ const ops = {
       env: ssh.askpassEnv(c, FRAP_HOME, SSH_ENV),
       meta: { projectId: projectId || null, kind: 'ssh', title: c.name, sshId: c.id },
     });
+  },
+  /** Lista un directorio remoto (`path` absoluto; vacío = carpeta de inicio del usuario). */
+  'sftp.list': async ({ id, path: p }) => {
+    const lines = p ? [`cd ${sftp.quote(sftp.remotePath(p))}`] : [];
+    const r = await sftpRun(id, [...lines, 'pwd', 'ls -la'], { timeoutMs: 30000 });
+    const m = r.stdout.match(/^Remote working directory: (.*)$/m);
+    const cwd = m ? m[1] : p || '/';
+    return { path: cwd, parent: cwd === '/' ? null : sftp.remotePath(`${cwd}/..`), entries: sftp.parseLs(r.stdout) };
+  },
+  /** Descarga `remote` (archivo o carpeta) a la ruta local completa `local` (dentro de FRAP_FS_ROOT). */
+  'sftp.get': async ({ id, remote, local, dir = false, tid }) => {
+    const l = sftpLocal(local, { mustExist: false });
+    await sftpRun(id, [`get ${dir ? '-R ' : ''}${sftp.quote(sftp.remotePath(remote))} ${sftp.quote(l.abs)}`], { timeoutMs: 0, tid });
+    return { local: l.abs };
+  },
+  /** Sube `local` (archivo o carpeta dentro de FRAP_FS_ROOT) a la ruta remota completa `remote`. */
+  'sftp.put': async ({ id, local, remote, tid }) => {
+    const l = sftpLocal(local, { mustExist: true });
+    await sftpRun(id, [`put ${l.dir ? '-R ' : ''}${sftp.quote(l.abs)} ${sftp.quote(sftp.remotePath(remote))}`], { timeoutMs: 0, tid });
+    return { remote: sftp.remotePath(remote) };
+  },
+  'sftp.cancel': ({ tid }) => {
+    const p = sftpTransfers.get(String(tid));
+    if (!p) return false;
+    p.kill('SIGTERM');
+    return true;
+  },
+  'sftp.mkdir': async ({ id, path: p }) => {
+    await sftpRun(id, [`mkdir ${sftp.quote(sftp.remotePath(p))}`]);
+    return true;
+  },
+  'sftp.rename': async ({ id, from, to }) => {
+    await sftpRun(id, [`rename ${sftp.quote(sftp.remotePath(from))} ${sftp.quote(sftp.remotePath(to))}`]);
+    return true;
+  },
+  /** Borra un archivo, o una carpeta VACÍA (`dir: true`, rmdir). Nunca borra recursivamente. */
+  'sftp.remove': async ({ id, path: p, dir = false }) => {
+    const r = sftp.remotePath(p);
+    if (r === '/') throw new Error('No se puede borrar la raíz');
+    await sftpRun(id, [`${dir ? 'rmdir' : 'rm'} ${sftp.quote(r)}`]);
+    return true;
   },
   'ssh.installSkill': ({ tools = ['claude', 'codex'] } = {}) => {
     const written = [];

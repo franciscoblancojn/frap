@@ -24,6 +24,7 @@
 - [x] Exportar / importar configurable: proyectos y terminales, configuración, BD y SSH (contraseñas cifradas), reabrir terminales retomando la conversación
 - [x] Avisos de agentes: hooks → `$FRAP_NOTIFY` → marca ✓ terminó / ● espera en el panel izquierdo y contador en el título
 - [x] SSH: servidores en `ssh.env` (0600), terminal conectada con askpass, prueba con pistas, interruptores activo / uso por IA, CLI `frap-ssh` y skill para agentes
+- [x] Archivos por SFTP (tipo FileZilla) sobre los servidores SSH: dos paneles local/servidor, subir/descargar archivos y carpetas (botones, doble clic o arrastrar), cola con cancelar, crear carpeta, renombrar y eliminar (carpetas solo vacías). Pestaña "Archivos" (Alt+Shift+F)
 - [x] Interruptores por conexión de BD: activa / uso por IA (`db.toggle`; `frap-db` solo ve las habilitadas)
 - [x] Interruptor "Solo lectura" por conexión (activado por defecto). Desactivado, la pestaña DB puede ejecutar INSERT, UPDATE, CREATE y ALTER con confirmación (`db.check` + `assertSafeWrite`), pero nunca DELETE, DROP ni TRUNCATE. Los agentes siguen siempre en solo lectura
 - [x] Música: archivos (IndexedDB) y YouTube (relé `/yt-player`), bucle (lista/canción), aleatorio sin repetir, arrastrar para reordenar, dock persistente y teclas multimedia

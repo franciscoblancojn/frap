@@ -107,6 +107,7 @@
     // música: tracks = [{id, type: 'file'|'youtube', title, videoId?, duration?}]; los archivos viven en IndexedDB
     music: { tracks: [], current: null, loop: 'all', shuffle: false, volume: 80 },
     git: { open: false, repo: null, tab: 'diff' }, // pestaña Git del panel central
+    sftp: { open: false, hostId: null, local: null, remote: {}, hidden: false }, // pestaña Archivos (SFTP); remote = última ruta por servidor
     // temporizadores: [{id, icon, title, desc, kind: 'repeat'|'once', every (seg), mode: 'toast'|'modal', sound, enabled, nextAt, startedAt}]
     timers: [],
     settings: {
@@ -136,6 +137,7 @@
       db: { ...base.db, ...(saved.db || {}) },
       music: { ...base.music, ...(saved.music || {}) },
       git: { ...base.git, ...(saved.git || {}) },
+      sftp: { ...base.sftp, ...(saved.sftp || {}), remote: { ...((saved.sftp || {}).remote || {}) } },
     };
   }
 
@@ -242,7 +244,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -872,6 +874,15 @@
       h('span.tname', 'DB'),
       h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeDbView(); } }, '✕')));
     }
+    if (state.sftp.open) {
+      tabs.append(h(`div.tab.sftp-tab${state.activeSid === SFTP_VIEW ? '.active' : ''}`, {
+        dataset: { sid: SFTP_VIEW }, title: 'Archivos por SFTP (Alt+Shift+F)',
+        onclick: () => openSftpView(),
+        onauxclick: (e) => { if (e.button === 1) closeSftpView(); },
+      },
+      h('span.tname', '⇅ Archivos'),
+      h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeSftpView(); } }, '✕')));
+    }
     if (state.git.open) {
       tabs.append(h(`div.tab.git-tab${state.activeSid === GIT_VIEW ? '.active' : ''}`, {
         dataset: { sid: GIT_VIEW }, title: 'Git (Alt+Shift+G)',
@@ -952,11 +963,14 @@
     const gitActive = state.activeSid === GIT_VIEW;
     if (gitActive) { ensureGitPane(); gitSyncProject(); }
     if (gitPane) gitPane.root.classList.toggle('hidden', !gitActive);
+    const sftpActive = state.activeSid === SFTP_VIEW;
+    if (sftpActive) ensureSftpPane();
+    if (sftpPane) sftpPane.root.classList.toggle('hidden', !sftpActive);
     const p = project();
-    $('#empty').classList.toggle('hidden', !!activeTerm() || !!pg || dbActive || gitActive);
+    $('#empty').classList.toggle('hidden', !!activeTerm() || !!pg || dbActive || gitActive || sftpActive);
     $('#st-project').textContent = p ? p.name : '—';
     const t = activeTerm();
-    $('#st-cwd').textContent = gitActive ? (state.git.repo ? tilde(state.git.repo) : 'Git') : dbActive ? dbStatusLine() : pg ? pg.url : t ? tilde((t.info.meta || {}).cwd || '') : p ? p.folders.map(tilde).join('  +  ') : '';
+    $('#st-cwd').textContent = sftpActive ? sftpStatusLine() : gitActive ? (state.git.repo ? tilde(state.git.repo) : 'Git') : dbActive ? dbStatusLine() : pg ? pg.url : t ? tilde((t.info.meta || {}).cwd || '') : p ? p.folders.map(tilde).join('  +  ') : '';
     renderStatusActions();
   }
 
@@ -2098,7 +2112,7 @@
 
   // ---------- bases de datos: conexiones (.env del bridge) + pestaña DB en el centro ----------
   const DB_VIEW = 'db:main';
-  const isViewSid = (sid) => isPageView(sid) || sid === DB_VIEW || sid === GIT_VIEW;
+  const isViewSid = (sid) => isPageView(sid) || sid === DB_VIEW || sid === GIT_VIEW || sid === SFTP_VIEW;
   const DB_ENGINES = { mysql: 'MySQL / MariaDB', postgres: 'PostgreSQL', sqlite: 'SQLite' };
   const DB_PORTS = { mysql: '3306', postgres: '5432' };
   /** Respuesta de db.list: { envFile, cli, clients, skills, conns } (sin contraseñas). */
@@ -2305,6 +2319,7 @@
     if (!Bridge.ready) return;
     try { sshInfo = await Bridge.call('ssh.list'); sshError = null; } catch (e) { sshError = e.message; }
     if (state.ui.rtab === 'ssh') renderRight();
+    renderSftpBar();
   }
 
   function renderSsh() {
@@ -2333,6 +2348,7 @@
         h('span.name', `🖧 ${c.name}`),
         c.key ? h('span.badge', { title: c.key }, '🔑 llave') : null,
         h('button.icon.mini', { title: 'Conectar', disabled: !c.enabled, onclick: (e) => { e.stopPropagation(); connectSsh(c.id); } }, '▶'),
+        h('button.icon.mini', { title: 'Archivos (SFTP): subir y descargar', disabled: !c.enabled, onclick: (e) => { e.stopPropagation(); openSftpView(c.id); } }, '⇅'),
         h('button.icon.mini', { title: 'Probar conexión', onclick: (e) => { e.stopPropagation(); testSsh({ id: c.id }, c.name); } }, '⚡'),
         h('button.icon.mini', { title: 'Editar', onclick: (e) => { e.stopPropagation(); editSsh(c); } }, '✎'),
         h('button.icon.mini', { title: 'Eliminar', onclick: (e) => { e.stopPropagation(); deleteSsh(c); } }, '✕')),
@@ -2473,6 +2489,357 @@
       await Bridge.call('ssh.delete', { id: c.id });
       loadSsh();
     } catch (e) { toast(e.message, 'err'); }
+  }
+
+  // ----- pestaña Archivos (SFTP, panel central) -----
+  // Dos paneles como FileZilla: local (dentro de FRAP_FS_ROOT) ↔ servidor SSH. Las transferencias van
+  // en una cola, de a una, y cada una es un `sftp` del bridge (la contraseña la entrega askpass).
+  const SFTP_VIEW = 'sftp:main';
+  let sftpPane = null;
+  const sftpQueue = []; // {tid, up, name, from, to, isDir, hostId, status: wait|run|ok|err|cancel, msg, started, ms}
+  let sftpBusy = false;
+  const fmtBytes = (n) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`
+    : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`);
+  const joinRemote = (dir, name) => (dir === '/' ? `/${name}` : `${dir}/${name}`);
+  const joinLocal = (dir, name) => `${dir.replace(/\/+$/, '')}/${name}`;
+  /** Carpeta de destino abreviada para la cola: "…/www/logs/" (la ruta completa queda en el title). */
+  const shortDir = (full) => {
+    const parts = full.split('/').slice(0, -1);
+    return parts.length > 3 ? `…/${parts.slice(-2).join('/')}/` : `${parts.join('/')}/`;
+  };
+  const sftpHosts = () => (sshInfo ? sshInfo.hosts.filter((c) => c.enabled) : []);
+  const sftpHost = () => sftpHosts().find((c) => c.id === state.sftp.hostId) || null;
+
+  function openSftpView(hostId) {
+    state.sftp.open = true;
+    if (hostId) state.sftp.hostId = hostId;
+    state.activeSid = SFTP_VIEW;
+    save();
+    renderAll();
+    (sshInfo ? Promise.resolve() : loadSsh()).then(() => {
+      const hosts = sftpHosts();
+      if (!sftpHost() && hosts.length) state.sftp.hostId = hosts[0].id;
+      renderSftpBar();
+      sftpLoad('local');
+      sftpLoad('remote');
+    });
+  }
+  function closeSftpView() {
+    state.sftp.open = false;
+    if (state.activeSid === SFTP_VIEW) {
+      const list = sessionsOf(state.activeProject);
+      state.activeSid = list.length ? list[list.length - 1].sid : null;
+    }
+    save();
+    renderAll();
+  }
+  function sftpStatusLine() {
+    const c = sftpHost();
+    return c ? `${sshTarget(c)} · ${state.sftp.remote[c.id] || '~'}` : 'Archivos (SFTP)';
+  }
+
+  /** Un lado del gestor: {key, title, path, entries, sel:Set, last, error, loading, els…} */
+  function sftpSide(key) {
+    const s = { key, path: '', entries: [], sel: new Set(), last: null, error: '', loading: false };
+    const remote = key === 'remote';
+    s.pathInput = h('input.mono.sftp-path', { spellcheck: 'false', title: 'Ruta (Enter para ir)' });
+    s.pathInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sftpLoad(key, s.pathInput.value.trim()); });
+    s.list = h('div.sftp-list', { tabindex: '0' });
+    s.list.addEventListener('dragover', (e) => { if (sftpDrag && sftpDrag.from !== key) { e.preventDefault(); s.list.classList.add('drop'); } });
+    s.list.addEventListener('dragleave', () => s.list.classList.remove('drop'));
+    s.list.addEventListener('drop', (e) => {
+      e.preventDefault();
+      s.list.classList.remove('drop');
+      if (sftpDrag && sftpDrag.from !== key) sftpTransfer(sftpDrag.from, sftpDrag.names);
+      sftpDrag = null;
+    });
+    s.list.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && s.sel.size) { e.preventDefault(); sftpTransfer(key, [...s.sel]); }
+      else if (e.key === 'Backspace') { e.preventDefault(); sftpUp(key); }
+      else if (e.key === 'Delete' && remote) { e.preventDefault(); sftpRemove(); }
+      else if (e.key === 'F2' && remote) { e.preventDefault(); sftpRename(); }
+    });
+    s.sendBtn = h('button.primary.mini', {
+      title: remote ? 'Descargar lo seleccionado a la carpeta local (o arrastra a la izquierda)' : 'Subir lo seleccionado a la carpeta remota (o arrastra a la derecha)',
+      onclick: () => sftpTransfer(key, [...s.sel]),
+    }, remote ? '⇦ Descargar' : 'Subir ⇨');
+    s.root = h('div.sftp-side',
+      h('div.sftp-head',
+        h('span.sftp-title', remote ? '🖧 Servidor' : '💻 Local'),
+        h('button.icon.mini', { title: 'Subir un nivel (Retroceso)', onclick: () => sftpUp(key) }, '↑'),
+        s.pathInput,
+        h('button.icon.mini', { title: 'Recargar', onclick: () => sftpLoad(key) }, '⟳')),
+      h('div.sftp-tools',
+        s.sendBtn,
+        remote ? h('button.mini', { title: 'Nueva carpeta en el servidor', onclick: sftpMkdir }, '+ Carpeta') : null,
+        remote ? h('button.mini', { title: 'Renombrar (F2)', onclick: sftpRename }, '✎ Renombrar') : null,
+        remote ? h('button.mini.danger', { title: 'Eliminar archivos o carpetas vacías (Supr)', onclick: sftpRemove }, '✕ Eliminar') : null,
+        !remote ? h('button.mini', { title: 'Ir a la carpeta del proyecto', onclick: () => { const p = project(); if (p && p.folders[0]) sftpLoad('local', p.folders[0]); } }, '📁 Proyecto') : null,
+        h('span.grow'),
+        s.info = h('span.muted.sftp-info')),
+      h('div.sftp-row.sftp-cols', h('span.n', 'Nombre'), h('span.sz', 'Tamaño'), h('span.mt', 'Modificado')),
+      s.list);
+    return s;
+  }
+  let sftpDrag = null;
+
+  function ensureSftpPane() {
+    if (sftpPane) return sftpPane;
+    const host = h('select.db-conn', { title: 'Servidor (los de la pestaña SSH que estén activos)' });
+    host.addEventListener('change', () => { state.sftp.hostId = host.value; save(); renderSftpBar(); sftpLoad('remote'); renderPanes(); });
+    const hidden = h('input', { type: 'checkbox' });
+    hidden.checked = !!state.sftp.hidden;
+    hidden.addEventListener('change', () => { state.sftp.hidden = hidden.checked; save(); sftpLoad('local'); renderSftpList('remote'); });
+    const local = sftpSide('local');
+    const remote = sftpSide('remote');
+    const queue = h('div.sftp-queue');
+    const clear = h('button.mini', { title: 'Quitar de la lista las transferencias terminadas', onclick: () => {
+      for (let i = sftpQueue.length - 1; i >= 0; i--) if (!['wait', 'run'].includes(sftpQueue[i].status)) sftpQueue.splice(i, 1);
+      renderSftpQueue();
+    } }, 'Limpiar');
+    const root = h('div.sftp-pane.hidden',
+      h('div.db-bar', host, h('label.muted', { title: 'Mostrar archivos que empiezan por "."' }, hidden, ' ocultos'), h('span.grow'),
+        h('span.muted', { style: 'font-size:11px' }, 'Doble clic: abrir carpeta o transferir · arrastra entre paneles · Ctrl/Shift+clic: varios')),
+      h('div.sftp-main', local.root, remote.root),
+      h('div.sftp-qhead', h('span', 'Transferencias'), h('span.grow'), clear),
+      queue);
+    $('#term-host').append(root);
+    sftpPane = { root, host, hidden, local, remote, queue };
+    renderSftpBar();
+    renderSftpQueue();
+    return sftpPane;
+  }
+
+  function renderSftpBar() {
+    if (!sftpPane) return;
+    const hosts = sftpHosts();
+    sftpPane.host.replaceChildren(...(hosts.length
+      ? hosts.map((c) => h('option', { value: c.id }, `${c.name} (${sshTarget(c)})`))
+      : [h('option', { value: '' }, sshInfo && sshInfo.hosts.length ? 'Todos los servidores están desactivados' : 'Sin servidores — agrégalos en la pestaña SSH')]));
+    sftpPane.host.value = state.sftp.hostId || '';
+  }
+
+  async function sftpLoad(key, path) {
+    const p = ensureSftpPane();
+    const s = p[key];
+    const remote = key === 'remote';
+    const c = remote ? sftpHost() : null;
+    if (remote && !c) { s.entries = []; s.error = 'Elige un servidor activo (pestaña SSH).'; renderSftpList(key); return; }
+    if (!Bridge.ready) { s.error = 'Bridge desconectado.'; renderSftpList(key); return; }
+    const pr = project();
+    const target = path != null ? path : remote ? state.sftp.remote[c.id] || '' : state.sftp.local || (pr && pr.folders[0]) || '~';
+    s.loading = true;
+    s.info.textContent = 'Cargando…';
+    try {
+      const r = remote
+        ? await Bridge.call('sftp.list', { id: c.id, path: target })
+        : await Bridge.call('fs.list', { path: target, dirsOnly: false, hidden: true, details: true });
+      if (remote && state.sftp.hostId !== c.id) return; // cambió de servidor mientras cargaba
+      if (r.path !== s.path) { s.sel.clear(); s.last = null; }
+      s.path = r.path;
+      s.parent = r.parent;
+      s.entries = r.entries;
+      s.error = '';
+      if (remote) state.sftp.remote[c.id] = r.path;
+      else state.sftp.local = r.path;
+      save();
+    } catch (e) {
+      s.error = e.message;
+      if (remote && path == null && state.sftp.remote[c.id]) { delete state.sftp.remote[c.id]; save(); } // la ruta guardada ya no existe
+    }
+    s.loading = false;
+    renderSftpList(key);
+    if (remote) renderPanes();
+  }
+  function sftpUp(key) {
+    const s = sftpPane && sftpPane[key];
+    if (s && s.parent) sftpLoad(key, s.parent);
+  }
+  const sftpVisible = (s) => s.entries.filter((e) => state.sftp.hidden || !e.name.startsWith('.'));
+
+  function renderSftpList(key) {
+    const s = sftpPane[key];
+    const remote = key === 'remote';
+    s.pathInput.value = s.path ? (remote ? s.path : tilde(s.path)) : '';
+    s.pathInput.scrollLeft = s.pathInput.scrollWidth; // rutas largas: se ve el final
+    const items = sftpVisible(s);
+    for (const n of [...s.sel]) if (!items.some((e) => e.name === n)) s.sel.delete(n);
+    if (s.error) { s.list.replaceChildren(h('pre.db-error', s.error)); s.info.textContent = 'Error'; }
+    else {
+      const rows = items.map((e, i) => h(`div.sftp-row.sftp-item${s.sel.has(e.name) ? '.sel' : ''}${e.dir ? '.dir' : ''}`, {
+        draggable: 'true',
+        title: remote ? `${e.perm || ''} ${e.owner || ''}`.trim() : '',
+        onclick: (ev) => sftpSelect(key, items, i, ev),
+        ondblclick: () => sftpOpen(key, e),
+        ondragstart: (ev) => {
+          if (!s.sel.has(e.name)) { s.sel.clear(); s.sel.add(e.name); renderSftpList(key); }
+          sftpDrag = { from: key, names: [...s.sel] };
+          ev.dataTransfer.effectAllowed = 'copy';
+          ev.dataTransfer.setData('text/plain', [...s.sel].join('\n'));
+        },
+        ondragend: () => { sftpDrag = null; },
+      },
+      h('span.n', `${e.dir ? '📁' : e.link ? '🔗' : '📄'} ${e.name}`),
+      h('span.sz', e.dir ? '' : fmtBytes(e.size)),
+      h('span.mt', remote ? e.mtime : e.mtime ? new Date(e.mtime).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '')));
+      s.list.replaceChildren(...(rows.length ? rows : [h('p.muted', { style: 'padding:8px 10px' }, 'Carpeta vacía.')]));
+      const selSize = items.filter((e) => s.sel.has(e.name) && !e.dir).reduce((a, e) => a + (e.size || 0), 0);
+      s.info.textContent = s.sel.size ? `${s.sel.size} seleccionado${s.sel.size === 1 ? '' : 's'}${selSize ? ' · ' + fmtBytes(selSize) : ''}` : `${items.length} elemento${items.length === 1 ? '' : 's'}`;
+    }
+    s.sendBtn.disabled = !s.sel.size || !sftpHost();
+  }
+
+  function sftpSelect(key, items, i, ev) {
+    const s = sftpPane[key];
+    const name = items[i].name;
+    if (ev.shiftKey && s.last != null) {
+      const a = items.findIndex((e) => e.name === s.last);
+      const [x, y] = a < 0 ? [i, i] : [Math.min(a, i), Math.max(a, i)];
+      if (!ev.ctrlKey && !ev.metaKey) s.sel.clear();
+      for (let k = x; k <= y; k++) s.sel.add(items[k].name);
+    } else if (ev.ctrlKey || ev.metaKey) {
+      if (s.sel.has(name)) s.sel.delete(name); else s.sel.add(name);
+      s.last = name;
+    } else {
+      s.sel.clear();
+      s.sel.add(name);
+      s.last = name;
+    }
+    renderSftpList(key);
+    s.list.focus();
+  }
+
+  async function sftpOpen(key, e) {
+    const s = sftpPane[key];
+    const full = key === 'remote' ? joinRemote(s.path, e.name) : joinLocal(s.path, e.name);
+    if (e.dir) { sftpLoad(key, full); return; }
+    if (e.link && key === 'remote') {
+      // un enlace puede ser carpeta: se intenta abrir; si no lo es, se transfiere
+      try {
+        const c = sftpHost();
+        const r = await Bridge.call('sftp.list', { id: c.id, path: full });
+        if (r.path !== s.path) { sftpLoad(key, full); return; }
+      } catch (_) { /* es un archivo */ }
+    }
+    sftpTransfer(key, [e.name]);
+  }
+
+  /** Encola la transferencia de `names` del lado `from` hacia la carpeta abierta del otro lado. */
+  async function sftpTransfer(from, names) {
+    const p = sftpPane;
+    const c = sftpHost();
+    if (!p || !c || !names.length) return;
+    const src = p[from];
+    const dst = p[from === 'local' ? 'remote' : 'local'];
+    if (!src.path || !dst.path || dst.error) { toast('Abre una carpeta válida en ambos lados', 'err'); return; }
+    const up = from === 'local';
+    const ents = names.map((n) => src.entries.find((e) => e.name === n)).filter(Boolean);
+    const clash = ents.filter((e) => dst.entries.some((d) => d.name === e.name));
+    if (clash.length && !(await confirmBox(`¿Reemplazar ${clash.length === 1 ? `"${clash[0].name}"` : `${clash.length} elementos`} en ${up ? 'el servidor' : 'tu equipo'}?`,
+      `Ya existe${clash.length === 1 ? '' : 'n'} en ${up ? dst.path : tilde(dst.path)}: ${clash.slice(0, 8).map((e) => e.name).join(', ')}${clash.length > 8 ? '…' : ''}. Los archivos se sobrescriben.`))) return;
+    for (const e of ents) {
+      sftpQueue.push({
+        tid: uid(), up, name: e.name, isDir: !!e.dir, hostId: c.id, size: e.dir ? null : e.size,
+        from: up ? joinLocal(src.path, e.name) : joinRemote(src.path, e.name),
+        to: up ? joinRemote(dst.path, e.name) : joinLocal(dst.path, e.name),
+        status: 'wait',
+      });
+    }
+    renderSftpQueue();
+    sftpPump();
+  }
+
+  async function sftpPump() {
+    if (sftpBusy) return;
+    const job = sftpQueue.find((j) => j.status === 'wait');
+    if (!job) return;
+    sftpBusy = true;
+    job.status = 'run';
+    job.started = Date.now();
+    renderSftpQueue();
+    const tick = setInterval(renderSftpQueue, 1000);
+    try {
+      if (job.up) await Bridge.call('sftp.put', { id: job.hostId, local: job.from, remote: job.to, tid: job.tid });
+      else await Bridge.call('sftp.get', { id: job.hostId, remote: job.from, local: job.to, dir: job.isDir, tid: job.tid });
+      job.status = 'ok';
+    } catch (e) {
+      job.status = /cancelada/.test(e.message) ? 'cancel' : 'err';
+      job.msg = e.message;
+    }
+    clearInterval(tick);
+    job.ms = Date.now() - job.started;
+    sftpBusy = false;
+    renderSftpQueue();
+    // refresca el lado de destino si sigue abierto en esa carpeta
+    if (sftpPane && !sftpQueue.some((j) => j.status === 'wait' && j.up === job.up)) {
+      const key = job.up ? 'remote' : 'local';
+      if (!job.up || state.sftp.hostId === job.hostId) sftpLoad(key, sftpPane[key].path);
+    }
+    if (job.status === 'err') toast(`${job.up ? 'Subida' : 'Descarga'} de "${job.name}" falló: ${job.msg}`, 'err');
+    sftpPump();
+  }
+
+  function sftpCancel(job) {
+    if (job.status === 'wait') { job.status = 'cancel'; job.msg = 'Cancelada'; renderSftpQueue(); return; }
+    if (job.status === 'run') Bridge.call('sftp.cancel', { tid: job.tid }).catch(() => {});
+  }
+
+  function renderSftpQueue() {
+    if (!sftpPane) return;
+    const icon = { wait: '⏳', run: '⇄', ok: '✓', err: '✗', cancel: '⊘' };
+    const label = { wait: 'en cola', run: 'transfiriendo…', ok: 'listo', err: 'error', cancel: 'cancelada' };
+    const rows = sftpQueue.slice().reverse().map((j) => h(`div.sftp-job.${j.status}`, { title: `${j.from}\n→ ${j.to}${j.msg ? '\n' + j.msg : ''}` },
+      h('span.st', icon[j.status]),
+      h('span.dirn', j.up ? '⇧' : '⇩'),
+      h('span.n', j.name + (j.isDir ? '/' : '')),
+      h('span.muted.to', `→ ${shortDir(j.up ? j.to : tilde(j.to))}`),
+      h('span.sz', j.size != null ? fmtBytes(j.size) : ''),
+      h('span.lbl', j.status === 'err' ? j.msg.split('\n')[0] : label[j.status]),
+      h('span.tm', j.started ? (fmtDur((j.ms || (Date.now() - j.started)) / 1000) || '<1 s') : ''),
+      ['wait', 'run'].includes(j.status) ? h('button.icon.mini', { title: 'Cancelar', onclick: () => sftpCancel(j) }, '✕') : h('span')));
+    sftpPane.queue.replaceChildren(...(rows.length ? rows : [h('p.muted', { style: 'padding:6px 10px;margin:0' }, 'Sin transferencias. Selecciona archivos y pulsa Subir/Descargar, haz doble clic o arrástralos al otro panel.')]));
+  }
+
+  async function sftpMkdir() {
+    const c = sftpHost();
+    const s = sftpPane && sftpPane.remote;
+    if (!c || !s || !s.path) return;
+    const name = await askText('Nueva carpeta en el servidor', `Nombre (dentro de ${s.path})`);
+    if (!name) return;
+    if (name.includes('/')) { toast('El nombre no puede llevar "/"', 'err'); return; }
+    try {
+      await Bridge.call('sftp.mkdir', { id: c.id, path: joinRemote(s.path, name) });
+      s.sel = new Set([name]);
+      sftpLoad('remote', s.path);
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  async function sftpRename() {
+    const c = sftpHost();
+    const s = sftpPane && sftpPane.remote;
+    if (!c || !s || s.sel.size !== 1) { toast('Selecciona un solo elemento del servidor', 'err'); return; }
+    const old = [...s.sel][0];
+    const name = await askText('Renombrar en el servidor', 'Nuevo nombre', old);
+    if (!name || name === old) return;
+    if (name.includes('/')) { toast('El nombre no puede llevar "/"', 'err'); return; }
+    try {
+      await Bridge.call('sftp.rename', { id: c.id, from: joinRemote(s.path, old), to: joinRemote(s.path, name) });
+      s.sel = new Set([name]);
+      sftpLoad('remote', s.path);
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  async function sftpRemove() {
+    const c = sftpHost();
+    const s = sftpPane && sftpPane.remote;
+    if (!c || !s || !s.sel.size) { toast('Selecciona qué eliminar en el servidor', 'err'); return; }
+    const ents = [...s.sel].map((n) => s.entries.find((e) => e.name === n)).filter(Boolean);
+    if (!(await confirmBox(`¿Eliminar ${ents.length === 1 ? `"${ents[0].name}"` : `${ents.length} elementos`} del servidor?`,
+      `${ents.slice(0, 10).map((e) => (e.dir ? `${e.name}/` : e.name)).join(', ')}${ents.length > 10 ? '…' : ''}\n\nNo se puede deshacer. Las carpetas solo se eliminan si están vacías.`))) return;
+    let ok = 0;
+    for (const e of ents) {
+      try { await Bridge.call('sftp.remove', { id: c.id, path: joinRemote(s.path, e.name), dir: e.dir }); ok++; } catch (err) { toast(`${e.name}: ${err.message}`, 'err'); }
+    }
+    if (ok) toast(`${ok} eliminado${ok === 1 ? '' : 's'}`, 'ok');
+    sftpLoad('remote', s.path);
   }
 
   // ----- pestaña DB (panel central) -----
@@ -3796,7 +4163,7 @@
   function isAppShortcut(e) {
     if (!e.altKey || e.ctrlKey || e.metaKey) return false;
     if (!e.shiftKey && /^Digit[1-9]$/.test(e.code)) return true;
-    return e.shiftKey && ['KeyT', 'KeyW', 'KeyB', 'KeyP', 'KeyC', 'KeyX', 'KeyO', 'KeyD', 'KeyM', 'KeyG'].includes(e.code);
+    return e.shiftKey && ['KeyT', 'KeyW', 'KeyB', 'KeyP', 'KeyC', 'KeyX', 'KeyO', 'KeyD', 'KeyM', 'KeyG', 'KeyF'].includes(e.code);
   }
   document.addEventListener('keydown', (e) => {
     if (!$('#alarm').classList.contains('hidden')) return; // el aviso bloqueante tiene prioridad
@@ -3815,10 +4182,12 @@
       case 'KeyO': launch('opencode'); break;
       case 'KeyD': openDbView(); break;
       case 'KeyG': openGitView(); break;
+      case 'KeyF': openSftpView(); break;
       case 'KeyM': togglePlay(); break;
       case 'KeyW':
         if (state.activeSid === DB_VIEW) closeDbView();
         else if (state.activeSid === GIT_VIEW) closeGitView();
+        else if (state.activeSid === SFTP_VIEW) closeSftpView();
         else if (isPageView(state.activeSid)) closePageView(state.activeSid.slice(PAGE_PREFIX.length));
         else if (state.activeSid) closeTerm(state.activeSid);
         break;
@@ -4141,7 +4510,7 @@
   $('#btn-split').onclick = cycleSplit;
   $('#toggle-left').onclick = () => togglePanel('left');
   $('#toggle-right').onclick = () => togglePanel('right');
-  for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : b.dataset.launch === 'git' ? openGitView() : b.dataset.launch === 'ssh' ? pickSsh() : launch(b.dataset.launch));
+  for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : b.dataset.launch === 'git' ? openGitView() : b.dataset.launch === 'ssh' ? pickSsh() : b.dataset.launch === 'sftp' ? openSftpView() : launch(b.dataset.launch));
   for (const b of $$('#rtabs button')) b.onclick = () => setRtab(b.dataset.rtab);
   $('#token-input').value = conn.token;
   $('#port-input').value = conn.port;

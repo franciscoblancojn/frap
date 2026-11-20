@@ -78,6 +78,12 @@ jq -r '.message' | { read -r m; [ -n "$FRAP_NOTIFY" ] && printf 'waiting %s\n' "
 - `bridge/ssh.js` lee y escribe `FRAP_HOME/ssh.env` (claves `FRAP_SSH_<ID>_{NAME,HOST,PORT,USER,PASSWORD,KEY,ENABLED,AI}`, 0600) y arma los argumentos de `ssh`. Valida host y usuario (sin espacios ni `-` inicial) y pone `--` antes del destino para evitar inyección de opciones.
 - Contraseña: `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` apuntan a `FRAP_HOME/askpass.sh` (envoltorio que ejecuta `bridge/frap-askpass.js` con el mismo node). El askpass busca la contraseña por `FRAP_SSH_ID` en el `.env` y solo responde preguntas de contraseña o passphrase; cualquier otra (p. ej. confirmar una llave de servidor) la rechaza. `ssh.test` con un formulario sin guardar la pasa en `FRAP_SSH_PASS` a ese proceso corto.
 - `ssh.connect` crea una sesión PTY normal (`meta.kind = 'ssh'`, `meta.sshId`) con `ssh` como comando, en el proyecto activo o en "Sin proyecto".
+- **Archivos (SFTP)**: `bridge/sftp.js` ejecuta el binario `sftp` del sistema en modo batch (`-b -`, comandos por stdin) contra los mismos servidores. La UI muestra dos paneles tipo FileZilla, local y servidor, con una cola de transferencias que corren de a una. Detalles de seguridad:
+  - `sftp -b` le agrega `BatchMode=yes` a ssh, y eso desactiva askpass. Como ssh se queda con el primer valor de cada opción, `-o BatchMode=no` va **antes** de `-b` cuando hay contraseña.
+  - Se usa `-S <ssh del PATH>`: sftp llama a `/usr/bin/ssh` por ruta fija, y así respeta el mismo `ssh` que las terminales (y el falso de los tests).
+  - Las rutas van escapadas con `\` y sin comillas (`sftp.quote`), así sftp no las parte en espacios ni expande comodines. Se rechazan saltos de línea, porque cada línea es un comando. Las rutas remotas siempre son absolutas (`remotePath`), así que nunca parecen opciones.
+  - Las rutas locales quedan dentro de `FRAP_FS_ROOT` también después de resolver enlaces simbólicos (`sftpLocal`). Al descargar, el destino no puede ser un enlace.
+  - `sftp.remove` borra archivos o carpetas **vacías** (`rmdir`), nunca de forma recursiva.
 - `bridge/frap-ssh.js` (agentes): solo ve servidores con `ENABLED=1` y `AI=1`, ejecuta `ssh -T` sin terminal, con `BatchMode=yes` si no hay contraseña, y propaga el código de salida. `AI` vale 0 por defecto en servidores nuevos creados desde la UI.
 
 ## Protocolo
@@ -98,7 +104,7 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `session.kill` | `{sid}` | `true` |
 | `ps` | — | `{sid: [{pid, ppid, etime, cpu, rss, args, depth}]}` |
 | `proc.kill` | `{pid, signal?}` | solo descendientes de sesiones FRAP |
-| `fs.list` | `{path, dirsOnly?, hidden?}` | `{path, parent, entries:[{name, dir}]}` |
+| `fs.list` | `{path, dirsOnly?, hidden?, details?}` | `{path, parent, entries:[{name, dir}]}`; con `details` cada entrada trae además `link, size, mtime` |
 | `fs.read` | `{path}` | `{path, content, mtime}` (≤ 2 MB) |
 | `fs.write` | `{path, content}` | escritura atómica, crea los directorios |
 | `fs.exists` | `{path}` | `bool` |
@@ -122,6 +128,13 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `ssh.toggle` | `{id, enabled?, ai?}` | servidor público |
 | `ssh.test` | `{id}` o `{host}` | `{ms, system}`; error con pista si falla |
 | `ssh.connect` | `{id, cwd?, projectId?, cols, rows}` | info de la sesión nueva (rechaza si está desactivado) |
+| `sftp.list` | `{id, path?}` | `{path, parent, entries:[{name, dir, link, size, mtime, perm, owner}]}`; sin `path` lista la carpeta de inicio |
+| `sftp.get` | `{id, remote, local, dir?, tid?}` | `{local}`; descarga a la ruta local completa (dentro de `FRAP_FS_ROOT`); `dir` = `get -R` |
+| `sftp.put` | `{id, local, remote, tid?}` | `{remote}`; sube un archivo o una carpeta (`put -R`) a la ruta remota completa |
+| `sftp.cancel` | `{tid}` | `true` si había una transferencia con ese id en curso |
+| `sftp.mkdir` | `{id, path}` | `true` |
+| `sftp.rename` | `{id, from, to}` | `true` |
+| `sftp.remove` | `{id, path, dir?}` | `true`; archivo (`rm`) o carpeta vacía (`rmdir`), nunca recursivo ni la raíz |
 | `ssh.installSkill` | `{tools}` | escribe la skill `frap-ssh` en `~/.claude/skills` y `~/.codex/skills` |
 | `export.creds` | `{db: ids, ssh: ids, passphrase?}` | `{db, ssh, secrets?}` sin contraseñas; con `passphrase` (≥6) van en `secrets` cifradas (scrypt + AES-256-GCM) |
 | `import.creds` | `{db, ssh, secrets?, passphrase?}` | `{db, ssh, errors}`; mismo id se reemplaza; clave incorrecta → error; sin clave conserva la contraseña existente |

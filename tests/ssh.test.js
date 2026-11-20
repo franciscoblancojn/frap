@@ -109,3 +109,92 @@ exit 0
   assert.match(cli('nope', 'id').stderr, /no existe/);
   assert.notEqual(cli('web').status, 0);
 });
+
+// ------------------------------------------------------------------ SFTP (gestor de archivos)
+const sftp = require('../bridge/sftp');
+
+/** sftp-server real del sistema (para probar el protocolo sin servidor ssh). */
+function findSftpServer() {
+  const fixed = ['/usr/lib/openssh/sftp-server', '/usr/libexec/openssh/sftp-server', '/usr/libexec/sftp-server', '/usr/lib/ssh/sftp-server'];
+  const snap = [];
+  try {
+    for (const c of fs.readdirSync('/snap')) {
+      if (!/^core\d*$/.test(c)) continue;
+      for (const v of fs.readdirSync(path.join('/snap', c))) snap.push(path.join('/snap', c, v, 'usr/lib/openssh/sftp-server'));
+    }
+  } catch (_) { /* sin snap */ }
+  for (const f of [...fixed, ...snap]) {
+    try { fs.accessSync(f, fs.constants.X_OK); if (spawnSync(f, ['-h']).error) continue; return f; } catch (_) { /* sigue */ }
+  }
+  return null;
+}
+const SFTP_SERVER = findSftpServer();
+const hasSftp = !spawnSync('sftp', ['-h']).error;
+
+test('sftpArgs: BatchMode=no antes de -b con contraseña, puerto -P y destino tras --', () => {
+  const a = sftp.sftpArgs({ ...base, port: '2222', key: '/k', password: 'x' }, { sshBin: '/usr/bin/ssh' });
+  assert.deepEqual(a.slice(0, 2), ['-S', '/usr/bin/ssh']);
+  assert.deepEqual(a.slice(-4), ['-b', '-', '--', 'deploy@10.0.0.5']);
+  assert.ok(a.indexOf('BatchMode=no') < a.indexOf('-b'), 'si va después, sftp fuerza BatchMode=yes y askpass no se usa');
+  assert.deepEqual(a.slice(a.indexOf('-P'), a.indexOf('-P') + 2), ['-P', '2222']);
+  assert.ok(a.includes('IdentitiesOnly=yes'));
+  assert.equal(sftp.sftpArgs(base).includes('BatchMode=no'), false); // sin contraseña: llave/agente, sin preguntas
+  for (const bad of [{ host: '-oProxyCommand=x' }, { user: '-l' }, { port: '22 -o' }, { key: '-oX' }]) {
+    assert.throws(() => sftp.sftpArgs({ ...base, ...bad }), /inválid/, JSON.stringify(bad));
+  }
+});
+
+test('sftp: escape de rutas, rutas remotas absolutas y parseo de ls -la', () => {
+  assert.equal(sftp.quote('/a b/c*"d\'\\e[1]?#'), '/a\\ b/c\\*\\"d\\\'\\\\e\\[1\\]\\?\\#');
+  for (const bad of ['', 'a\nrm -rf /', 'x\r', 'x\0']) assert.throws(() => sftp.quote(bad), /inválida/);
+  assert.equal(sftp.remotePath('/var/www/../log/./x/'), '/var/log/x');
+  assert.equal(sftp.remotePath('/..'), '/');
+  for (const bad of ['relativa', '-R', '~/x', '', '/a\nput /etc/passwd /x']) assert.throws(() => sftp.remotePath(bad), /inválida/);
+  const out = [
+    'sftp> ls -la',
+    'drwxr-xr-x    3 www  www      4096 Nov 20 14:57 .',
+    'drwxr-xr-x    9 root root     4096 Jan  2  2023 ..',
+    '-rw-r--r--    1 www  www   1048576 Nov 20 14:57 a b*.txt',
+    'lrwxrwxrwx    1 www  www        11 Nov 20 14:57 actual',
+    'drwxr-x---    2 www  www      4096 Mar  5  2024 logs',
+  ].join('\n');
+  assert.deepEqual(sftp.parseLs(out).map((e) => [e.name, e.dir, e.link, e.size, e.mtime]), [
+    ['logs', true, false, 4096, 'Mar 5 2024'],
+    ['a b*.txt', false, false, 1048576, 'Nov 20 14:57'],
+    ['actual', false, true, 11, 'Nov 20 14:57'],
+  ]);
+  assert.match(sftp.sftpError('Warning: Permanently added x\nremote open("/x"): No such file or directory\nConnection closed\n', 1), /No such file/);
+});
+
+test('sftp real (sftp-server local): listar, subir, descargar, renombrar y borrar con nombres raros', { skip: !SFTP_SERVER || !hasSftp }, async () => {
+  const dir = path.join(root, 'sftp');
+  const bin = path.join(dir, 'bin');
+  const rem = path.join(dir, 'remoto');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.mkdirSync(rem);
+  // ssh falso: ignora el destino y conecta sftp con el sftp-server local
+  fs.writeFileSync(path.join(bin, 'ssh'), `#!/bin/sh\nexec ${SFTP_SERVER}\n`, { mode: 0o755 });
+  const c = { ...base, id: 'local' };
+  const run = (lines) => sftp.runSftp(c, lines, { sshBin: path.join(bin, 'ssh'), timeoutMs: 15000 });
+  const q = sftp.quote;
+  const raro = 'a*b x\'"q\\z#[1]?';
+  const local = path.join(dir, `local ${raro}`);
+  fs.writeFileSync(local, 'contenido');
+  fs.writeFileSync(path.join(rem, 'axb'), 'no tocar'); // el comodín de "a*b" no debe alcanzarlo
+
+  let r = await run([`mkdir ${q(`${rem}/${raro}`)}`, `put ${q(local)} ${q(`${rem}/${raro}/f ${raro}`)}`, `cd ${q(`${rem}/${raro}`)}`, 'pwd', 'ls -la']);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, new RegExp(`Remote working directory: ${rem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/a\\*b`));
+  assert.deepEqual(sftp.parseLs(r.stdout).map((e) => [e.name, e.size]), [[`f ${raro}`, 9]]);
+
+  r = await run([`rename ${q(`${rem}/${raro}/f ${raro}`)} ${q(`${rem}/${raro}/g`)}`, `get -R ${q(`${rem}/${raro}`)} ${q(path.join(dir, 'bajada'))}`]);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(fs.readFileSync(path.join(dir, 'bajada', 'g'), 'utf8'), 'contenido');
+
+  r = await run([`rm ${q(`${rem}/a*b`)}`]); // no existe un archivo llamado literalmente "a*b": falla y axb sigue
+  assert.notEqual(r.code, 0);
+  assert.equal(fs.readFileSync(path.join(rem, 'axb'), 'utf8'), 'no tocar');
+  r = await run([`rm ${q(`${rem}/${raro}/g`)}`, `rmdir ${q(`${rem}/${raro}`)}`]);
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(fs.readdirSync(rem), ['axb']);
+});

@@ -34,9 +34,10 @@ bridge/frap-db.js      CLI de SOLO LECTURA para agentes (lo usa la skill frap-db
 bridge/ssh.js          servidores SSH (.env), argumentos de ssh, askpass, ejecución remota
 bridge/frap-ssh.js     CLI para agentes: comandos en servidores con "Uso por IA" (skill frap-ssh)
 bridge/frap-askpass.js SSH_ASKPASS: entrega la contraseña del .env a ssh
+bridge/sftp.js         SFTP (pestaña Archivos): argumentos de sftp, escape de rutas, parseo de ls, ejecución batch
 tests/bridge.test.js   tests de integración del bridge (node:test)
 tests/db.test.js       clasificador, parsers, .env, motores y CLI
-tests/ssh.test.js      .env, argumentos, askpass y CLI frap-ssh (con un ssh falso)
+tests/ssh.test.js      .env, argumentos, askpass, CLI frap-ssh y sftp (con un ssh falso; sftp contra el sftp-server local si existe)
 scripts/check.js       chequeos estáticos + reglas de arriba
 docs/                  arquitectura, protocolo y roadmap
 ```
