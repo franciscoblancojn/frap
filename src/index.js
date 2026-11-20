@@ -242,7 +242,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -2151,7 +2151,7 @@
         h('div.title',
           h('span.name', `🗄 ${c.name}`),
           h(`span.badge.db-${c.engine}`, c.engine),
-          c.uiWrite ? h('span.badge.st-starting', { title: 'La pestaña DB puede escribir (los agentes no)' }, 'escritura UI') : h('span.badge', '🔒 lectura'),
+          c.uiWrite ? h('span.badge.st-starting', { title: 'La pestaña DB puede ejecutar INSERT, UPDATE, CREATE y ALTER (nunca DELETE, DROP ni TRUNCATE). Los agentes siguen en solo lectura.' }, '✎ escritura') : h('span.badge', '🔒 lectura'),
           h('button.icon.mini', { title: 'Probar conexión', onclick: (e) => { e.stopPropagation(); testDb({ id: c.id }, c.name); } }, '⚡'),
           h('button.icon.mini', { title: 'Editar', onclick: (e) => { e.stopPropagation(); editDb(c); } }, '✎'),
           h('button.icon.mini', { title: 'Eliminar', onclick: (e) => { e.stopPropagation(); deleteDb(c); } }, '✕')),
@@ -2163,13 +2163,17 @@
           h('label.db-flag', { onclick: (e) => e.stopPropagation() },
             dbSwitch(c, 'ai', !c.enabled ? 'Activa primero la conexión'
               : c.ai ? 'Quitar el acceso a claude, codex, opencode…' : 'Permitir que claude, codex, opencode… la consulten (solo lectura)', !c.enabled),
-            h('span', c.enabled && c.ai ? '🤖 Uso por IA' : '🤖 Sin IA'))),
+            h('span', c.enabled && c.ai ? '🤖 Uso por IA' : '🤖 Sin IA')),
+          h('label.db-flag', { onclick: (e) => e.stopPropagation() },
+            dbSwitch(c, 'readOnly', !c.enabled ? 'Activa primero la conexión'
+              : c.uiWrite ? 'Volver a solo lectura' : 'Permitir INSERT, UPDATE, CREATE y ALTER desde la pestaña DB (nunca eliminaciones)', !c.enabled),
+            h('span', c.uiWrite ? '✎ Escritura' : '🔒 Solo lectura'))),
         missing ? h('div.desc', { style: 'color:var(--err)' }, `Falta el cliente ${c.engine === 'postgres' ? 'psql' : c.engine === 'sqlite' ? 'sqlite3' : 'mysql'} en el sistema`) : null);
     })];
   }
 
   function dbSwitch(c, key, title, disabled) {
-    const on = key === 'ai' ? c.enabled && c.ai : c.enabled;
+    const on = key === 'ai' ? c.enabled && c.ai : key === 'readOnly' ? !c.uiWrite : c.enabled;
     return h('button', {
       class: `switch ${on ? 'on' : 'off'}`,
       role: 'switch', 'aria-checked': String(!!on), title, disabled: !!disabled || !Bridge.ready,
@@ -2178,10 +2182,14 @@
   }
 
   async function toggleDb(c, key) {
+    if (key === 'readOnly') {
+      if (!c.uiWrite && !(await confirmBox(`¿Quitar "Solo lectura" a "${c.name}"?`,
+        'La pestaña DB podrá ejecutar INSERT, UPDATE, CREATE y ALTER en esta conexión (cada escritura pide confirmación). Nunca se permiten eliminaciones: DELETE, DROP ni TRUNCATE. Los agentes siguen en solo lectura.'))) return;
+    }
     try {
-      const saved = await Bridge.call('db.toggle', { id: c.id, [key]: !c[key] });
-      toast(key === 'enabled'
-        ? `${c.name}: ${saved.enabled ? 'activada' : 'desactivada'}`
+      const saved = await Bridge.call('db.toggle', key === 'readOnly' ? { id: c.id, uiWrite: !c.uiWrite } : { id: c.id, [key]: !c[key] });
+      toast(key === 'enabled' ? `${c.name}: ${saved.enabled ? 'activada' : 'desactivada'}`
+        : key === 'readOnly' ? `${c.name}: ${saved.uiWrite ? 'escritura permitida (sin eliminaciones)' : 'solo lectura'}`
         : `${c.name}: ${saved.ai ? 'los agentes pueden consultarla' : 'los agentes ya no pueden usarla'}`, 'ok');
       loadDbs();
     } catch (e) { toast(e.message, 'err'); }
@@ -2217,8 +2225,8 @@
     const pass = h('input.mono', { type: 'password', autocomplete: 'new-password', placeholder: c && c.hasPassword ? '•••••• (sin cambios)' : 'contraseña' });
     const showPass = h('button.icon.mini', { title: 'Mostrar/ocultar', onclick: () => { pass.type = pass.type === 'password' ? 'text' : 'password'; } }, '👁');
     const database = h('input.mono', { value: c ? c.database : '' });
-    const uiWrite = h('input', { type: 'checkbox' });
-    uiWrite.checked = !!(c && c.uiWrite);
+    const readOnly = h('input', { type: 'checkbox' });
+    readOnly.checked = !(c && c.uiWrite); // por defecto: solo lectura
     const enabled = h('input', { type: 'checkbox' });
     enabled.checked = !c || c.enabled !== false;
     const ai = h('input', { type: 'checkbox' });
@@ -2243,7 +2251,7 @@
       id: c ? c.id : undefined,
       name: name.value.trim(), engine: engine.value, host: host.value.trim(), port: port.value.trim(),
       user: user.value.trim(), password: c && !pass.value ? null : pass.value,
-      database: database.value.trim(), uiWrite: uiWrite.checked, enabled: enabled.checked, ai: ai.checked,
+      database: database.value.trim(), uiWrite: !readOnly.checked, enabled: enabled.checked, ai: ai.checked,
     });
     const doSave = async () => {
       try {
@@ -2263,7 +2271,7 @@
         h('div.field', dbLabel, database),
         h('label.muted', enabled, ' Conexión activa (desactivada, ni la pestaña DB ni los agentes pueden usarla)'),
         h('label.muted', ai, ' Uso por IA: claude, codex, opencode… pueden consultarla en solo lectura con frap-db'),
-        h('label.muted', uiWrite, ' Permitir escritura desde la pestaña DB (pide confirmación). Los agentes siempre son solo lectura.'),
+        h('label.muted', readOnly, ' Solo lectura. Desactívalo para ejecutar INSERT, UPDATE, CREATE y ALTER desde la pestaña DB (pide confirmación); nunca DELETE, DROP ni TRUNCATE. Los agentes siempre son solo lectura.'),
         h('p.muted', { style: 'margin:0;font-size:11px' },
           'Se guarda en el .env del bridge (permisos 0600), no en el navegador. Recomendado: un usuario de BD con permisos solo SELECT.'),
       ],
@@ -2501,9 +2509,6 @@
     if (dbPane) return dbPane;
     const conn = h('select.db-conn', { title: 'Conexión' });
     conn.addEventListener('change', () => { state.db.connId = conn.value; save(); renderDbBar(); loadDbTables(); renderPanes(); });
-    const write = h('input', { type: 'checkbox' });
-    const writeLabel = h('label.db-write', { title: 'Permitido en esta conexión. Cada ejecución pide confirmación.' }, write, ' escritura');
-    write.addEventListener('change', () => renderDbBar());
     const mode = h('span.badge');
     const limit = h('select', { title: 'Máximo de filas' }, [100, 500, 1000, 5000, 20000].map((n) => h('option', { value: String(n) }, `${n} filas`)));
     limit.value = String(state.db.limit || 500);
@@ -2535,12 +2540,12 @@
     const result = h('div.db-result', h('p.muted', 'Los resultados aparecen aquí.'));
     const status = h('span.db-status.muted');
     const root = h('div.db-pane.hidden',
-      h('div.db-bar', conn, mode, writeLabel, limit, history, h('span.grow'), status, csv, run),
+      h('div.db-bar', conn, mode, limit, history, h('span.grow'), status, csv, run),
       h('div.db-main',
         h('div.db-side', filter, tableList),
         h('div.db-work', sql, result)));
     $('#term-host').append(root);
-    dbPane = { root, conn, write, writeLabel, mode, limit, history, run, sql, tableList, filter, result, status };
+    dbPane = { root, conn, mode, limit, history, run, sql, tableList, filter, result, status };
     renderDbBar();
     loadDbTables();
     return dbPane;
@@ -2548,7 +2553,7 @@
 
   function renderDbBar() {
     if (!dbPane) return;
-    const { conn, write, writeLabel, mode, history } = dbPane;
+    const { conn, mode, history } = dbPane;
     const conns = dbInfo ? dbInfo.conns.filter((c) => c.enabled) : [];
     conn.replaceChildren(...(conns.length
       ? conns.map((c) => h('option', { value: c.id }, `${c.name} (${c.engine})`))
@@ -2556,10 +2561,12 @@
     conn.value = state.db.connId || '';
     const cc = dbConnById(state.db.connId);
     const c = cc && cc.enabled ? cc : null;
-    writeLabel.classList.toggle('hidden', !(c && c.uiWrite));
-    if (!(c && c.uiWrite)) write.checked = false;
-    mode.className = `badge ${write.checked ? 'st-error' : 'st-on'}`;
-    mode.textContent = write.checked ? '✎ ESCRITURA' : '🔒 solo lectura';
+    const w = !!(c && c.uiWrite);
+    mode.className = `badge ${w ? 'st-starting' : 'st-on'}`;
+    mode.textContent = w ? '✎ escritura (sin eliminar)' : '🔒 solo lectura';
+    mode.title = w
+      ? 'Las lecturas corren en solo lectura; INSERT, UPDATE, CREATE y ALTER piden confirmación. DELETE, DROP y TRUNCATE nunca se permiten.'
+      : 'Conexión en solo lectura. Para escribir, desactiva "Solo lectura" en la conexión (panel derecho).';
     history.replaceChildren(h('option', { value: '' }, `🕘 Historial (${state.db.history.length})`),
       ...state.db.history.map((q, i) => h('option', { value: String(i) }, q.replace(/\s+/g, ' ').slice(0, 80))));
     dbPane.run.disabled = !c;
@@ -2597,13 +2604,29 @@
     const { selectionStart: a, selectionEnd: b } = p.sql;
     const sql = (a !== b ? p.sql.value.slice(a, b) : p.sql.value).trim();
     if (!sql) { toast('Escribe una consulta', 'err'); return; }
-    const write = p.write.checked;
-    if (write && !(await confirmBox(`¿Ejecutar en modo ESCRITURA en "${c.name}"?`, sql.length > 400 ? sql.slice(0, 400) + '…' : sql))) return;
     p.run.disabled = true;
     p.status.textContent = 'Ejecutando…';
     p.result.classList.add('running');
     try {
-      const r = await Bridge.call('db.query', { id: c.id, sql, write, limit: state.db.limit || 500 });
+      const args = { id: c.id, sql, limit: state.db.limit || 500 };
+      let r;
+      try {
+        r = await Bridge.call('db.query', args); // primero siempre en solo lectura
+      } catch (e) {
+        // no es una lectura: si la conexión permite escribir, se confirma y se reintenta (el bridge bloquea eliminaciones)
+        if (!/^Solo lectura/.test(e.message)) throw e;
+        if (!c.uiWrite) throw new Error(`${e.message}\n\nEsta conexión está en "Solo lectura". Para ejecutar INSERT, UPDATE, CREATE o ALTER, desactívalo en la conexión (panel derecho → Bases de datos).`);
+        await Bridge.call('db.check', { id: c.id, sql }); // lanza el motivo si es una eliminación
+        p.status.textContent = 'Esperando confirmación…';
+        if (!(await confirmBox(`¿Ejecutar esta escritura en "${c.name}"?`, sql.length > 400 ? sql.slice(0, 400) + '…' : sql))) {
+          p.status.textContent = 'Cancelado';
+          p.result.classList.remove('running');
+          p.run.disabled = false;
+          return;
+        }
+        p.status.textContent = 'Ejecutando…';
+        r = await Bridge.call('db.query', { ...args, write: true });
+      }
       dbLast = r;
       renderDbResult(r);
       p.status.textContent = `${r.rowCount} fila${r.rowCount === 1 ? '' : 's'}${r.truncated ? ' (truncado)' : ''} · ${r.ms} ms`;

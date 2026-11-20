@@ -519,7 +519,7 @@ function dbNormalize(input, existing) {
     user: String(input.user || '').trim(),
     password: input.password == null ? (existing ? existing.password : '') : String(input.password),
     database: String(input.database || '').trim(),
-    uiWrite: !!input.uiWrite,
+    uiWrite: input.uiWrite !== undefined ? !!input.uiWrite : existing ? !!existing.uiWrite : false, // false = "Solo lectura" (por defecto)
     enabled: input.enabled !== undefined ? input.enabled !== false : existing ? existing.enabled !== false : true,
     ai: input.ai !== undefined ? input.ai !== false : existing ? existing.ai !== false : true,
   };
@@ -754,13 +754,15 @@ const ops = {
     db.saveConnections(DB_ENV, conns, DB_CLI);
     return db.publicConn(c);
   },
-  /** Cambia solo los interruptores de una conexión: `enabled` (activa) y/o `ai` (usable por agentes). */
-  'db.toggle': ({ id, enabled, ai }) => {
+  /** Cambia solo los interruptores de una conexión: `enabled` (activa), `ai` (usable por agentes)
+   *  y/o `uiWrite` (false = "Solo lectura"; true = la pestaña DB puede escribir, sin eliminaciones). */
+  'db.toggle': ({ id, enabled, ai, uiWrite }) => {
     const conns = dbConns();
     const c = conns.find((x) => x.id === id);
     if (!c) throw new Error(`Conexión no encontrada: ${id}`);
     if (enabled !== undefined) c.enabled = !!enabled;
     if (ai !== undefined) c.ai = !!ai;
+    if (uiWrite !== undefined) c.uiWrite = !!uiWrite;
     db.saveConnections(DB_ENV, conns, DB_CLI);
     return db.publicConn(c);
   },
@@ -775,6 +777,13 @@ const ops = {
     const c = { ...(conn ? dbNormalize(conn, existing) : existing), enabled: true };
     const r = await db.runQuery(c, c.engine === 'mysql' ? 'SELECT VERSION() AS version' : c.engine === 'postgres' ? 'SELECT version()' : 'SELECT sqlite_version() AS version', { timeoutMs: 15000 });
     return { ms: r.ms, version: r.rows[0] ? r.rows[0][0] : '' };
+  },
+  /** Valida sin ejecutar. Lectura → {write:false}; escritura permitida (sin eliminaciones) → {write:true}; si no, error. */
+  'db.check': ({ id, sql }) => {
+    const c = dbConn(id);
+    try { db.assertReadOnly(sql, c.engine); return { write: false }; } catch (e) { if (!c.uiWrite) throw e; }
+    db.assertSafeWrite(sql, c.engine);
+    return { write: true };
   },
   'db.query': ({ id, sql, write = false, limit = 1000 }) => db.runQuery(dbConn(id), sql, { write: !!write, limit }),
   'db.tables': async ({ id }) => {

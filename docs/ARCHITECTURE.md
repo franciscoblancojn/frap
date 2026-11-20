@@ -54,7 +54,7 @@ navegador (file://src/index.html)                     máquina local
 - La UI nunca recibe contraseñas: `db.list` y `db.save` devuelven `publicConn`.
 - `bridge/frap-db.js` es el CLI de los agentes. Llama a `runQuery` sin `write`, así que siempre es solo lectura, sin ningún flag que lo cambie.
 - Interruptores por conexión: `ENABLED=0` la desactiva (la UI y `frap-db` la rechazan; `db.test` sí funciona). `AI=0` la oculta a los agentes: `frap-db list` no la muestra y las consultas a ese id fallan. Si faltan, valen 1.
-- Lo que hace la pestaña DB de la UI: lee en modo solo lectura por defecto. Escribe solo si la conexión tiene `UI_WRITE=1`, el usuario marca "escritura" y confirma.
+- Lo que hace la pestaña DB de la UI: cada consulta se intenta primero en solo lectura. Si la conexión tiene "Solo lectura" desactivado (`UI_WRITE=1`; por defecto está activado) y la consulta no es una lectura, la UI la valida con `db.check`, pide confirmación y la ejecuta con `write`. En ese modo `assertSafeWrite` solo deja pasar INSERT, UPDATE, CREATE y ALTER (además de lecturas). Nunca deja pasar eliminaciones (DELETE, DROP, incluido `ALTER … DROP`, TRUNCATE, DISCARD, REPLACE), rutinas o triggers (podrían esconder un DELETE), metacomandos (`\!`, `.shell`) ni `INTO OUTFILE`.
 
 ## Exportar / importar
 
@@ -108,8 +108,9 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `db.save` | `{conn}` | crea, o edita si viene `id`; `password: null` conserva la guardada |
 | `db.delete` | `{id}` | `true` |
 | `db.test` | `{id}` o `{conn}` | `{ms, version}`; permite probar antes de guardar |
-| `db.toggle` | `{id, enabled?, ai?}` | conexión pública; cambia solo los interruptores (activa / uso por IA) |
-| `db.query` | `{id, sql, write?, limit?}` | `{columns, rows, rowCount, truncated, ms, readOnly}`; `write` solo si la conexión tiene `uiWrite` |
+| `db.toggle` | `{id, enabled?, ai?, uiWrite?}` | conexión pública; cambia solo los interruptores (activa / uso por IA / `uiWrite=false` = "Solo lectura") |
+| `db.check` | `{id, sql}` | `{write}` sin ejecutar: `false` si es lectura, `true` si es una escritura permitida (requiere `uiWrite`); error si no se permite (p. ej. DELETE/DROP) |
+| `db.query` | `{id, sql, write?, limit?}` | `{columns, rows, rowCount, truncated, ms, readOnly}`; `write` solo si la conexión tiene `uiWrite` ("Solo lectura" desactivado) y pasa `assertSafeWrite` (sin eliminaciones) |
 | `db.tables` | `{id}` | `[{name, view}]` |
 | `paths.check` | `{cwd, paths}` | `[{input, path, dir}]` de las rutas que existen (las relativas se resuelven contra `cwd`; solo dentro de `FRAP_FS_ROOT`) |
 | `open.editor` | `{path, line?, col?, editor?}` | abre en el editor sin shell; la familia VS Code recibe `--goto ruta:línea:col` |

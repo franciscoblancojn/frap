@@ -383,17 +383,21 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .badge.db-sqlite { color: #9ece6a; }
 .db-agents { border-style: dashed; }
 .db-card.off { opacity: .55; }
-.db-flags { display: flex; gap: 16px; margin-top: 6px; }
+.db-flags { display: flex; flex-wrap: nowrap; gap: 10px; margin-top: 6px; min-width: 0; }
+/* interruptores compactos en las tarjetas de DB/SSH: los tres siempre en una línea */
+.db-flags .switch { width: 24px; height: 14px; border-radius: 7px; }
+.db-flags .switch::after { top: 2px; left: 2px; width: 10px; height: 10px; }
+.db-flags .switch.on::after { left: 12px; }
 .ssh-pick { display: flex; flex-direction: column; gap: 6px; min-width: 320px; }
 .ssh-pick-item { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; text-align: left; }
 .ssh-pick-item .name { font-weight: 600; }
-.db-flag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-2); cursor: default; }
+.db-flag { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--fg-2); cursor: default; white-space: nowrap; min-width: 0; }
+.db-flag span { overflow: hidden; text-overflow: ellipsis; }
 .db-pane { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); z-index: 1; }
 .db-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--bg-2); flex-wrap: wrap; }
 .db-bar select { padding: 3px 6px; font-size: 12px; max-width: 260px; }
 .db-bar select:nth-of-type(3) { max-width: 170px; }
 .db-conn { font-weight: 600; }
-.db-write { font-size: 12px; color: var(--err); display: flex; align-items: center; gap: 4px; }
 .db-status { font: 11px var(--mono); }
 .db-main { flex: 1; display: grid; grid-template-columns: 210px minmax(0, 1fr); min-height: 0; }
 .db-side { border-right: 1px solid var(--line); padding: 8px; overflow-y: auto; background: var(--bg-2); }

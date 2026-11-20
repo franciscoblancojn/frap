@@ -177,6 +177,59 @@ test('sqlite: el motor bloquea escrituras aunque el clasificador no las vea (-re
   assert.match(out.stderr, /readonly/);
 });
 
+// ------------------------------------------------------------------ escritura sin eliminaciones
+test('assertSafeWrite permite INSERT/UPDATE/CREATE/ALTER y lecturas', () => {
+  const ok = [
+    ['mysql', 'INSERT INTO t (a) VALUES (1)'],
+    ['mysql', "UPDATE t SET deleted_at = NOW(), nota = 'DELETE FROM x; DROP TABLE y' WHERE id = 1"],
+    ['mysql', 'CREATE TABLE logs (id INT, event TEXT, `drop` INT, b INT REFERENCES c(id) ON DELETE CASCADE)'],
+    ['mysql', 'ALTER TABLE t ADD COLUMN c INT, RENAME COLUMN a TO b'],
+    ['mysql', 'CREATE INDEX i ON t (a)'],
+    ['postgres', 'INSERT INTO t VALUES (1) ON CONFLICT (id) DO UPDATE SET a = 2'],
+    ['postgres', 'CREATE OR REPLACE VIEW v AS SELECT 1'],
+    ['sqlite', 'UPDATE t SET a = 1; INSERT INTO t VALUES (2); SELECT * FROM t'],
+  ];
+  for (const [engine, sql] of ok) assert.doesNotThrow(() => db.assertSafeWrite(sql, engine), `${engine}: ${sql}`);
+});
+
+test('assertSafeWrite rechaza eliminaciones y lo que podría esconderlas', () => {
+  const bad = [
+    ['mysql', 'DELETE FROM t'],
+    ['mysql', 'UPDATE t SET a = 1; DELETE FROM t'],
+    ['mysql', 'DROP TABLE t'],
+    ['mysql', 'TRUNCATE t'],
+    ['mysql', 'REPLACE INTO t VALUES (1)'],
+    ['mysql', 'ALTER TABLE t DROP COLUMN a'],
+    ['mysql', 'ALTER TABLE t TRUNCATE PARTITION p0'],
+    ['mysql', 'ALTER TABLE t DISCARD TABLESPACE'],
+    ['mysql', "PREPARE s FROM 'DELETE FROM t'"],
+    ['mysql', 'CALL limpiar()'],
+    ['mysql', 'CREATE DEFINER=`root`@`%` TRIGGER x BEFORE INSERT ON t FOR EACH ROW DELETE FROM u'],
+    ['mysql', 'CREATE EVENT e ON SCHEDULE EVERY 1 DAY DO DELETE FROM t'],
+    ['mysql', 'UPDATE t SET a = 1; \\! rm -rf ~'],
+    ['postgres', 'WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d'],
+    ['postgres', 'CREATE FUNCTION f() RETURNS void AS $$ DELETE FROM t $$ LANGUAGE sql'],
+    ['postgres', "DO $$ BEGIN DELETE FROM t; END $$"],
+    ['postgres', "COPY t TO PROGRAM 'rm -rf ~'"],
+    ['sqlite', 'INSERT INTO t VALUES (1);\n.shell rm -rf ~'],
+    ['sqlite', "ATTACH 'x.db' AS x"],
+    ['sqlite', 'VACUUM'],
+  ];
+  for (const [engine, sql] of bad) assert.throws(() => db.assertSafeWrite(sql, engine), /Escritura|vacía/, `${engine}: ${sql}`);
+});
+
+test('sqlite: con "Solo lectura" desactivado escribe pero no elimina', { skip: !hasSqlite }, async () => {
+  const w = { engine: 'sqlite', database: sqliteFile, uiWrite: true };
+  await db.runQuery(w, 'CREATE TABLE tmp_sw (x INT); INSERT INTO tmp_sw VALUES (1); UPDATE tmp_sw SET x = 2; ALTER TABLE tmp_sw ADD COLUMN y TEXT', { write: true });
+  assert.deepEqual((await db.runQuery(w, 'SELECT x, y FROM tmp_sw')).rows, [['2', null]]);
+  for (const sql of ['DELETE FROM tmp_sw', 'DROP TABLE tmp_sw', 'ALTER TABLE tmp_sw DROP COLUMN y']) {
+    await assert.rejects(db.runQuery(w, sql, { write: true }), /Escritura/, sql);
+  }
+  assert.equal((await db.runQuery(w, 'SELECT count(*) FROM tmp_sw')).rows[0][0], '1');
+  // con "Solo lectura" activado (por defecto) no hay escritura
+  await assert.rejects(db.runQuery({ ...w, uiWrite: false }, 'UPDATE tmp_sw SET x = 3', { write: true }), /no permite escritura/);
+});
+
 // ------------------------------------------------------------------ CLI
 test('CLI frap-db: list, --tables, --describe, consulta, --json y rechazo de escrituras', { skip: !hasSqlite }, () => {
   const home = path.join(root, 'cli');

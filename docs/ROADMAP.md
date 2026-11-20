@@ -25,6 +25,7 @@
 - [x] Avisos de agentes: hooks → `$FRAP_NOTIFY` → marca ✓ terminó / ● espera en el panel izquierdo y contador en el título
 - [x] SSH: servidores en `ssh.env` (0600), terminal conectada con askpass, prueba con pistas, interruptores activo / uso por IA, CLI `frap-ssh` y skill para agentes
 - [x] Interruptores por conexión de BD: activa / uso por IA (`db.toggle`; `frap-db` solo ve las habilitadas)
+- [x] Interruptor "Solo lectura" por conexión (activado por defecto). Desactivado, la pestaña DB puede ejecutar INSERT, UPDATE, CREATE y ALTER con confirmación (`db.check` + `assertSafeWrite`), pero nunca DELETE, DROP ni TRUNCATE. Los agentes siguen siempre en solo lectura
 - [x] Música: archivos (IndexedDB) y YouTube (relé `/yt-player`), bucle (lista/canción), aleatorio sin repetir, arrastrar para reordenar, dock persistente y teclas multimedia
 - [x] Logos de claude, codex, opencode y DB en lanzadores, pestañas y panel izquierdo; favicon propio
 - [x] Temporizador: recordatorios recurrentes o de una vez, aviso simple o bloqueante (posponer), ícono/título/descripción, plantillas, sonido y notificación del sistema

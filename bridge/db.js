@@ -9,6 +9,10 @@
 //   2. Motor: MySQL `START TRANSACTION READ ONLY` + ROLLBACK; PostgreSQL
 //      `default_transaction_read_only=on`; SQLite `-readonly -safe`.
 //   3. (Recomendado) un usuario de BD con permisos solo SELECT.
+//
+// Escritura (solo la pestaña DB de la UI, y solo si la conexión tiene "Solo lectura" desactivado,
+// UI_WRITE=1): assertSafeWrite permite INSERT/UPDATE/CREATE/ALTER pero nunca eliminaciones
+// (DELETE, DROP, TRUNCATE…) ni rutinas/metacomandos que podrían esconderlas.
 
 const fs = require('fs');
 const os = require('os');
@@ -230,6 +234,49 @@ function assertReadOnly(sql, engine) {
 }
 
 // ---------------------------------------------------------------------------
+// Clasificador de escritura sin eliminaciones (conexiones con "Solo lectura" desactivado)
+// ---------------------------------------------------------------------------
+const WR_START = ['INSERT', 'UPDATE', 'CREATE', 'ALTER'];
+// eliminaciones (incluye ALTER … DROP COLUMN, DROP/TRUNCATE PARTITION, DISCARD TABLESPACE, REPLACE INTO)
+const WR_DELETE = /\b(DELETE|DROP|TRUNCATE|DISCARD|PURGE)\b/i;
+// escribir archivos en el servidor (… INTO OUTFILE). CALL, LOAD, COPY, GRANT… no están en WR_START.
+const WR_FORBIDDEN = /\b(OUTFILE|DUMPFILE)\b/i;
+// CREATE/ALTER de objetos con cuerpo o código (se mira solo la cabecera: una columna "event" sí vale)
+const WR_ROUTINES = /^\s*(?:CREATE|ALTER)\s+(?:OR\s+REPLACE\s+)?(?:DEFINER\s*=\s*\S+\s+)?(?:SQL\s+SECURITY\s+\w+\s+)?(?:(?:TEMP|TEMPORARY|CONSTRAINT|AGGREGATE|TRUSTED|PROCEDURAL|EVENT)\s+)*(FUNCTION|PROCEDURE|TRIGGER|RULE|EVENT|EXTENSION|SERVER|LANGUAGE|PUBLICATION|SUBSCRIPTION|ROUTINE|OPERATOR|CAST|TRANSFORM)\b/i;
+
+/**
+ * Lanza Error si alguna sentencia no es una escritura permitida. Acepta varias sentencias
+ * (cada una se revisa) y también lecturas. Devuelve el texto a ejecutar (sin comentarios).
+ */
+function assertSafeWrite(sql, engine) {
+  const stmts = splitSql(String(sql || ''), engine);
+  if (!stmts.length) throw new Error('Consulta vacía');
+  for (const { masked } of stmts) {
+    if (engine !== 'sqlite' && masked.includes('\\')) throw new Error('Escritura: no se permiten metacomandos con "\\" fuera de literales');
+    if (engine === 'sqlite' && /^\s*\./m.test(masked)) throw new Error('Escritura: no se permiten comandos "." de sqlite3');
+    const kw = ((masked.match(/^[\s(]*([A-Za-z]+)/) || [])[1] || '').toUpperCase();
+    if (RO_START[engine].includes(kw)) {
+      try { assertReadOnly(masked, engine); } catch (e) { throw new Error(e.message.replace(/^Solo lectura:/, 'Escritura:')); }
+      continue;
+    }
+    if (!WR_START.includes(kw)) {
+      throw new Error(`Escritura: "${kw || '?'}" no está permitido. Usa ${WR_START.join(', ')} (o una lectura).`);
+    }
+    // "ON DELETE CASCADE/SET NULL…" de una clave foránea no elimina nada al crearla
+    const del = masked.replace(/\bON\s+DELETE\b/gi, ' ').match(WR_DELETE);
+    if (del) throw new Error(`Escritura: no se permiten eliminaciones (${del[1].toUpperCase()})`);
+    const bad = masked.match(WR_FORBIDDEN);
+    if (bad) throw new Error(`Escritura: la palabra clave ${bad[1].toUpperCase()} no está permitida`);
+    const r = masked.match(WR_ROUTINES);
+    if (r) throw new Error(`Escritura: no se permite ${kw} ${r[1].toUpperCase()} (podría esconder eliminaciones)`);
+    const fn = masked.match(RO_FUNCS);
+    if (fn) throw new Error(`Escritura: la función ${fn[1].toUpperCase()}() no está permitida`);
+    if (engine === 'sqlite' && masked.includes('=') && /\bPRAGMA\b/i.test(masked)) throw new Error('Escritura: no se permite asignar PRAGMAs');
+  }
+  return stmts.map((x) => x.text).join(';\n');
+}
+
+// ---------------------------------------------------------------------------
 // Parsers de salida
 // ---------------------------------------------------------------------------
 function parseCsv(text) {
@@ -384,8 +431,8 @@ async function runQuery(conn, sql, opts = {}) {
   const engine = conn.engine;
   if (!ENGINES[engine]) throw new Error(`Motor no soportado: ${engine}`);
   if (conn.enabled === false) throw new Error(`La conexión "${conn.name || conn.id}" está desactivada. Actívala en FRAP → panel "Bases de datos".`);
-  if (write && !conn.uiWrite) throw new Error('Esta conexión no permite escritura');
-  const stmt = write ? String(sql || '').trim() : assertReadOnly(sql, engine);
+  if (write && !conn.uiWrite) throw new Error('Esta conexión no permite escritura (tiene "Solo lectura" activado)');
+  const stmt = write ? assertSafeWrite(sql, engine) : assertReadOnly(sql, engine);
   if (!stmt) throw new Error('Consulta vacía');
   const started = Date.now();
   let res;
@@ -477,6 +524,6 @@ function describeSql(engine, table) {
 module.exports = {
   ENGINES, NULL_MARK,
   loadConnections, saveConnections, slugify, publicConn, parseEnvValue, quoteEnvValue, isOff,
-  splitSql, assertReadOnly, parseCsv, parseMysqlXml, connectionHint,
+  splitSql, assertReadOnly, assertSafeWrite, parseCsv, parseMysqlXml, connectionHint,
   runQuery, tablesSql, describeSql,
 };

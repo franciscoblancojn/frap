@@ -120,7 +120,7 @@ test('rechaza origins web', async () => {
 test('hello', async () => {
   const info = await client.call('hello');
   assert.equal(info.version, '1.3.0');
-  for (const op of ['db.list', 'db.save', 'db.toggle', 'ssh.list', 'ssh.connect', 'session.seen', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo']) assert.ok(info.ops.includes(op), op);
+  for (const op of ['db.list', 'db.save', 'db.toggle', 'db.check', 'ssh.list', 'ssh.connect', 'session.seen', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo']) assert.ok(info.ops.includes(op), op);
   assert.equal(info.fsRoot, root);
 });
 
@@ -284,6 +284,27 @@ test('db.*: guardar (sin exponer contraseña), probar, consultar, tablas, skill 
   assert.equal((await client.call('db.list')).conns[0].ai, false);
   await client.call('db.toggle', { id: 'app_local', ai: true });
   await assert.rejects(client.call('db.toggle', { id: 'nope', ai: true }), /no encontrada/);
+
+  // "Solo lectura": activado por defecto; desactivado permite INSERT/UPDATE/CREATE/ALTER pero nunca eliminaciones
+  assert.equal(saved.uiWrite, false);
+  assert.deepEqual(await client.call('db.check', { id: 'app_local', sql: 'SELECT x FROM t' }), { write: false });
+  await assert.rejects(client.call('db.check', { id: 'app_local', sql: 'UPDATE t SET x = 8' }), /Solo lectura/);
+  const rw = await client.call('db.toggle', { id: 'app_local', uiWrite: true });
+  assert.equal(rw.uiWrite, true);
+  assert.match(fs.readFileSync(list.envFile, 'utf8'), /FRAP_DB_APP_LOCAL_UI_WRITE=1/);
+  assert.deepEqual(await client.call('db.check', { id: 'app_local', sql: 'UPDATE t SET x = 8' }), { write: true });
+  await assert.rejects(client.call('db.check', { id: 'app_local', sql: 'DELETE FROM t' }), /DELETE/);
+  await client.call('db.query', { id: 'app_local', sql: 'UPDATE t SET x = 8; ALTER TABLE t ADD COLUMN y TEXT; CREATE TABLE u (z INT); INSERT INTO u VALUES (1)', write: true });
+  assert.deepEqual((await client.call('db.query', { id: 'app_local', sql: 'SELECT x, (SELECT count(*) FROM u) FROM t' })).rows, [['8', '1']]);
+  for (const sql of ['DELETE FROM t', 'DROP TABLE u', 'ALTER TABLE t DROP COLUMN y']) {
+    await assert.rejects(client.call('db.query', { id: 'app_local', sql, write: true }), /DELETE|DROP|no está permitido/, sql);
+  }
+  assert.equal((await client.call('db.query', { id: 'app_local', sql: 'SELECT count(*) FROM t' })).rows[0][0], '1');
+  // editar sin mandar uiWrite lo conserva
+  await client.call('db.save', { conn: { id: 'app_local', name: 'App Local', engine: 'sqlite', database: file } });
+  assert.equal((await client.call('db.list')).conns[0].uiWrite, true);
+  await client.call('db.toggle', { id: 'app_local', uiWrite: false });
+  await assert.rejects(client.call('db.query', { id: 'app_local', sql: 'UPDATE t SET x = 9', write: true }), /no permite escritura/);
 
   // sqlite fuera de FRAP_FS_ROOT se rechaza
   await assert.rejects(client.call('db.save', { conn: { name: 'x', engine: 'sqlite', database: '/etc/x.db' } }), /fuera/);
