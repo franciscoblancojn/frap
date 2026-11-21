@@ -226,7 +226,12 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .ico { width: 14px; height: 14px; flex: none; display: block; }
 
 #term-host { flex: 1; position: relative; min-height: 0; }
-.term-pane { position: absolute; inset: 0; padding: 6px 0 0 10px; }
+.term-pane { position: absolute; inset: 0; }
+/* El margen va en .xterm, no en el panel: FitAddon descuenta el padding de .xterm, pero toma la altura del panel
+   con su padding incluido (border-box). Con el padding en el panel, la última fila quedaba fuera de la vista. */
+.term-pane .xterm { padding: 6px 0 0 10px; }
+/* dividida: también a la derecha y abajo, para que el borde (::after) no tape la última fila ni la última columna */
+.term-pane.split .xterm { padding: 6px 8px 6px 10px; }
 /* pantalla dividida: el borde va en ::after para no restarle espacio al cálculo de fit */
 .term-pane.split::after {
   content: '';
@@ -780,3 +785,27 @@ textarea.prompt-body { min-height: 180px; font: 12.5px/1.5 var(--mono); resize: 
 .notes-empty p { margin: 2px 0; max-width: 460px; }
 .notes-empty button { margin-top: 10px; }
 .notes-empty-ico .ico { width: 42px; height: 42px; opacity: .8; margin-bottom: 6px; }
+
+/* ---------- reordenar arrastrando (asa ⠿ en el panel izquierdo) ---------- */
+.drag-handle {
+  flex: none; width: 12px; margin-left: -4px; text-align: center;
+  font-size: 12px; line-height: 1; color: var(--fg-3); opacity: .35;
+  cursor: grab; user-select: none;
+}
+.project-head:hover .drag-handle, .term-item:hover .drag-handle { opacity: 1; }
+.drag-handle:hover { color: var(--accent); }
+.drag-handle:active { cursor: grabbing; }
+.dragging { opacity: .4; }
+.project.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.project.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.term-item.drop-before { box-shadow: inset 0 2px 0 var(--accent) !important; }
+.term-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent) !important; }
+
+/* ---------- carpetas colapsadas ---------- */
+.pcount { flex: none; font: 600 10px/14px var(--mono); min-width: 16px; padding: 0 4px; text-align: center; border-radius: 7px; background: var(--bg-3); color: var(--fg-2); }
+.project-head .notice { cursor: pointer; }
+/* colapsada con avisos adentro: la carpeta cambia de color */
+.project.notice-waiting > .project-head { background: color-mix(in srgb, var(--warn) 14%, transparent); box-shadow: inset 3px 0 var(--warn); }
+.project.notice-waiting > .project-head .pname { color: var(--warn); }
+.project.notice-done > .project-head { background: color-mix(in srgb, var(--ok) 12%, transparent); box-shadow: inset 3px 0 var(--ok); }
+.project.notice-done > .project-head .pname { color: var(--ok); }

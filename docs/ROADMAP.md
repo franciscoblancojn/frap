@@ -31,6 +31,8 @@
 - [x] Tras apagar o reiniciar el equipo, ofrecer reabrir las terminales que estaban abiertas (foto en el estado), retomando la conversación de cada IA
 - [x] Notas por carpeta (`NOTES.md`): vista con editor y autoguardado, switch de git-ignore (activado por defecto), skill `frap-notes` y prompts "Guardar en notas" / "Leer notas" para que la IA guarde y lea contexto
 - [x] Pantalla dividida ajustable: divisores arrastrables entre paneles (alto de las filas y ancho de las columnas de cada fila), con ícono de 2 flechas al pasar el mouse; doble clic vuelve a 50/50; las proporciones se recuerdan
+- [x] Reordenar arrastrando (asa ⠿) en el panel izquierdo: proyectos, y terminales y vistas dentro de su proyecto. El orden lo siguen las pestañas, Alt+1…9, la pantalla dividida (toma las primeras 4) y la reapertura tras apagar
+- [x] Carpetas colapsables (▾/▸ junto a editar): colapsada muestra cuántos elementos tiene y, si una terminal avisa (claude terminó / espera respuesta), la carpeta muestra el aviso y cambia de color; clic en el aviso abre esa terminal
 - [x] Interruptores por conexión de BD: activa / uso por IA (`db.toggle`; `frap-db` solo ve las habilitadas)
 - [x] Interruptor "Solo lectura" por conexión (activado por defecto). Desactivado, la pestaña DB puede ejecutar INSERT, UPDATE, CREATE y ALTER con confirmación (`db.check` + `assertSafeWrite`), pero nunca DELETE, DROP ni TRUNCATE. Los agentes siguen siempre en solo lectura
 - [x] Música: archivos (IndexedDB) y YouTube (relé `/yt-player`), bucle (lista/canción), aleatorio sin repetir, arrastrar para reordenar, dock persistente y teclas multimedia

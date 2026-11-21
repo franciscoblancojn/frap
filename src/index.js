@@ -221,7 +221,10 @@
   const viewKind = (sid) => { const m = /^(git|db|sftp|notes):/.exec(sid || ''); return m ? m[1] : null; };
   const viewBySid = (sid) => (viewKind(sid) ? state.views.find((v) => v.open && vSid(v) === sid) || null : null);
   const activeView = () => viewBySid(state.activeSid);
-  const openViewsOf = (pid) => state.views.filter((v) => v.open && v.projectId === pid);
+  const openViewsOf = (pid) => {
+    const rank = orderRank(pid);
+    return state.views.filter((v) => v.open && v.projectId === pid).sort((a, b) => (rank(vSid(a)) - rank(vSid(b))) || 0);
+  };
   const viewPanes = new Map(); // sid -> panel DOM de la vista
   const gitRts = new Map(); // sid -> memoria de git (status, salida, diff…)
   let bound = { git: null, db: null, sftp: null, notes: null }; // sid enlazado por tipo
@@ -571,10 +574,17 @@
     renderAll();
   }
 
+  /** Posición en el orden manual del proyecto (p.order, arrastrando en el panel izquierdo); lo nuevo va al final. */
+  function orderRank(projectId) {
+    const p = state.projects.find((x) => x.id === projectId);
+    const o = (p && p.order) || [];
+    return (key) => { const i = o.indexOf(key); return i < 0 ? Infinity : i; };
+  }
   function sessionsOf(projectId) {
+    const rank = orderRank(projectId);
     return [...terms.values()]
       .filter((t) => (t.info.meta || {}).projectId === projectId)
-      .sort((a, b) => a.info.created - b.info.created);
+      .sort((a, b) => (rank(a.sid) - rank(b.sid)) || (a.info.created - b.info.created));
   }
   function orphanSessions() {
     const ids = new Set(state.projects.map((p) => p.id));
@@ -941,16 +951,18 @@
   function isBusy(t) { return t.info.alive !== false && Date.now() - t.lastOut < 1500; }
   function dotClass(t) { return t.info.alive === false ? 'dot dead' : isBusy(t) ? 'dot busy' : 'dot'; }
 
-  /** slot = posición (0-3) en la pantalla dividida, o undefined si no está agrupada. */
-  function termItem(t, slot) {
+  /** slot = posición (0-3) en la pantalla dividida, o undefined si no está agrupada. pid: se puede reordenar dentro de ese proyecto. */
+  function termItem(t, slot, pid) {
     const grouped = slot != null;
     return h('div.term-item', {
       class: `term-item${t.sid === state.activeSid ? ' active' : ''}${grouped ? ' grouped' : ''}`,
-      dataset: { sid: t.sid },
+      dataset: pid ? { sid: t.sid, drag: 'item', key: t.sid, pid } : { sid: t.sid },
+      ...(pid ? dragEvents() : {}),
       title: (t.info.meta || {}).cwd || '',
       onclick: () => activate(t.sid),
       ondblclick: () => renameTerm(t.sid),
     },
+    pid ? dragHandle() : null,
     h('span', { class: dotClass(t) }),
     grouped ? h('span.slot', { title: `Pantalla dividida: panel ${slot + 1}` }, String(slot + 1)) : null,
     h('span.tname', termTitle(t)),
@@ -963,10 +975,12 @@
     const sid = vSid(v);
     return h('div.term-item.view-item', {
       class: `term-item view-item${sid === state.activeSid ? ' active' : ''}`,
-      dataset: { sid },
+      dataset: { sid, drag: 'item', key: sid, pid: v.projectId },
       title: VIEW_TITLE[v.kind],
       onclick: () => openViewSid(sid),
+      ...dragEvents(),
     },
+    dragHandle(),
     h('span.dot.view'),
     h('span.tname', viewLabel(v)),
     kindIcon(v.kind) || h(`span.kind.${v.kind}`, v.kind),
@@ -997,7 +1011,122 @@
     if (Bridge.ready) Bridge.call('session.seen', { sid: t.sid }).catch(() => {});
   }
 
+  /** Terminales y vistas del proyecto en el orden del panel izquierdo (p.order; sin orden: terminales y luego vistas). */
+  function projectItems(pid) {
+    const rank = orderRank(pid);
+    return [...sessionsOf(pid).map((t) => ({ key: t.sid, t })), ...openViewsOf(pid).map((v) => ({ key: vSid(v), v }))]
+      .map((it, i) => ({ ...it, i }))
+      .sort((a, b) => (rank(a.key) - rank(b.key)) || (a.i - b.i));
+  }
+
+  // ---------- reordenar arrastrando (asa ⠿) ----------
+  // Proyectos entre sí, y terminales/vistas dentro de su proyecto. Solo se arrastra desde el asa:
+  // el mousedown en ella vuelve "draggable" su fila; al soltar se reescribe el orden (state.projects o p.order).
+  let dragging = null; // { type: 'project'|'item', key, pid, el, pendingRender }
+  function dragHandle() {
+    return h('span.drag-handle', {
+      title: 'Arrastra para cambiar el orden',
+      onmousedown: (e) => { const row = e.currentTarget.closest('[data-drag]'); if (row) row.draggable = true; },
+      onmouseup: (e) => { const row = e.currentTarget.closest('[data-drag]'); if (row && !dragging) row.draggable = false; },
+      onclick: (e) => e.stopPropagation(),
+      ondblclick: (e) => e.stopPropagation(),
+    }, '⠿');
+  }
+  function clearDropMarks() {
+    for (const el of $$('#projects .drop-before, #projects .drop-after')) {
+      el.classList.toggle('drop-before', false);
+      el.classList.toggle('drop-after', false);
+    }
+  }
+  /** ¿Se puede soltar sobre esta fila? Proyecto sobre proyecto; terminal/vista sobre otra del mismo proyecto. */
+  function dropTarget(e) {
+    if (!dragging) return null;
+    const el = e.target.closest(dragging.type === 'project' ? '[data-drag="project"]' : '[data-drag="item"]');
+    if (!el || el === dragging.el || (dragging.type === 'item' && el.dataset.pid !== dragging.pid)) return null;
+    // en un proyecto la mitad se mide sobre su cabecera (el bloque crece con sus terminales)
+    const ref = dragging.type === 'project' ? el.querySelector('.project-head') || el : el;
+    const r = ref.getBoundingClientRect();
+    return { el, after: e.clientY > r.top + r.height / 2 };
+  }
+  function dragEvents() {
+    return {
+      ondragstart: (e) => {
+        const el = e.currentTarget;
+        if (e.target !== el || !el.draggable) return; // la fila de una terminal ya lo maneja (y corta la propagación)
+        e.stopPropagation();
+        dragging = { type: el.dataset.drag, key: el.dataset.key, pid: el.dataset.pid, el, pendingRender: false };
+        el.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', el.dataset.key);
+      },
+      ondragover: (e) => {
+        const t = dropTarget(e);
+        if (!t) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'move';
+        clearDropMarks();
+        t.el.classList.add(t.after ? 'drop-after' : 'drop-before');
+      },
+      ondrop: (e) => {
+        const t = dropTarget(e);
+        if (!t) return;
+        e.preventDefault();
+        e.stopPropagation();
+        applyReorder(dragging, t.el.dataset.key, t.after);
+      },
+      ondragend: (e) => {
+        e.stopPropagation();
+        endDrag();
+      },
+    };
+  }
+  function endDrag() {
+    if (!dragging) return;
+    const { el, pendingRender } = dragging;
+    el.classList.toggle('dragging', false);
+    el.draggable = false;
+    dragging = null;
+    clearDropMarks();
+    if (pendingRender) renderProjects();
+  }
+  function applyReorder(d, targetKey, after) {
+    if (d.type === 'project') {
+      const list = state.projects.filter((p) => p.id !== d.key);
+      const moved = state.projects.find((p) => p.id === d.key);
+      const i = list.findIndex((p) => p.id === targetKey);
+      if (!moved || i < 0) return;
+      list.splice(after ? i + 1 : i, 0, moved);
+      state.projects = list;
+    } else {
+      const p = project(d.pid);
+      if (!p) return;
+      const keys = projectItems(p.id).map((it) => it.key).filter((k) => k !== d.key);
+      const i = keys.indexOf(targetKey);
+      if (i < 0) return;
+      keys.splice(after ? i + 1 : i, 0, d.key);
+      p.order = keys; // solo lo que existe hoy: lo cerrado se va solo
+    }
+    endDrag();
+    save();
+    renderAll();
+  }
+
+  /** Resumen de avisos de un proyecto: {kind: 'waiting'|'done', list} (esperar respuesta tiene prioridad). */
+  function projectNotice(pid) {
+    const list = sessionsOf(pid).filter((t) => t.info.notice);
+    if (!list.length) return null;
+    const waiting = list.filter((t) => t.info.notice.kind !== 'done');
+    return waiting.length ? { kind: 'waiting', list: waiting } : { kind: 'done', list };
+  }
+  function toggleCollapse(p) {
+    p.collapsed = !p.collapsed;
+    save();
+    renderProjects();
+  }
+
   function renderProjects() {
+    if (dragging) { dragging.pendingRender = true; return; } // no romper el arrastre en curso
     hideProjectTip();
     const root = $('#projects');
     root.replaceChildren();
@@ -1008,9 +1137,20 @@
     for (const p of state.projects) {
       const active = p.id === state.activeProject;
       const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
-      root.append(h(`div.project${active ? '.active' : ''}`,
+      const collapsed = !!p.collapsed;
+      const items = projectItems(p.id);
+      // colapsada: los avisos de sus terminales (claude terminó / espera) suben a la carpeta
+      const sum = collapsed ? projectNotice(p.id) : null;
+      const cls = `project${active ? ' active' : ''}${collapsed ? ' collapsed' : ''}${sum ? ` notice-${sum.kind}` : ''}`;
+      root.append(h('div.project', { class: cls, dataset: { drag: 'project', key: p.id }, ...dragEvents() },
         h('div.project-head', { onclick: () => selectProject(p.id), ondblclick: () => renameProject(p) },
+          dragHandle(),
           h('span.pname.grow', { title: p.folders.join('\n') }, p.name),
+          sum ? h(`span.notice.${sum.kind}`, {
+            title: `${sum.list.map((t) => `${termTitle(t)}: ${t.info.notice.kind === 'done' ? 'terminó' : 'espera tu respuesta'}`).join('\n')}\nClic: abrir`,
+            onclick: stop(() => activate(sum.list[0].sid)),
+          }, sum.kind === 'done' ? `✓ terminó${sum.list.length > 1 ? ` ${sum.list.length}` : ''}` : `● espera${sum.list.length > 1 ? ` ${sum.list.length}` : ''}`) : null,
+          collapsed && items.length ? h('span.pcount', { title: `${items.length} abierto${items.length === 1 ? '' : 's'} (colapsada)` }, String(items.length)) : null,
           p.showInfo !== false ? h('button.icon.pinfo', {
             'aria-label': 'Información del proyecto',
             onclick: stop(() => {}),
@@ -1023,12 +1163,13 @@
           h('span.acts',
             h('button.icon', { title: 'Agregar carpeta', onclick: stop(() => addFolder(p)) }, '⊕'),
             h('button.icon', { title: 'Editar (nombre, descripción, URL)', onclick: stop(() => renameProject(p)) }, '✎'),
+            h('button.icon.pcollapse', { title: collapsed ? 'Expandir' : 'Colapsar', onclick: stop(() => toggleCollapse(p)) }, collapsed ? '▸' : '▾'),
             h('button.icon', { title: 'Eliminar proyecto', onclick: stop(() => deleteProject(p)) }, '✕'))),
-        active && h('div.folders', p.folders.map((f, i) =>
+        active && !collapsed && h('div.folders', p.folders.map((f, i) =>
           h('div.folder', { title: f },
             h('span', (i === 0 ? '▸ ' : '+ ') + tilde(f)),
             h('button.icon.mini', { title: 'Quitar carpeta', onclick: () => removeFolder(p, f) }, '✕')))),
-        h('div.terms', sessionsOf(p.id).map((t) => termItem(t, slots.get(t.sid))), openViewsOf(p.id).map(viewItem))));
+        collapsed ? null : h('div.terms', items.map((it) => (it.t ? termItem(it.t, slots.get(it.t.sid), p.id) : viewItem(it.v))))));
     }
     const orphans = orphanSessions();
     if (orphans.length) {
@@ -1261,9 +1402,9 @@
   let restoreChecked = false; // hasta decidir, la foto no se pisa (si no, al arrancar vacío se perdería)
   let restoreLater = []; // "Ahora no": se siguen ofreciendo la próxima vez
   function termSnapshot() {
-    return [...terms.values()]
-      .filter((t) => termKind(t) !== 'action' && t.info.alive !== false && project((t.info.meta || {}).projectId))
-      .sort((a, b) => a.info.created - b.info.created)
+    // en el orden del panel izquierdo: al reabrirlas quedan igual
+    return state.projects.flatMap((p) => sessionsOf(p.id))
+      .filter((t) => termKind(t) !== 'action' && t.info.alive !== false)
       .map((t) => {
         const m = t.info.meta || {};
         return { sid: t.sid, projectId: m.projectId, kind: termKind(t), title: m.title || termKind(t), cwd: m.cwd || '', ...(m.sshId ? { sshId: m.sshId } : {}) };
