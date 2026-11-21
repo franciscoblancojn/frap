@@ -133,7 +133,8 @@
         opencode: { cmd: 'opencode', addDir: '' },
       },
     },
-    ui: { rtab: 'procs', hideLeft: false, hideRight: false, procsAll: false, split: 1 }, // split: 1-4 terminales a la vez
+    // split: 1-4 terminales a la vez; splitSizes (%): y = alto de la fila de arriba, xTop/xBot = ancho de la columna izquierda de cada fila
+    ui: { rtab: 'procs', hideLeft: false, hideRight: false, procsAll: false, split: 1, splitSizes: { y: 50, xTop: 50, xBot: 50 } },
   });
 
   function mergeState(base, saved) {
@@ -146,7 +147,7 @@
         ...(saved.settings || {}),
         launchers: { ...base.settings.launchers, ...((saved.settings || {}).launchers || {}) },
       },
-      ui: { ...base.ui, ...(saved.ui || {}) },
+      ui: { ...base.ui, ...(saved.ui || {}), splitSizes: { ...base.ui.splitSizes, ...((saved.ui || {}).splitSizes || {}) } },
       db: { ...base.db, ...(saved.db || {}) },
       music: { ...base.music, ...(saved.music || {}) },
       git: { ...base.git, ...(saved.git || {}) },
@@ -1099,11 +1100,80 @@
   // Ciclo del botón: 1 → 2 (1 arriba, 1 abajo) → 3 (2 arriba, 1 abajo) → 4 (2×2) → 1.
   const SPLIT_KINDS = ['shell', 'claude', 'codex', 'opencode', 'ssh'];
   const SPLIT_MAX = 4;
-  const SPLIT_RECTS = { // [left, top, width, height] en %
-    2: [[0, 0, 100, 50], [0, 50, 100, 50]],
-    3: [[0, 0, 50, 50], [50, 0, 50, 50], [0, 50, 100, 50]],
-    4: [[0, 0, 50, 50], [50, 0, 50, 50], [0, 50, 50, 50], [50, 50, 50, 50]],
+  const SPLIT_MIN = 12; // % mínimo de alto/ancho de un panel al arrastrar un divisor
+  /** Tamaños ajustables (divisores arrastrables): y = alto de la fila de arriba, xTop/xBot = ancho de la columna izquierda. */
+  const splitSizes = () => {
+    const z = state.ui.splitSizes || {};
+    const ok = (v) => (Number.isFinite(v) ? Math.min(100 - SPLIT_MIN, Math.max(SPLIT_MIN, v)) : 50);
+    return { y: ok(z.y), xTop: ok(z.xTop), xBot: ok(z.xBot) };
   };
+  /** [left, top, width, height] en % de cada panel. */
+  function splitRects(n) {
+    const { y, xTop: a, xBot: b } = splitSizes();
+    if (n === 2) return [[0, 0, 100, y], [0, y, 100, 100 - y]];
+    if (n === 3) return [[0, 0, a, y], [a, 0, 100 - a, y], [0, y, 100, 100 - y]];
+    if (n === 4) return [[0, 0, a, y], [a, 0, 100 - a, y], [0, y, b, 100 - y], [b, y, 100 - b, 100 - y]];
+    return null;
+  }
+
+  // Divisores entre paneles: aparecen al pasar el mouse (cursor e ícono de 2 flechas). Doble clic: 50/50.
+  let splitHandles = null;
+  let splitDragging = false;
+  function ensureSplitHandles() {
+    if (splitHandles) return splitHandles;
+    const mk = (key, dir) => {
+      const el = h(`div.split-handle.${dir}`, {
+        title: `Arrastra para ajustar ${dir === 'row' ? 'el alto' : 'el ancho'} · doble clic: mitad y mitad`,
+        onmousedown: (e) => startSplitDrag(e, key),
+        // el ícono de flechas sigue al mouse a lo largo del divisor
+        onmousemove: (e) => {
+          if (splitDragging) return;
+          const r = el.getBoundingClientRect();
+          el.style.setProperty('--grip', `${dir === 'row' ? e.clientX - r.left : e.clientY - r.top}px`);
+        },
+        ondblclick: () => { state.ui.splitSizes = { ...splitSizes(), [key]: 50 }; save(); renderPanes(); },
+      }, h('span.split-grip', dir === 'row' ? '⇕' : '⇔'));
+      $('#term-host').append(el);
+      return el;
+    };
+    splitHandles = { y: mk('y', 'row'), xTop: mk('xTop', 'col'), xBot: mk('xBot', 'col') };
+    return splitHandles;
+  }
+  function renderSplitHandles(n) {
+    if (!n && !splitHandles) return;
+    const hs = ensureSplitHandles();
+    const { y, xTop, xBot } = splitSizes();
+    const show = (el, on, style) => { el.classList.toggle('hidden', !on); if (on) Object.assign(el.style, style); };
+    show(hs.y, n >= 2, { top: `${y}%`, left: '0', width: '100%', height: '' });
+    show(hs.xTop, n >= 3, { left: `${xTop}%`, top: '0', height: `${y}%`, width: '' });
+    show(hs.xBot, n === 4, { left: `${xBot}%`, top: `${y}%`, height: `${100 - y}%`, width: '' });
+  }
+  function startSplitDrag(e, key) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const host = $('#term-host').getBoundingClientRect();
+    splitDragging = true;
+    document.body.classList.add(key === 'y' ? 'split-dragging-row' : 'split-dragging-col');
+    splitHandles[key].classList.add('dragging');
+    const move = (ev) => {
+      const v = key === 'y' ? ((ev.clientY - host.top) / host.height) * 100 : ((ev.clientX - host.left) / host.width) * 100;
+      state.ui.splitSizes = { ...splitSizes(), [key]: Math.round(Math.min(100 - SPLIT_MIN, Math.max(SPLIT_MIN, v)) * 10) / 10 };
+      renderPanes(); // mueve paneles y divisor; las terminales se reajustan al soltar
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      splitDragging = false;
+      document.body.classList.remove('split-dragging-row', 'split-dragging-col');
+      splitHandles[key].classList.remove('dragging');
+      save();
+      for (const t of splitGroup()) fitTerm(t);
+      const t = activeTerm();
+      if (t) t.term.focus();
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  }
   const splitN = () => Math.min(SPLIT_MAX, Math.max(1, Number(state.ui.split) || 1));
   /** Terminales agrupadas (vacío si no hay división o hay menos de 2). */
   function splitGroup() {
@@ -1134,7 +1204,7 @@
     // el grupo solo se muestra si la terminal activa es parte de él (git, DB, páginas o una 5.ª terminal van solas)
     let group = splitGroup();
     if (!group.some((t) => t.sid === state.activeSid)) group = [];
-    const rects = SPLIT_RECTS[group.length];
+    const rects = splitRects(group.length);
     const refit = [];
     for (const t of terms.values()) {
       const slot = group.indexOf(t);
@@ -1151,7 +1221,8 @@
       t.pane.classList.toggle('focused', !!r && t.sid === state.activeSid);
       t.pane.style.visibility = r || t.sid === state.activeSid ? 'visible' : 'hidden';
     }
-    if (refit.length) requestAnimationFrame(() => refit.forEach(fitTerm));
+    if (refit.length && !splitDragging) requestAnimationFrame(() => refit.forEach(fitTerm));
+    renderSplitHandles(group.length);
     renderSplitBtn();
     const pg = isPageView(state.activeSid) ? pageById(state.activeSid.slice(PAGE_PREFIX.length)) : null;
     if (pg) ensurePagePane(pg);

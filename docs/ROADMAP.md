@@ -30,6 +30,7 @@
 - [x] Git, DB y Archivos (SFTP) por proyecto, como las terminales: cada carpeta del panel izquierdo tiene los suyos (repo, conexión y servidor propios) y se administran al cambiar de carpeta
 - [x] Tras apagar o reiniciar el equipo, ofrecer reabrir las terminales que estaban abiertas (foto en el estado), retomando la conversación de cada IA
 - [x] Notas por carpeta (`NOTES.md`): vista con editor y autoguardado, switch de git-ignore (activado por defecto), skill `frap-notes` y prompts "Guardar en notas" / "Leer notas" para que la IA guarde y lea contexto
+- [x] Pantalla dividida ajustable: divisores arrastrables entre paneles (alto de las filas y ancho de las columnas de cada fila), con ícono de 2 flechas al pasar el mouse; doble clic vuelve a 50/50; las proporciones se recuerdan
 - [x] Interruptores por conexión de BD: activa / uso por IA (`db.toggle`; `frap-db` solo ve las habilitadas)
 - [x] Interruptor "Solo lectura" por conexión (activado por defecto). Desactivado, la pestaña DB puede ejecutar INSERT, UPDATE, CREATE y ALTER con confirmación (`db.check` + `assertSafeWrite`), pero nunca DELETE, DROP ni TRUNCATE. Los agentes siguen siempre en solo lectura
 - [x] Música: archivos (IndexedDB) y YouTube (relé `/yt-player`), bucle (lista/canción), aleatorio sin repetir, arrastrar para reordenar, dock persistente y teclas multimedia

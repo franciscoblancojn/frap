@@ -239,6 +239,25 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 }
 .term-pane.split.focused::after { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
 .term-pane.split:not(.focused) { opacity: .82; }
+/* divisores de la pantalla dividida: franja invisible de 10px centrada en la línea entre paneles */
+.split-handle { position: absolute; z-index: 8; }
+.split-handle.row { height: 10px; margin-top: -5px; cursor: row-resize; }
+.split-handle.col { width: 10px; margin-left: -5px; cursor: col-resize; }
+.split-handle::before { content: ''; position: absolute; background: var(--accent); opacity: 0; transition: opacity .12s; }
+.split-handle.row::before { left: 0; right: 0; top: 4px; height: 2px; }
+.split-handle.col::before { top: 0; bottom: 0; left: 4px; width: 2px; }
+.split-grip {
+  position: absolute; display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 50%; font-size: 17px; font-weight: 700; line-height: 1;
+  background: var(--accent); color: var(--bg); box-shadow: 0 2px 8px rgba(0, 0, 0, .5);
+  opacity: 0; transform: scale(.7); transition: opacity .12s, transform .12s; pointer-events: none;
+}
+.split-handle.row .split-grip { top: -8px; left: var(--grip, 50%); margin-left: -13px; }
+.split-handle.col .split-grip { left: -8px; top: var(--grip, 50%); margin-top: -13px; }
+.split-handle:hover::before, .split-handle.dragging::before { opacity: .9; }
+.split-handle:hover .split-grip, .split-handle.dragging .split-grip { opacity: 1; transform: scale(1); }
+body.split-dragging-row, body.split-dragging-row * { cursor: row-resize !important; user-select: none !important; }
+body.split-dragging-col, body.split-dragging-col * { cursor: col-resize !important; user-select: none !important; }
 .split-btn { display: flex; align-items: center; gap: 3px; }
 .split-btn .split-ico { font-size: 15px; line-height: 1; }
 .split-btn .split-n { font: 600 10px var(--mono); min-width: 14px; padding: 0 3px; border-radius: 3px; background: var(--bg); color: var(--fg-3); }
