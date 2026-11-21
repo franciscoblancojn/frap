@@ -708,13 +708,61 @@
     renderAll();
     loadConfig(true);
   }
-  async function renameProject(p) {
-    const name = await askText('Renombrar proyecto', 'Nombre', p.name);
-    if (!name) return;
-    p.name = name;
-    save();
-    renderAll();
+  /** Editar proyecto: nombre, descripción, URL y si se muestra el ojo con la info. */
+  function renameProject(p) {
+    const name = h('input', { value: p.name, placeholder: 'Mi proyecto' });
+    const desc = h('textarea', { rows: 4, placeholder: 'Para qué es, notas, enlaces… (opcional)' });
+    desc.value = p.desc || '';
+    desc.style.cssText = 'width:100%;resize:vertical';
+    const url = h('input.mono', { value: p.url || '', placeholder: 'https://mi-sitio.com o localhost:3000 (opcional)' });
+    const info = h('input', { type: 'checkbox' });
+    info.checked = p.showInfo !== false;
+    const doSave = () => {
+      const n = name.value.trim();
+      const u = normalizeUrl(url.value);
+      if (!n) { toast('El nombre es obligatorio', 'err'); return; }
+      if (u && !validUrl(u)) { toast('URL inválida (usa http, https o file)', 'err'); return; }
+      p.name = n;
+      p.desc = desc.value.trim();
+      p.url = u;
+      p.showInfo = info.checked;
+      save();
+      modalClose(true);
+      renderAll();
+    };
+    [name, url].forEach((el) => el.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSave(); }));
+    openModal({
+      title: `Editar proyecto · ${p.name}`,
+      body: [
+        h('div.field', h('label', 'Nombre'), name),
+        h('div.field', h('label', 'Descripción'), desc),
+        h('div.field', h('label', 'URL (botón 🌐: la abre en otra pestaña)'), url),
+        h('label.muted', info, ' Mostrar el ojo 👁 con el nombre y la descripción al pasar el mouse'),
+      ],
+      foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
+    });
+    requestAnimationFrame(() => name.focus());
   }
+  function openProjectUrl(p) {
+    if (!p.url || !validUrl(p.url)) { toast('URL inválida', 'err'); return; }
+    openPageTab({ url: p.url });
+  }
+
+  // Tooltip del ojo: flotante en <body> (el panel izquierdo recorta lo que sobresale).
+  let projTip = null;
+  function showProjectTip(p, anchor) {
+    hideProjectTip();
+    projTip = h('div.proj-tip',
+      h('div.proj-tip-title', p.name),
+      p.desc ? h('div.proj-tip-desc', p.desc) : h('div.proj-tip-desc.muted', 'Sin descripción. Agrégala con ✎.'),
+      p.url ? h('div.proj-tip-url', `🌐 ${p.url}`) : null);
+    document.body.append(projTip);
+    const r = anchor.getBoundingClientRect();
+    const tr = projTip.getBoundingClientRect();
+    projTip.style.left = `${Math.min(r.right + 8, window.innerWidth - tr.width - 8)}px`;
+    projTip.style.top = `${Math.max(8, Math.min(r.top - 6, window.innerHeight - tr.height - 8))}px`;
+  }
+  function hideProjectTip() { if (projTip) { projTip.remove(); projTip = null; } }
   async function deleteProject(p) {
     const live = sessionsOf(p.id);
     const ok = await confirmBox(
@@ -793,6 +841,7 @@
   }
 
   function renderProjects() {
+    hideProjectTip();
     const root = $('#projects');
     root.replaceChildren();
     if (!state.projects.length) {
@@ -805,9 +854,18 @@
       root.append(h(`div.project${active ? '.active' : ''}`,
         h('div.project-head', { onclick: () => selectProject(p.id), ondblclick: () => renameProject(p) },
           h('span.pname.grow', { title: p.folders.join('\n') }, p.name),
+          p.showInfo !== false ? h('button.icon.pinfo', {
+            'aria-label': 'Información del proyecto',
+            onclick: stop(() => {}),
+            onmouseenter: (e) => showProjectTip(p, e.currentTarget),
+            onmouseleave: hideProjectTip,
+            onfocus: (e) => showProjectTip(p, e.currentTarget),
+            onblur: hideProjectTip,
+          }, '👁') : null,
+          p.url ? h('button.icon.pinfo', { title: `Abrir ${p.url} en otra pestaña`, onclick: stop(() => openProjectUrl(p)) }, '🌐') : null,
           h('span.acts',
             h('button.icon', { title: 'Agregar carpeta', onclick: stop(() => addFolder(p)) }, '⊕'),
-            h('button.icon', { title: 'Renombrar', onclick: stop(() => renameProject(p)) }, '✎'),
+            h('button.icon', { title: 'Editar (nombre, descripción, URL)', onclick: stop(() => renameProject(p)) }, '✎'),
             h('button.icon', { title: 'Eliminar proyecto', onclick: stop(() => deleteProject(p)) }, '✕'))),
         active && h('div.folders', p.folders.map((f, i) =>
           h('div.folder', { title: f },

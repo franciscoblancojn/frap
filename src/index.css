@@ -118,6 +118,23 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .project.active > .project-head { background: var(--bg-3); }
 .project.active > .project-head .pname { color: var(--accent); }
 .pname { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-head .pinfo { opacity: .55; font-size: 12px; padding: 0 3px; }
+.project-head .pinfo:hover, .project-head .pinfo:focus-visible { opacity: 1; }
+.proj-tip {
+  position: fixed;
+  z-index: 1000;
+  max-width: 340px;
+  padding: 9px 11px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .45);
+  pointer-events: none;
+  font-size: 12px;
+}
+.proj-tip-title { font-weight: 600; color: var(--accent); margin-bottom: 4px; }
+.proj-tip-desc { white-space: pre-wrap; line-height: 1.45; overflow-wrap: anywhere; }
+.proj-tip-url { margin-top: 6px; font: 11px var(--mono); color: var(--fg-2); overflow-wrap: anywhere; }
 .project-head .acts { display: none; }
 .project-head:hover .acts, .project.active .project-head .acts { display: flex; }
 .folders { padding: 0 10px 4px 22px; }
