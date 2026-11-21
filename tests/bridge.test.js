@@ -576,6 +576,23 @@ test('sftp.*: listar, subir, descargar, carpetas, renombrar, borrar y límites l
   await client.call('ssh.delete', { id: 'archivos' });
 });
 
+test('notes.*: skill frap-notes (estado e instalación) y NOTES.md con fs.write/fs.read', async () => {
+  assert.deepEqual(await client.call('notes.skill'), { claude: false, codex: false });
+  const files = await client.call('notes.installSkill', {});
+  assert.deepEqual(files, [path.join(root, '.claude', 'skills', 'frap-notes', 'SKILL.md'), path.join(root, '.codex', 'skills', 'frap-notes', 'SKILL.md')]);
+  const text = fs.readFileSync(files[0], 'utf8');
+  assert.match(text, /^---\nname: frap-notes\ndescription: .*guarda esto en notas.*lee las notas/m);
+  assert.match(text, /NOTES\.md/);
+  assert.match(text, /\/NOTES\.md/); // indica el .gitignore
+  assert.deepEqual(await client.call('notes.skill'), { claude: true, codex: true });
+  assert.deepEqual(await client.call('notes.installSkill', { tools: ['nada'] }), []);
+  // la vista edita NOTES.md con fs.*: dentro de FRAP_FS_ROOT sí, fuera no
+  const notes = path.join(root, 'proj', 'NOTES.md');
+  await client.call('fs.write', { path: notes, content: '# Notas\n' });
+  assert.equal((await client.call('fs.read', { path: notes })).content, '# Notas\n');
+  await assert.rejects(client.call('fs.write', { path: '/etc/NOTES.md', content: 'x' }), /fuera/);
+});
+
 test('avisos de agentes: $FRAP_NOTIFY → evento notice, sessions.list lo incluye y session.seen lo borra', async () => {
   const s = await client.call('session.create', {
     cwd: root, cmd: ['/bin/sh', '-c', 'echo "waiting Claude espera tu respuesta" >> "$FRAP_NOTIFY"; sleep 0.3; echo done >> "$FRAP_NOTIFY"; sleep 5'],

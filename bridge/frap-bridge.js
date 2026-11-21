@@ -534,6 +534,42 @@ function dbNormalize(input, existing) {
 // ---------- ssh ----------
 const SSH_ENV = path.join(FRAP_HOME, 'ssh.env');
 const SSH_CLI = path.join(__dirname, 'frap-ssh.js');
+// skill de notas: la IA guarda/lee contexto en NOTES.md de la carpeta (vista "Notas" de FRAP)
+const NOTES_SKILL_DIRS = {
+  claude: () => path.join(HOME, '.claude', 'skills', 'frap-notes'),
+  codex: () => path.join(HOME, '.codex', 'skills', 'frap-notes'),
+};
+function notesSkillText() {
+  return `---
+name: frap-notes
+description: Notas del proyecto en NOTES.md. Úsala cuando el usuario diga "guarda esto en notas", "anota", "agrégalo a las notas", "save this to notes" (escribir) o "lee las notas", "qué tenemos en notas", "revisa las notas", "read the notes" (leer). Es el lugar donde se guarda el contexto entre sesiones.
+---
+
+# Notas del proyecto (NOTES.md)
+
+FRAP muestra y edita estas notas en su pestaña "Notas". El archivo es \`NOTES.md\` en la carpeta
+raíz del proyecto: el directorio de trabajo con el que se abrió esta sesión (no una subcarpeta).
+
+## Guardar ("guarda esto en notas", "anota…")
+
+1. Si no existe, créalo con el título \`# Notas\`.
+   Si la carpeta está en un repo git, agrega la línea \`/NOTES.md\` al \`.gitignore\` de esa misma
+   carpeta (créalo si hace falta): es lo que hace FRAP por defecto, salvo que el usuario diga lo contrario.
+   Solo al crearlo: si ya existía y no está ignorado, el usuario lo decidió así.
+2. Agrega al FINAL una sección con fecha: \`## AAAA-MM-DD — <tema corto>\`.
+3. Escribe lo que pidió el usuario o, si dice "esto", un resumen útil para retomar más tarde:
+   contexto, decisiones y por qué, pendientes (\`- [ ]\`), comandos, rutas y datos clave.
+   Markdown breve; sin secretos (contraseñas, tokens, llaves).
+4. No borres ni reescribas lo que ya hay. Para corregir algo existente, pregunta antes.
+5. Confirma en una línea qué guardaste.
+
+## Leer ("lee las notas", "qué tenemos en notas"…)
+
+Lee \`NOTES.md\` completo y úsalo como contexto. Si el usuario no pidió algo concreto, resume
+en pocas líneas lo más importante y los pendientes. Si no existe, dilo y ofrece crearlo.
+`;
+}
+
 const SSH_SKILL_DIRS = {
   claude: () => path.join(HOME, '.claude', 'skills', 'frap-ssh'),
   codex: () => path.join(HOME, '.codex', 'skills', 'frap-ssh'),
@@ -958,6 +994,19 @@ const ops = {
     if (r === '/') throw new Error('No se puede borrar la raíz');
     await sftpRun(id, [`${dir ? 'rmdir' : 'rm'} ${sftp.quote(r)}`]);
     return true;
+  },
+  /** ¿Está instalada la skill frap-notes? {claude, codex} */
+  'notes.skill': () => Object.fromEntries(Object.entries(NOTES_SKILL_DIRS).map(([k, dir]) => [k, exists(path.join(dir(), 'SKILL.md'))])),
+  'notes.installSkill': ({ tools = ['claude', 'codex'] } = {}) => {
+    const written = [];
+    for (const t of tools) {
+      if (!NOTES_SKILL_DIRS[t]) continue;
+      const f = path.join(NOTES_SKILL_DIRS[t](), 'SKILL.md');
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, notesSkillText());
+      written.push(f);
+    }
+    return written;
   },
   'ssh.installSkill': ({ tools = ['claude', 'codex'] } = {}) => {
     const written = [];

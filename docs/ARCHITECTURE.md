@@ -34,12 +34,24 @@ navegador (file://src/index.html)                     máquina local
 - En cada conexión al bridge, `checkRestore()` busca los sids de la foto que ya no están en `sessions.list`. Si falta alguno, ofrece reabrirlos con `reopenTerminals` (lo mismo que el import), retomando la última conversación de cada IA (`claude --continue`, `codex resume --last`, `opencode --continue`).
 - Hasta que el usuario decide, la foto no se pisa, porque si no, el arranque vacío la borraría. "Ahora no" las sigue ofreciendo; "Descartar" las olvida.
 
-## Vistas por proyecto (git, DB, Archivos)
+## Vistas por proyecto (git, DB, Archivos, Notas)
 
-- Como las terminales, cada proyecto tiene sus propias pestañas de Git, DB y Archivos (SFTP), listadas en el panel izquierdo junto a sus terminales. Sid: `git:<projectId>`, `db:<projectId>`, `sftp:<projectId>`. Una por tipo y proyecto: los launchers y Alt+Shift+G/D/F abren o enfocan la del proyecto activo. Requieren un proyecto.
+- Como las terminales, cada proyecto tiene sus propias pestañas de Git, DB, Archivos (SFTP) y Notas, listadas en el panel izquierdo junto a sus terminales. Sid: `git:<projectId>`, `db:<projectId>`, `sftp:<projectId>`, `notes:<projectId>`. Una por tipo y proyecto: los launchers y Alt+Shift+G/D/F/N abren o enfocan la del proyecto activo. Requieren un proyecto.
 - Persisten en `state.views = [{kind, projectId, open, data}]`. `data` es lo de cada vista (repo, conexión, SQL e historial, servidor y rutas). Cerrar la pestaña deja `open: false` y conserva `data`. Borrar el proyecto borra sus vistas.
 - Hay un panel DOM por vista (`viewPanes`). `bindView(v)` hace que `state.git/db/sftp` apunten a `v.data` y `gitPane`/`dbPane`/`sftpPane`/`Git` a su panel y memoria, así el código de cada vista opera sobre "la enlazada". Lo asíncrono captura su panel (o `rt`) antes de esperar y no pinta si se cambió de vista. `gitAction` fija repo y memoria (`fn(g, pane)`), así una acción no salta de repo a mitad. La cola de transferencias SFTP es común a todas las vistas.
 - Estados viejos (`git:main`, `state.git.open`…) se migran a la vista del proyecto activo (`migrateViews`).
+
+## Notas (NOTES.md)
+
+- La vista Notas edita `NOTES.md` de la primera carpeta del proyecto, solo con `fs.exists`, `fs.read` y `fs.write` (limitados a `FRAP_FS_ROOT`). Si el archivo no existe, muestra "Crear NOTES.md".
+- Guarda solo 800 ms después de dejar de escribir, o con Ctrl+S. Antes de escribir compara el `mtime` del disco: si otro proceso (una IA) cambió el archivo, no lo pisa y muestra un aviso con "Usar la del disco" y "Guardar la mía".
+- Mientras está visible lee el archivo cada 3 s y al volver el foco a la ventana. Si no hay cambios locales, trae lo que escribió la IA sin perder el cursor.
+- git-ignore: solo aparece si la carpeta está en un repo (`git rev-parse`). Agrega o quita `/NOTES.md` del `.gitignore` de esa misma carpeta: los patrones son relativos a su `.gitignore`, así que funciona aunque la carpeta sea una subcarpeta del repo.
+  - Activado por defecto (`views[].data.gitignore`). Se aplica al crear o guardar.
+  - Si `NOTES.md` ya está versionado (`git ls-files --error-unmatch`), avisa que el `.gitignore` no lo saca del repo.
+- IA: la skill `frap-notes` (`notes.installSkill`, en `~/.claude/skills` y `~/.codex/skills`) enseña a guardar ("guarda esto en notas": al final, en una sección con fecha, sin borrar lo que ya hay ni guardar secretos) y a leer ("lee las notas").
+  - Se instala sola al crear el primer `NOTES.md`; el botón "🤖 IA" la reinstala.
+  - Los prompts "Guardar en notas" y "Leer notas" se agregan una sola vez también a los estados existentes (`state.seeded`).
 
 ## Rutas clicables
 
@@ -151,6 +163,8 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `sftp.rename` | `{id, from, to}` | `true` |
 | `sftp.remove` | `{id, path, dir?}` | `true`; archivo (`rm`) o carpeta vacía (`rmdir`), nunca recursivo ni la raíz |
 | `ssh.installSkill` | `{tools}` | escribe la skill `frap-ssh` en `~/.claude/skills` y `~/.codex/skills` |
+| `notes.skill` | — | `{claude, codex}`: si la skill `frap-notes` está instalada |
+| `notes.installSkill` | `{tools}` | escribe la skill `frap-notes` (guardar/leer `NOTES.md`) en `~/.claude/skills` y `~/.codex/skills` |
 | `export.creds` | `{db: ids, ssh: ids, passphrase?}` | `{db, ssh, secrets?}` sin contraseñas; con `passphrase` (≥6) van en `secrets` cifradas (scrypt + AES-256-GCM) |
 | `import.creds` | `{db, ssh, secrets?, passphrase?}` | `{db, ssh, errors}`; mismo id se reemplaza; clave incorrecta → error; sin clave conserva la contraseña existente |
 | `db.installSkill` | `{tools}` | escribe `~/.claude/skills/frap-db/SKILL.md` y `~/.codex/skills/frap-db/SKILL.md` |

@@ -48,6 +48,7 @@
     db: 'vendor/icons/db.svg',
     git: 'vendor/icons/git.svg',
     ssh: 'vendor/icons/ssh.svg',
+    notes: 'vendor/icons/notes.svg',
   };
   const kindIcon = (kind) => (ICONS[kind] ? h('img.ico', { src: ICONS[kind], alt: kind, title: kind }) : null);
   const uid = () => Math.random().toString(36).slice(2, 10);
@@ -87,11 +88,17 @@
   // Estado
   // ======================================================================
   const AGENT_TOOLS = ['claude', 'codex', 'opencode'];
+  // notas (vista "Notas" + skill frap-notes): también se agregan a los prompts de estados ya existentes
+  const NOTES_PROMPTS = [
+    { title: 'Guardar en notas', body: 'Guarda esto en notas: agrega al final de NOTES.md (en la raíz de esta carpeta; créalo si no existe) una sección con la fecha y un resumen útil para retomar después: contexto, decisiones y por qué, pendientes (- [ ]), comandos y rutas clave. No borres lo que ya hay y no incluyas secretos.' },
+    { title: 'Leer notas', body: 'Lee las notas: abre NOTES.md de esta carpeta y úsalo como contexto para seguir trabajando. Resúmeme en pocas líneas lo más importante y los pendientes.' },
+  ];
   const DEFAULT_PROMPTS = [
     { title: 'Explicar proyecto', body: 'Explícame la estructura de este proyecto, sus partes principales y cómo se ejecuta.' },
     { title: 'Revisar cambios', body: 'Revisa los cambios sin commitear (git diff) y señala bugs, riesgos y mejoras concretas.' },
     { title: 'Escribir tests', body: 'Escribe tests para el código modificado recientemente y ejecútalos.' },
     { title: 'Commit', body: 'Crea un commit con un mensaje claro que describa los cambios actuales.' },
+    ...NOTES_PROMPTS,
   ];
   const DEFAULT_STATE = () => ({
     v: 1,
@@ -107,11 +114,13 @@
     views: [],
     // foto de las terminales abiertas: [{sid, projectId, kind, title, cwd, sshId?}] (para reabrirlas tras apagar el equipo)
     lastTerms: [],
+    seeded: ['notes-prompts'], // siembras ya aplicadas (ver migrateViews)
     db: { connId: null, sql: '', limit: 500, history: [] }, // datos de la vista DB enlazada (apunta a views[i].data)
     // música: tracks = [{id, type: 'file'|'youtube', title, videoId?, duration?}]; los archivos viven en IndexedDB
     music: { tracks: [], current: null, loop: 'all', shuffle: false, volume: 80 },
     git: { repo: null, tab: 'diff' }, // datos de la vista Git enlazada
     sftp: { hostId: null, local: null, remote: {}, hidden: false }, // datos de la vista Archivos (SFTP) enlazada; remote = última ruta por servidor
+    notes: { gitignore: true }, // datos de la vista Notas enlazada: gitignore = agregar NOTES.md al .gitignore
     // temporizadores: [{id, icon, title, desc, kind: 'repeat'|'once', every (seg), mode: 'toast'|'modal', sound, enabled, nextAt, startedAt}]
     timers: [],
     settings: {
@@ -142,6 +151,7 @@
       music: { ...base.music, ...(saved.music || {}) },
       git: { ...base.git, ...(saved.git || {}) },
       sftp: { ...base.sftp, ...(saved.sftp || {}), remote: { ...((saved.sftp || {}).remote || {}) } },
+      seeded: Array.isArray(saved.seeded) ? saved.seeded : [], // no el del estado por defecto: si no, nunca se siembra
     });
   }
   /**
@@ -149,8 +159,14 @@
    * Si estaba abierta pasa a ser la vista del proyecto activo.
    */
   function migrateViews(st) {
+    // siembras de una sola vez (lo nuevo por defecto que también deben ver los estados existentes)
+    st.seeded = Array.isArray(st.seeded) ? st.seeded : [];
+    if (!st.seeded.includes('notes-prompts')) {
+      st.seeded.push('notes-prompts');
+      for (const np of NOTES_PROMPTS) if (!(st.prompts || []).some((x) => x.title === np.title)) st.prompts = [...(st.prompts || []), { id: uid(), ...np }];
+    }
     if (!Array.isArray(st.views)) st.views = [];
-    st.views = st.views.filter((v) => v && ['git', 'db', 'sftp'].includes(v.kind) && v.projectId && v.data);
+    st.views = st.views.filter((v) => v && ['git', 'db', 'sftp', 'notes'].includes(v.kind) && v.projectId && v.data);
     for (const kind of ['git', 'db', 'sftp']) {
       const old = st[kind] || {};
       if (old.open && st.activeProject && !st.views.some((v) => v.kind === kind && v.projectId === st.activeProject)) {
@@ -198,15 +214,16 @@
     git: () => ({ repo: null, tab: 'diff' }),
     db: () => ({ connId: null, sql: '', limit: 500, history: [] }),
     sftp: () => ({ hostId: null, local: null, remote: {}, hidden: false }),
+    notes: () => ({ gitignore: true }),
   };
   const vSid = (v) => `${v.kind}:${v.projectId}`;
-  const viewKind = (sid) => { const m = /^(git|db|sftp):/.exec(sid || ''); return m ? m[1] : null; };
+  const viewKind = (sid) => { const m = /^(git|db|sftp|notes):/.exec(sid || ''); return m ? m[1] : null; };
   const viewBySid = (sid) => (viewKind(sid) ? state.views.find((v) => v.open && vSid(v) === sid) || null : null);
   const activeView = () => viewBySid(state.activeSid);
   const openViewsOf = (pid) => state.views.filter((v) => v.open && v.projectId === pid);
   const viewPanes = new Map(); // sid -> panel DOM de la vista
   const gitRts = new Map(); // sid -> memoria de git (status, salida, diff…)
-  let bound = { git: null, db: null, sftp: null }; // sid enlazado por tipo
+  let bound = { git: null, db: null, sftp: null, notes: null }; // sid enlazado por tipo
   /** Datos de todas las vistas de un tipo (para mantenerlas al borrar conexiones o servidores). */
   const viewDatas = (kind) => [...new Set([state[kind], ...state.views.filter((v) => v.kind === kind).map((v) => v.data)])];
   function needProject() {
@@ -230,7 +247,8 @@
       Git = gitRts.get(sid);
       gitPane = pane;
     } else if (v.kind === 'db') dbPane = pane;
-    else sftpPane = pane;
+    else if (v.kind === 'sftp') sftpPane = pane;
+    else notesPane = pane;
   }
   /** Enlaza y activa la vista `kind` del proyecto activo. fresh = todavía no tenía panel. */
   function showView(kind) {
@@ -260,7 +278,8 @@
     if (project(v.projectId)) state.activeProject = v.projectId;
     if (v.kind === 'git') openGitView();
     else if (v.kind === 'db') openDbView();
-    else openSftpView();
+    else if (v.kind === 'sftp') openSftpView();
+    else openNotesView();
   }
   /** Al borrar un proyecto: se van sus vistas y sus paneles. */
   function dropProjectViews(pid) {
@@ -273,13 +292,14 @@
       if (bound[v.kind] === sid) {
         bound[v.kind] = null;
         state[v.kind] = VIEW_DATA[v.kind]();
-        if (v.kind === 'git') { gitPane = null; Git = newGitRt(); } else if (v.kind === 'db') dbPane = null; else sftpPane = null;
+        if (v.kind === 'git') { gitPane = null; Git = newGitRt(); } else if (v.kind === 'db') dbPane = null; else if (v.kind === 'sftp') sftpPane = null; else notesPane = null;
       }
     }
     state.views = state.views.filter((x) => x.projectId !== pid);
   }
-  const VIEW_TITLE = { git: 'Git (Alt+Shift+G)', db: 'Consultas SQL (Alt+Shift+D)', sftp: 'Archivos por SFTP (Alt+Shift+F)' };
+  const VIEW_TITLE = { git: 'Git (Alt+Shift+G)', db: 'Consultas SQL (Alt+Shift+D)', sftp: 'Archivos por SFTP (Alt+Shift+F)', notes: 'Notas: NOTES.md de la carpeta (Alt+Shift+N)' };
   function viewLabel(v) {
+    if (v.kind === 'notes') return 'Notas';
     if (v.kind === 'git') return v.data.repo ? `Git · ${basename(v.data.repo)}` : 'Git';
     if (v.kind === 'db') { const c = dbConnById(v.data.connId); return c ? `DB · ${c.name}` : 'DB'; }
     const c = sshInfo && sshInfo.hosts.find((x) => x.id === v.data.hostId);
@@ -363,7 +383,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -1069,7 +1089,7 @@
         onauxclick: (e) => { if (e.button === 1) closeView(v); },
       },
       v.kind === 'sftp' ? null : kindIcon(v.kind),
-      h('span.tname', v.kind === 'git' ? 'Git' : v.kind === 'db' ? 'DB' : '⇅ Archivos'),
+      h('span.tname', { git: 'Git', db: 'DB', sftp: '⇅ Archivos', notes: 'Notas' }[v.kind]),
       h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeView(v); } }, '✕')));
     }
   }
@@ -1144,12 +1164,14 @@
     if (gitActive) { ensureGitPane(); gitSyncProject(); }
     const sftpActive = !!av && av.kind === 'sftp';
     if (sftpActive) ensureSftpPane();
+    const notesActive = !!av && av.kind === 'notes';
+    if (notesActive) ensureNotesPane();
     for (const [sid, pane] of viewPanes) pane.root.classList.toggle('hidden', sid !== state.activeSid);
     const p = project();
-    $('#empty').classList.toggle('hidden', !!activeTerm() || !!pg || dbActive || gitActive || sftpActive);
+    $('#empty').classList.toggle('hidden', !!activeTerm() || !!pg || !!av);
     $('#st-project').textContent = p ? p.name : '—';
     const t = activeTerm();
-    $('#st-cwd').textContent = sftpActive ? sftpStatusLine() : gitActive ? (state.git.repo ? tilde(state.git.repo) : 'Git') : dbActive ? dbStatusLine() : pg ? pg.url : t ? tilde((t.info.meta || {}).cwd || '') : p ? p.folders.map(tilde).join('  +  ') : '';
+    $('#st-cwd').textContent = notesActive ? tilde(notesFile() || '') : sftpActive ? sftpStatusLine() : gitActive ? (state.git.repo ? tilde(state.git.repo) : 'Git') : dbActive ? dbStatusLine() : pg ? pg.url : t ? tilde((t.info.meta || {}).cwd || '') : p ? p.folders.map(tilde).join('  +  ') : '';
     renderStatusActions();
   }
 
@@ -2394,6 +2416,268 @@
         : [h('p.muted.git-hint', 'Aquí aparece cada comando git que ejecutes desde esta vista, con su salida. Así ves exactamente qué hace cada botón.')];
     }
     p.right.replaceChildren(...body);
+  }
+
+  // ---------- notas: NOTES.md de la carpeta del proyecto (vista por proyecto) ----------
+  // Se edita a mano (autoguardado) o desde una IA con la skill frap-notes ("guarda esto en notas" / "lee las notas").
+  // Si la carpeta está en un repo git, un switch agrega/quita "/NOTES.md" del .gitignore de esa carpeta.
+  let notesPane = null; // panel de la vista Notas enlazada
+  let notesSkill = null; // {claude, codex}: ¿skill frap-notes instalada?
+  const NOTES_IGNORE = '/NOTES.md';
+  const notesFile = (p = project()) => (p && p.folders[0] ? `${p.folders[0].replace(/\/+$/, '')}/NOTES.md` : null);
+  const notesDir = (p = project()) => (p && p.folders[0] ? p.folders[0].replace(/\/+$/, '') : null);
+
+  /** Abre (o enfoca) las notas del proyecto activo. */
+  function openNotesView() {
+    if (!needProject()) return;
+    const { fresh } = showView('notes');
+    if (!fresh) notesLoad();
+    requestAnimationFrame(() => { if (notesPane && notesPane.exists) notesPane.ta.focus(); });
+  }
+
+  function ensureNotesPane() {
+    if (notesPane) return notesPane;
+    const ignoreBtn = h('button', { class: 'switch on', role: 'switch', onclick: () => notesSetIgnore(state.notes.gitignore === false) });
+    const ignoreInfo = h('span.muted.notes-ig-info');
+    const ignore = h('label.notes-ig.hidden', { title: 'Agrega "/NOTES.md" al .gitignore de esta carpeta para que las notas no se suban al repo' },
+      ignoreBtn, h('span', 'git-ignore'), ignoreInfo);
+    const pathEl = h('span.mono.muted.notes-path');
+    const status = h('span.muted.notes-status');
+    const skillBtn = h('button.mini', { onclick: () => notesInstallSkill(true) });
+    const ta = h('textarea.notes-ta', { spellcheck: 'true', placeholder: '# Notas\n\nEscribe aquí, o pídele a una IA "guarda esto en notas".' });
+    const autosave = debounce(() => notesSave(false), 800);
+    ta.addEventListener('input', () => { renderNotesStatus(); autosave(); });
+    ta.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); notesSave(true); }
+      else if (e.key === 'Tab') { e.preventDefault(); ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end'); ta.dispatchEvent(new Event('input')); }
+    });
+    const banner = h('div.notes-banner.hidden');
+    const empty = h('div.notes-empty.hidden');
+    const root = h('div.notes-pane.hidden',
+      h('div.db-bar.notes-bar',
+        ignore,
+        pathEl,
+        h('span.grow'),
+        status,
+        skillBtn,
+        h('button.icon', { title: 'Recargar del disco', onclick: () => notesLoad() }, '⟳'),
+        h('button.primary.notes-save', { title: 'Guardar (Ctrl+S). También se guarda solo al dejar de escribir.', onclick: () => notesSave(true) }, '💾 Guardar')),
+      banner,
+      empty,
+      ta);
+    $('#term-host').append(root);
+    notesPane = { root, ignore, ignoreBtn, ignoreInfo, pathEl, status, skillBtn, ta, banner, empty, file: null, exists: false, saved: '', mtime: 0, savedAt: 0, conflict: null, repo: null, ignored: false, tracked: false };
+    viewPanes.set(bound.notes, notesPane);
+    notesLoad();
+    return notesPane;
+  }
+
+  /** Lee NOTES.md (y el estado de git/skill). Sin cambios locales pendientes, pisa el editor. */
+  async function notesLoad() {
+    const p = notesPane;
+    if (!p) return;
+    p.file = notesFile();
+    p.conflict = null;
+    if (!p.file || !Bridge.ready) { renderNotes(); return; }
+    try {
+      const r = await notesReadDisk(p.file);
+      if (notesPane !== p) return;
+      p.exists = !!r;
+      p.saved = r ? r.content : '';
+      p.mtime = r ? r.mtime : 0;
+      p.ta.value = p.saved;
+    } catch (e) { toast(e.message, 'err'); }
+    renderNotes();
+    notesGitInfo();
+    if (!notesSkill) Bridge.call('notes.skill').then((x) => { notesSkill = x; renderNotes(); }).catch(() => {});
+  }
+  /** {content, mtime} o null si no existe. */
+  async function notesReadDisk(file) {
+    if (!(await Bridge.call('fs.exists', { path: file }))) return null;
+    return Bridge.call('fs.read', { path: file });
+  }
+
+  async function notesCreate() {
+    const p = notesPane;
+    const pr = project();
+    if (!p || !pr) return;
+    try {
+      const r = await Bridge.call('fs.write', { path: p.file, content: `# Notas — ${pr.name}\n\n` });
+      toast(`Creado ${tilde(r.path)}`, 'ok');
+      await notesLoad();
+      await notesApplyIgnore();
+      notesInstallSkill(false);
+      p.ta.focus();
+      p.ta.setSelectionRange(p.ta.value.length, p.ta.value.length);
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  /** Guarda si hay cambios. Si el archivo cambió en disco desde que se leyó, no pisa: muestra el aviso. */
+  async function notesSave(explicit) {
+    const p = notesPane;
+    if (!p || !p.exists || !p.file) return;
+    const content = p.ta.value;
+    if (content === p.saved && !p.conflict) { if (explicit) toast('Sin cambios', 'ok'); return; }
+    if (p.conflict && !explicit) return; // se decide en el aviso
+    try {
+      if (!p.conflict) {
+        const disk = await notesReadDisk(p.file);
+        if (disk && disk.mtime !== p.mtime && disk.content !== p.saved) { p.conflict = disk; renderNotes(); return; }
+      }
+      const r = await Bridge.call('fs.write', { path: p.file, content });
+      p.saved = content;
+      p.mtime = r.mtime;
+      p.savedAt = Date.now();
+      p.conflict = null;
+      if (notesPane === p) { renderNotes(); notesApplyIgnore(); }
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  /** Refresco mientras la vista está visible: trae lo que escribió una IA (si no hay cambios locales). */
+  async function notesPoll() {
+    const p = notesPane;
+    if (!p || !p.file || viewKind(state.activeSid) !== 'notes' || document.hidden || !Bridge.ready || modalClose) return;
+    try {
+      const disk = await notesReadDisk(p.file);
+      if (notesPane !== p) return;
+      const exists = !!disk;
+      if (exists === p.exists && (!disk || disk.mtime === p.mtime)) return;
+      const dirty = p.ta.value !== p.saved;
+      if (!exists) { if (!dirty) { p.exists = false; p.saved = ''; p.mtime = 0; renderNotes(); } return; }
+      if (disk.content === p.saved) { p.mtime = disk.mtime; return; }
+      if (dirty && p.exists) { p.conflict = disk; renderNotes(); return; }
+      // sin cambios locales: se carga lo del disco conservando el cursor y el scroll
+      const { selectionStart: a, selectionEnd: b } = p.ta;
+      const top = p.ta.scrollTop;
+      const created = !p.exists;
+      p.exists = true;
+      p.saved = disk.content;
+      p.mtime = disk.mtime;
+      p.ta.value = disk.content;
+      p.ta.setSelectionRange(Math.min(a, disk.content.length), Math.min(b, disk.content.length));
+      p.ta.scrollTop = top;
+      renderNotes();
+      if (created) notesGitInfo();
+      toast('Notas actualizadas desde el disco', 'ok');
+    } catch (_) { /* reintenta en el próximo ciclo */ }
+  }
+  setInterval(notesPoll, 3000);
+  window.addEventListener('focus', notesPoll);
+
+  // ----- git-ignore -----
+  /** ¿La carpeta está en un repo? ¿NOTES.md está en su .gitignore? ¿Ya está versionado? */
+  async function notesGitInfo() {
+    const p = notesPane;
+    const dir = notesDir();
+    if (!p || !dir || !Bridge.ready) return;
+    try {
+      const top = await Bridge.call('git.run', { cwd: dir, args: ['rev-parse', '--show-toplevel'] });
+      if (notesPane !== p) return;
+      p.repo = top.code === 0 ? top.stdout.trim() : null;
+      p.ignored = p.repo ? (await notesIgnoreLines()).some(isNotesIgnoreLine) : false;
+      p.tracked = p.repo && p.exists ? (await Bridge.call('git.run', { cwd: dir, args: ['ls-files', '--error-unmatch', '--', 'NOTES.md'] })).code === 0 : false;
+    } catch (_) { p.repo = null; }
+    if (notesPane === p) renderNotes();
+  }
+  const isNotesIgnoreLine = (l) => ['/NOTES.md', 'NOTES.md'].includes(l.trim());
+  async function notesIgnoreLines() {
+    const gi = `${notesDir()}/.gitignore`;
+    const r = await notesReadDisk(gi);
+    return r ? r.content.split('\n') : [];
+  }
+  /** Agrega (add) o quita la línea de NOTES.md en el .gitignore de la carpeta. Devuelve si cambió. */
+  async function notesWriteIgnore(add) {
+    const gi = `${notesDir()}/.gitignore`;
+    const r = await notesReadDisk(gi);
+    let text = r ? r.content : '';
+    const lines = text.split('\n');
+    const has = lines.some(isNotesIgnoreLine);
+    if (add && !has) text = `${text}${text && !text.endsWith('\n') ? '\n' : ''}${NOTES_IGNORE}\n`;
+    else if (!add && has) text = lines.filter((l) => !isNotesIgnoreLine(l)).join('\n');
+    else return false;
+    await Bridge.call('fs.write', { path: gi, content: text });
+    return true;
+  }
+  /** Tras crear o guardar: si el switch está activo y hay repo, se asegura la línea en el .gitignore. */
+  async function notesApplyIgnore() {
+    const p = notesPane;
+    if (!p || state.notes.gitignore === false) return;
+    if (!p.repo) await notesGitInfo();
+    if (!p.repo || p.ignored) return;
+    try {
+      if (await notesWriteIgnore(true)) toast(`NOTES.md agregado a ${tilde(notesDir())}/.gitignore`, 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+    notesGitInfo();
+  }
+  async function notesSetIgnore(on) {
+    state.notes.gitignore = on;
+    save();
+    renderNotes();
+    try {
+      const changed = await notesWriteIgnore(on);
+      if (changed) toast(on ? 'NOTES.md agregado al .gitignore' : 'NOTES.md quitado del .gitignore', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+    notesGitInfo();
+  }
+
+  // ----- skill para las IA -----
+  async function notesInstallSkill(explicit) {
+    try {
+      if (!explicit) {
+        notesSkill = notesSkill || await Bridge.call('notes.skill');
+        if (notesSkill.claude && notesSkill.codex) return;
+      }
+      const files = await Bridge.call('notes.installSkill', { tools: ['claude', 'codex'] });
+      notesSkill = { claude: true, codex: true };
+      toast(`Skill frap-notes instalada (${files.map(tilde).join(', ')}): dile a la IA "guarda esto en notas" o "lee las notas"`, 'ok');
+      renderNotes();
+      loadConfig(true);
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  // ----- render -----
+  function renderNotes() {
+    const p = notesPane;
+    if (!p) return;
+    p.pathEl.textContent = p.file ? tilde(p.file) : '';
+    p.pathEl.title = p.file || '';
+    const on = state.notes.gitignore !== false;
+    p.ignore.classList.toggle('hidden', !p.repo || !p.exists);
+    p.ignoreBtn.className = `switch ${on ? 'on' : 'off'}`;
+    p.ignoreBtn.setAttribute('aria-checked', String(on));
+    p.ignoreInfo.textContent = !on ? '' : p.tracked ? '⚠ ya versionado' : p.ignored ? '✓' : '';
+    p.ignoreInfo.title = p.tracked ? 'NOTES.md ya está en el repo: el .gitignore no lo saca. Para dejar de versionarlo: git rm --cached NOTES.md' : '';
+    const sk = notesSkill && notesSkill.claude && notesSkill.codex;
+    p.skillBtn.textContent = sk ? '🤖 IA ✓' : '🤖 Activar IA';
+    p.skillBtn.title = sk
+      ? 'Skill frap-notes instalada para claude y codex: diles "guarda esto en notas" o "lee las notas" (también en Prompts). Clic: reinstalar.'
+      : 'Instala la skill frap-notes en ~/.claude/skills y ~/.codex/skills para que la IA entienda "guarda esto en notas" y "lee las notas"';
+    p.ta.classList.toggle('hidden', !p.exists);
+    p.empty.classList.toggle('hidden', p.exists);
+    p.root.querySelector('.notes-save').classList.toggle('hidden', !p.exists);
+    if (!p.exists) {
+      p.empty.replaceChildren(
+        h('div.notes-empty-ico', kindIcon('notes')),
+        h('p', 'Esta carpeta todavía no tiene NOTES.md.'),
+        h('p.muted', 'Ahí van el contexto, las decisiones y los pendientes del proyecto. Lo puedes editar aquí o pedirle a una IA "guarda esto en notas".'),
+        h('button.primary', { onclick: notesCreate, disabled: !p.file || !Bridge.ready }, '＋ Crear NOTES.md'));
+    }
+    if (p.conflict) {
+      p.banner.replaceChildren(
+        h('span', '⚠ NOTES.md cambió en el disco (¿lo editó una IA?) mientras tenías cambios sin guardar.'),
+        h('span.grow'),
+        h('button.mini', { onclick: () => { p.ta.value = p.conflict.content; p.saved = p.conflict.content; p.mtime = p.conflict.mtime; p.conflict = null; renderNotes(); } }, 'Usar la del disco'),
+        h('button.mini.danger', { onclick: () => notesSave(true) }, 'Guardar la mía'));
+    }
+    p.banner.classList.toggle('hidden', !p.conflict);
+    renderNotesStatus();
+  }
+  function renderNotesStatus() {
+    const p = notesPane;
+    if (!p) return;
+    const dirty = p.exists && p.ta.value !== p.saved;
+    p.status.textContent = !p.exists ? '' : p.conflict ? 'conflicto' : dirty ? 'sin guardar…' : p.savedAt ? `guardado ${new Date(p.savedAt).toLocaleTimeString([], { timeStyle: 'short' })}` : 'guardado';
+    p.status.classList.toggle('dirty', dirty || !!p.conflict);
   }
 
   // ---------- bases de datos: conexiones (.env del bridge) + pestaña DB en el centro ----------
@@ -4438,7 +4722,7 @@
           h('div.field', { style: 'width:150px' }, h('label', 'flag carpeta extra'), l.add))),
         h('h4', { style: 'margin:8px 0 0' }, 'Atajos'),
         h('p.muted.mono', { style: 'margin:0;font-size:11px;white-space:pre-line' },
-          'Alt+1…9  ir a pestaña\nAlt+Shift+T  nueva shell   ·   Alt+Shift+C/X/O  claude/codex/opencode   ·   Alt+Shift+D  DB   ·   Alt+Shift+G  Git   ·   Alt+Shift+M  música ⏯\nAlt+Shift+W  cerrar pestaña   ·   Alt+Shift+B / P  ocultar paneles\nCtrl+Shift+C  copiar selección   ·   Ctrl+Shift+V  pegar'),
+          'Alt+1…9  ir a pestaña\nAlt+Shift+T  nueva shell   ·   Alt+Shift+C/X/O  claude/codex/opencode   ·   Alt+Shift+D  DB   ·   Alt+Shift+G  Git   ·   Alt+Shift+F  Archivos   ·   Alt+Shift+N  Notas   ·   Alt+Shift+M  música ⏯\nAlt+Shift+W  cerrar pestaña   ·   Alt+Shift+B / P  ocultar paneles\nCtrl+Shift+C  copiar selección   ·   Ctrl+Shift+V  pegar'),
       ],
       foot: [h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
     });
@@ -4450,7 +4734,7 @@
   function isAppShortcut(e) {
     if (!e.altKey || e.ctrlKey || e.metaKey) return false;
     if (!e.shiftKey && /^Digit[1-9]$/.test(e.code)) return true;
-    return e.shiftKey && ['KeyT', 'KeyW', 'KeyB', 'KeyP', 'KeyC', 'KeyX', 'KeyO', 'KeyD', 'KeyM', 'KeyG', 'KeyF'].includes(e.code);
+    return e.shiftKey && ['KeyT', 'KeyW', 'KeyB', 'KeyP', 'KeyC', 'KeyX', 'KeyO', 'KeyD', 'KeyM', 'KeyG', 'KeyF', 'KeyN'].includes(e.code);
   }
   document.addEventListener('keydown', (e) => {
     if (!$('#alarm').classList.contains('hidden')) return; // el aviso bloqueante tiene prioridad
@@ -4470,6 +4754,7 @@
       case 'KeyD': openDbView(); break;
       case 'KeyG': openGitView(); break;
       case 'KeyF': openSftpView(); break;
+      case 'KeyN': openNotesView(); break;
       case 'KeyM': togglePlay(); break;
       case 'KeyW':
         if (activeView()) closeView(activeView());
@@ -4795,7 +5080,7 @@
   $('#btn-split').onclick = cycleSplit;
   $('#toggle-left').onclick = () => togglePanel('left');
   $('#toggle-right').onclick = () => togglePanel('right');
-  for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : b.dataset.launch === 'git' ? openGitView() : b.dataset.launch === 'ssh' ? pickSsh() : b.dataset.launch === 'sftp' ? openSftpView() : launch(b.dataset.launch));
+  for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : b.dataset.launch === 'git' ? openGitView() : b.dataset.launch === 'ssh' ? pickSsh() : b.dataset.launch === 'sftp' ? openSftpView() : b.dataset.launch === 'notes' ? openNotesView() : launch(b.dataset.launch));
   for (const b of $$('#rtabs button')) b.onclick = () => setRtab(b.dataset.rtab);
   $('#token-input').value = conn.token;
   $('#port-input').value = conn.port;
@@ -4815,7 +5100,7 @@
       const remote = await Bridge.call('state.get');
       if (remote && (remote.savedAt || 0) > (state.savedAt || 0)) {
         state = mergeState(DEFAULT_STATE(), remote);
-        bound = { git: null, db: null, sftp: null }; // las vistas se vuelven a enlazar con los datos nuevos
+        bound = { git: null, db: null, sftp: null, notes: null }; // las vistas se vuelven a enlazar con los datos nuevos
         storeSet('frap.state', state);
         applyPanels();
         for (const b of $$('#rtabs button')) b.classList.toggle('active', b.dataset.rtab === state.ui.rtab);
