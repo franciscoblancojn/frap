@@ -2079,8 +2079,28 @@
       files.map((f) => fileRow(f, area)));
   }
 
+  /**
+   * Re-renderiza sin robar el foco: replaceChildren saca del DOM los inputs reutilizados
+   * (mensaje del commit, nueva rama) y el navegador les quita el foco. Se restaura foco, cursor y scroll.
+   */
+  function keepFocus(container, fn) {
+    const el = document.activeElement;
+    const inside = el && el !== document.body && container.contains(el);
+    const sel = inside && typeof el.selectionStart === 'number' ? [el.selectionStart, el.selectionEnd, el.selectionDirection] : null;
+    const scroll = container.scrollTop;
+    fn();
+    container.scrollTop = scroll;
+    if (inside && el.isConnected && document.activeElement !== el) {
+      el.focus({ preventScroll: true });
+      if (sel) { try { el.setSelectionRange(...sel); } catch (_) { /* inputs sin selección */ } }
+    }
+  }
+
   function renderGit() {
     if (!gitPane) return;
+    keepFocus(gitPane.root, renderGitInner);
+  }
+  function renderGitInner() {
     const p = gitPane;
     const st = Git.status;
     p.repo.replaceChildren(...(Git.repos.length ? Git.repos.map((r) => h('option', { value: r, title: tilde(r) }, `📁 ${basename(r)}`)) : [h('option', { value: '' }, 'Sin repositorio')]));
