@@ -534,6 +534,34 @@ function dbNormalize(input, existing) {
 // ---------- ssh ----------
 const SSH_ENV = path.join(FRAP_HOME, 'ssh.env');
 const SSH_CLI = path.join(__dirname, 'frap-ssh.js');
+// ---------- voz: transcripción local con whisper.cpp (módulo de voz del panel derecho) ----------
+// La UI graba, arma un WAV 16 kHz mono y lo manda en base64; el bridge lo escribe en un tmpdir propio (0700),
+// corre whisper.cpp y lo borra. Sin red: el binario y el modelo viven en FRAP_HOME/whisper
+// (scripts/install-whisper.sh) o se indican con FRAP_WHISPER_BIN / FRAP_WHISPER_MODEL.
+const WHISPER_DIR = path.join(FRAP_HOME, 'whisper');
+const WHISPER_INSTALL = `bash ${path.resolve(__dirname, '..', 'scripts', 'install-whisper.sh')}`;
+const VOICE_MAX_BYTES = 20 * 1024 * 1024; // ≈ 10 min de WAV 16 kHz mono 16 bits
+function whisperBin() {
+  if (process.env.FRAP_WHISPER_BIN) return process.env.FRAP_WHISPER_BIN;
+  const local = path.join(WHISPER_DIR, 'whisper-cli');
+  return exists(local) ? local : which('whisper-cli');
+}
+function whisperModel() {
+  if (process.env.FRAP_WHISPER_MODEL) return process.env.FRAP_WHISPER_MODEL;
+  let files = [];
+  try { files = fs.readdirSync(WHISPER_DIR).filter((f) => /^ggml-[\w.-]+\.bin$/.test(f)); } catch (_) { return null; }
+  const pref = ['small', 'base', 'medium', 'tiny'];
+  files.sort((a, b) => {
+    const r = (f) => { const i = pref.findIndex((m) => f.startsWith(`ggml-${m}`)); return i < 0 ? 99 : i; };
+    return r(a) - r(b) || a.localeCompare(b);
+  });
+  return files.length ? path.join(WHISPER_DIR, files[0]) : null;
+}
+/** Texto de whisper.cpp con -nt: una línea por segmento; fuera las marcas como [BLANK_AUDIO] o [Música]. */
+function cleanTranscript(out) {
+  return String(out).split('\n').map((l) => l.replace(/\[[^\]]*\]/g, '').trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+}
+
 // skill de notas: la IA guarda/lee contexto en NOTES.md de la carpeta (vista "Notas" de FRAP)
 const NOTES_SKILL_DIRS = {
   claude: () => path.join(HOME, '.claude', 'skills', 'frap-notes'),
@@ -994,6 +1022,39 @@ const ops = {
     if (r === '/') throw new Error('No se puede borrar la raíz');
     await sftpRun(id, [`${dir ? 'rmdir' : 'rm'} ${sftp.quote(r)}`]);
     return true;
+  },
+  /** Motor de voz: {ready, bin, model, dir, install} (install = comando para instalarlo). */
+  'voice.status': () => {
+    const bin = whisperBin();
+    const model = whisperModel();
+    return { ready: !!(bin && model), bin, model, dir: WHISPER_DIR, install: WHISPER_INSTALL };
+  },
+  /** Transcribe un WAV (base64). lang: "es", "en"… o "auto". Devuelve {text, ms}. */
+  'voice.transcribe': ({ audio, lang = 'es' } = {}) => {
+    const bin = whisperBin();
+    const model = whisperModel();
+    if (!bin || !model) throw new Error(`Falta whisper.cpp o su modelo. Instálalo con: ${WHISPER_INSTALL}`);
+    if (typeof audio !== 'string' || !audio) throw new Error('Sin audio');
+    if (!/^(auto|[a-z]{2})$/.test(String(lang))) throw new Error('Idioma inválido');
+    const buf = Buffer.from(audio, 'base64');
+    if (buf.length > VOICE_MAX_BYTES) throw new Error('Audio demasiado largo (máximo ~10 min)');
+    if (buf.length < 44 || buf.toString('latin1', 0, 4) !== 'RIFF' || buf.toString('latin1', 8, 12) !== 'WAVE') throw new Error('El audio no es un WAV válido');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'frap-voice-'));
+    const file = path.join(dir, 'voz.wav');
+    fs.writeFileSync(file, buf, { mode: 0o600 });
+    const threads = String(Math.max(1, Math.min(4, Math.floor((os.cpus() || []).length / 2) || 1)));
+    const started = Date.now();
+    return new Promise((resolve, reject) => {
+      execFile(bin, ['-m', model, '-f', file, '-l', String(lang), '-nt', '-np', '-t', threads], { timeout: 180000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+        fs.rmSync(dir, { recursive: true, force: true });
+        if (err) {
+          const msg = err.killed ? 'La transcripción tardó demasiado' : (String(stderr).trim().split('\n').pop() || err.message);
+          reject(new Error(`whisper.cpp: ${msg}`));
+          return;
+        }
+        resolve({ text: cleanTranscript(stdout), ms: Date.now() - started });
+      });
+    });
   },
   /** ¿Está instalada la skill frap-notes? {claude, codex} */
   'notes.skill': () => Object.fromEntries(Object.entries(NOTES_SKILL_DIRS).map(([k, dir]) => [k, exists(path.join(dir(), 'SKILL.md'))])),

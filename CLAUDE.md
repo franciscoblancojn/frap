@@ -39,6 +39,7 @@ tests/bridge.test.js   tests de integración del bridge (node:test)
 tests/db.test.js       clasificador, parsers, .env, motores y CLI
 tests/ssh.test.js      .env, argumentos, askpass, CLI frap-ssh y sftp (con un ssh falso; sftp contra el sftp-server local si existe)
 scripts/check.js       chequeos estáticos + reglas de arriba
+scripts/install-whisper.sh  instala whisper.cpp + modelo en FRAP_HOME/whisper (módulo de voz, transcripción local)
 docs/                  arquitectura, protocolo y roadmap
 ```
 

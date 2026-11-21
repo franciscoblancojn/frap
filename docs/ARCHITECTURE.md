@@ -53,6 +53,17 @@ navegador (file://src/index.html)                     máquina local
   - Se instala sola al crear el primer `NOTES.md`; el botón "🤖 IA" la reinstala.
   - Los prompts "Guardar en notas" y "Leer notas" se agregan una sola vez también a los estados existentes (`state.seeded`).
 
+## Voz (dictado a las IA)
+
+- Es un módulo del panel derecho (`#voice-dock`), justo encima del reproductor; si el reproductor no está, queda abajo del todo. Solo funciona si la ventana activa es una terminal de claude, codex u opencode. Si no, avisa "Ventana no compatible con el sistema de voz" y no graba.
+- **Grabación:** el navegador graba con `MediaRecorder`. Al detener (botón, o Alt+Shift+V; Esc descarta), decodifica el audio y lo remuestrea con `OfflineAudioContext` a un WAV PCM de 16 kHz mono, sin ffmpeg, y lo manda en base64 a `voice.transcribe`.
+- **Transcripción:** el bridge escribe el WAV en un tmpdir propio (`mkdtemp`, archivo 0600), corre whisper.cpp (`-l <idioma> -nt -np -t <hilos>`) y borra el tmpdir. Limpia las marcas como `[BLANK_AUDIO]`. Todo es local: no usa red al transcribir.
+- **Pegado:** el texto va a la terminal de IA activa al terminar, como `sendToTerminal(text, false)`, sin Enter, para revisarlo antes de enviarlo. Si al terminar ya no estás en una terminal de IA, el texto queda en el módulo para copiarlo o pegarlo después.
+- **Motor:** `scripts/install-whisper.sh [tiny|base|small|medium]` compila whisper.cpp v1.7.2 con make/g++ (no necesita cmake) y baja el modelo. Todo queda en `FRAP_HOME/whisper` (`whisper-cli`, `ggml-*.bin`).
+  - El binario se busca en `FRAP_WHISPER_BIN`, luego en `FRAP_HOME/whisper/whisper-cli` y luego `whisper-cli` en el PATH.
+  - El modelo se busca en `FRAP_WHISPER_MODEL` y, si no, en esa carpeta, con preferencia small > base > medium > tiny.
+- La Web Speech API no se usa: no existe en Brave ni en Chromium y manda el audio a Google.
+
 ## Rutas clicables
 
 - Cada xterm registra un *link provider* (`pathLinkProvider`). Por cada fila, `logicalLine()` une las filas partidas (`isWrapped`) y arma un mapa índice → celda que respeta los caracteres anchos (emoji, CJK). `pathCandidates()` busca rutas con un `:línea:col` opcional, y `paths.check` filtra las que existen, con una caché de 15 s.
@@ -163,6 +174,8 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `sftp.rename` | `{id, from, to}` | `true` |
 | `sftp.remove` | `{id, path, dir?}` | `true`; archivo (`rm`) o carpeta vacía (`rmdir`), nunca recursivo ni la raíz |
 | `ssh.installSkill` | `{tools}` | escribe la skill `frap-ssh` en `~/.claude/skills` y `~/.codex/skills` |
+| `voice.status` | — | `{ready, bin, model, dir, install}` (install = comando para instalar whisper.cpp) |
+| `voice.transcribe` | `{audio, lang?}` | `{text, ms}`; `audio` = WAV en base64 (máx. ~10 min), `lang` = `es`, `en`… o `auto` |
 | `notes.skill` | — | `{claude, codex}`: si la skill `frap-notes` está instalada |
 | `notes.installSkill` | `{tools}` | escribe la skill `frap-notes` (guardar/leer `NOTES.md`) en `~/.claude/skills` y `~/.codex/skills` |
 | `export.creds` | `{db: ids, ssh: ids, passphrase?}` | `{db, ssh, secrets?}` sin contraseñas; con `passphrase` (≥6) van en `secrets` cifradas (scrypt + AES-256-GCM) |

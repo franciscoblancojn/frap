@@ -593,6 +593,49 @@ test('notes.*: skill frap-notes (estado e instalación) y NOTES.md con fs.write/
   await assert.rejects(client.call('fs.write', { path: '/etc/NOTES.md', content: 'x' }), /fuera/);
 });
 
+test('voice.*: estado, transcripción con whisper.cpp (falso), limpieza del audio y validaciones', async () => {
+  // sin binario ni modelo: no está listo y explica cómo instalarlo
+  const st0 = await client.call('voice.status');
+  assert.equal(st0.ready, false);
+  assert.match(st0.install, /install-whisper\.sh/);
+  assert.equal(st0.dir, path.join(root, 'cfg', 'whisper'));
+  // WAV mínimo: cabecera de 44 bytes + 0,1 s de silencio a 16 kHz mono 16 bits
+  const wav = Buffer.alloc(44 + 3200);
+  wav.write('RIFF', 0, 'latin1'); wav.writeUInt32LE(36 + 3200, 4); wav.write('WAVE', 8, 'latin1');
+  wav.write('fmt ', 12, 'latin1'); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(16000, 24); wav.writeUInt32LE(32000, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
+  wav.write('data', 36, 'latin1'); wav.writeUInt32LE(3200, 40);
+  const audio = wav.toString('base64');
+  await assert.rejects(client.call('voice.transcribe', { audio }), /Falta whisper/);
+
+  // whisper-cli falso: deja sus argumentos y si el archivo era un WAV, y responde como whisper.cpp con -nt
+  const log = path.join(root, 'whisper.log');
+  fs.writeFileSync(path.join(root, 'fakebin', 'whisper-cli'), `#!/bin/sh
+echo "$*" > "${log}"
+while [ $# -gt 0 ]; do [ "$1" = -f ] && head -c 4 "$2" >> "${log}"; shift; done
+printf ' Hola mundo.\\n [BLANK_AUDIO]\\n Segunda línea.\\n'
+`, { mode: 0o755 });
+  fs.mkdirSync(path.join(root, 'cfg', 'whisper'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'cfg', 'whisper', 'ggml-tiny.bin'), 'x');
+  fs.writeFileSync(path.join(root, 'cfg', 'whisper', 'ggml-base.bin'), 'x');
+  const st = await client.call('voice.status');
+  assert.equal(st.ready, true);
+  assert.equal(st.model, path.join(root, 'cfg', 'whisper', 'ggml-base.bin')); // base antes que tiny
+
+  const r = await client.call('voice.transcribe', { audio, lang: 'es' });
+  assert.equal(r.text, 'Hola mundo. Segunda línea.');
+  const args = fs.readFileSync(log, 'utf8');
+  assert.match(args, /-m \S+ggml-base\.bin -f (\S+voz\.wav) -l es -nt -np -t \d/);
+  assert.match(args, /RIFF/); // recibió el WAV
+  const tmpWav = args.match(/-f (\S+voz\.wav)/)[1];
+  assert.equal(fs.existsSync(path.dirname(tmpWav)), false); // el audio se borra al terminar
+  assert.equal((await client.call('voice.transcribe', { audio, lang: 'auto' })).text, 'Hola mundo. Segunda línea.');
+
+  await assert.rejects(client.call('voice.transcribe', { audio, lang: 'es; rm -rf /' }), /Idioma inválido/);
+  await assert.rejects(client.call('voice.transcribe', { audio: Buffer.from('no es audio').toString('base64') }), /WAV/);
+  await assert.rejects(client.call('voice.transcribe', {}), /Sin audio/);
+});
+
 test('avisos de agentes: $FRAP_NOTIFY → evento notice, sessions.list lo incluye y session.seen lo borra', async () => {
   const s = await client.call('session.create', {
     cwd: root, cmd: ['/bin/sh', '-c', 'echo "waiting Claude espera tu respuesta" >> "$FRAP_NOTIFY"; sleep 0.3; echo done >> "$FRAP_NOTIFY"; sleep 5'],

@@ -121,6 +121,7 @@
     git: { repo: null, tab: 'diff' }, // datos de la vista Git enlazada
     sftp: { hostId: null, local: null, remote: {}, hidden: false }, // datos de la vista Archivos (SFTP) enlazada; remote = última ruta por servidor
     notes: { gitignore: true }, // datos de la vista Notas enlazada: gitignore = agregar NOTES.md al .gitignore
+    voice: { lang: 'es' }, // módulo de voz (panel derecho): idioma para whisper.cpp ("auto" = detectar)
     // temporizadores: [{id, icon, title, desc, kind: 'repeat'|'once', every (seg), mode: 'toast'|'modal', sound, enabled, nextAt, startedAt}]
     timers: [],
     settings: {
@@ -151,6 +152,7 @@
       db: { ...base.db, ...(saved.db || {}) },
       music: { ...base.music, ...(saved.music || {}) },
       git: { ...base.git, ...(saved.git || {}) },
+      voice: { ...base.voice, ...(saved.voice || {}) },
       sftp: { ...base.sftp, ...(saved.sftp || {}), remote: { ...((saved.sftp || {}).remote || {}) } },
       seeded: Array.isArray(saved.seeded) ? saved.seeded : [], // no el del estado por defecto: si no, nunca se siembra
     });
@@ -387,7 +389,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -1124,6 +1126,14 @@
     save();
     renderProjects();
   }
+  /** Clic en el nombre: colapsada → se abre (y se selecciona); abierta y actual → se colapsa; otra → solo se selecciona. */
+  function clickProjectName(p) {
+    const wasActive = p.id === state.activeProject;
+    if (p.collapsed) { p.collapsed = false; save(); }
+    else if (wasActive) { toggleCollapse(p); return; }
+    if (wasActive) renderProjects();
+    else selectProject(p.id);
+  }
 
   function renderProjects() {
     if (dragging) { dragging.pendingRender = true; return; } // no romper el arrastre en curso
@@ -1145,7 +1155,10 @@
       root.append(h('div.project', { class: cls, dataset: { drag: 'project', key: p.id }, ...dragEvents() },
         h('div.project-head', { onclick: () => selectProject(p.id), ondblclick: () => renameProject(p) },
           dragHandle(),
-          h('span.pname.grow', { title: p.folders.join('\n') }, p.name),
+          h('span.pname.grow', {
+            title: `${p.folders.join('\n')}\nClic: ${collapsed ? 'abrir' : active ? 'colapsar' : 'seleccionar'} · doble clic: editar`,
+            onclick: (e) => { e.stopPropagation(); if (e.detail <= 1) clickProjectName(p); }, // el 2.º clic del doble clic (editar) no cuenta
+          }, p.name),
           sum ? h(`span.notice.${sum.kind}`, {
             title: `${sum.list.map((t) => `${termTitle(t)}: ${t.info.notice.kind === 'done' ? 'terminó' : 'espera tu respuesta'}`).join('\n')}\nClic: abrir`,
             onclick: stop(() => activate(sum.list[0].sid)),
@@ -1393,6 +1406,7 @@
     renderPanes();
     updateTitle();
     snapshotTerms();
+    renderVoice();
   }
 
   // ---------- terminales tras apagar o reiniciar el equipo ----------
@@ -2628,6 +2642,194 @@
         : [h('p.muted.git-hint', 'Aquí aparece cada comando git que ejecutes desde esta vista, con su salida. Así ves exactamente qué hace cada botón.')];
     }
     p.right.replaceChildren(...body);
+  }
+
+  // ---------- voz: dictar a claude / codex / opencode (panel derecho, sobre el reproductor) ----------
+  // Graba con el micrófono, arma un WAV 16 kHz mono en el navegador (sin ffmpeg) y el bridge lo transcribe
+  // con whisper.cpp local. El texto se pega en la terminal de IA activa, sin Enter, para revisarlo antes de enviar.
+  const VOICE_KINDS = ['claude', 'codex', 'opencode'];
+  const VOICE_MAX_MS = 5 * 60 * 1000;
+  const VOICE_LANGS = { es: 'Español', en: 'English', auto: 'Auto' };
+  const voice = { rec: null, stream: null, ctx: null, analyser: null, chunks: [], started: 0, timer: null, busy: false, status: null, last: '', cancel: false };
+  const voiceTarget = () => { const t = activeTerm(); return t && t.info.alive !== false && VOICE_KINDS.includes(termKind(t)) ? t : null; };
+  const VOICE_INCOMPATIBLE = 'Ventana no compatible con el sistema de voz: abre una terminal de claude, codex u opencode.';
+
+  async function voiceStatus(force) {
+    if (voice.status && voice.status.ready && !force) return voice.status;
+    voice.status = await Bridge.call('voice.status');
+    return voice.status;
+  }
+  function voiceInstallHelp(st) {
+    openModal({
+      title: 'Instalar el motor de voz (whisper.cpp)',
+      body: [
+        h('p', { style: 'margin-top:0' }, 'La voz se transcribe en tu equipo con whisper.cpp: privado y sin internet. Falta instalarlo (compila en 1-2 minutos y baja un modelo de ~142 MB). Corre en una terminal:'),
+        h('pre.mono', { style: 'white-space:pre-wrap;user-select:all;background:var(--bg);padding:8px;border-radius:4px' }, st.install),
+        h('p.muted', `Queda en ${tilde(st.dir)}. Después vuelve a pulsar 🎤.`),
+      ],
+      foot: [
+        h('span.grow'),
+        h('button', { onclick: () => { copyText(st.install); toast('Comando copiado', 'ok'); } }, 'Copiar comando'),
+        h('button.primary', { onclick: () => modalClose(true) }, 'Entendido'),
+      ],
+    });
+  }
+
+  async function voiceToggle() {
+    if (voice.rec) { voiceStop(false); return; }
+    if (voice.busy) return;
+    if (!voiceTarget()) { toast(VOICE_INCOMPATIBLE, 'err'); return; }
+    if (!Bridge.ready) { toast('Bridge desconectado', 'err'); return; }
+    let st;
+    try { st = await voiceStatus(); } catch (e) { toast(e.message, 'err'); return; }
+    if (!st.ready) { voiceInstallHelp(st); renderVoice(); return; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+      toast('Este navegador no permite usar el micrófono aquí', 'err');
+      return;
+    }
+    try {
+      voice.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    } catch (e) {
+      toast(e.name === 'NotAllowedError' ? 'Permiso de micrófono denegado: actívalo en el navegador para esta página' : `No se pudo usar el micrófono: ${e.message}`, 'err');
+      return;
+    }
+    voice.chunks = [];
+    voice.cancel = false;
+    voice.rec = new MediaRecorder(voice.stream);
+    voice.rec.ondataavailable = (e) => { if (e.data && e.data.size) voice.chunks.push(e.data); };
+    voice.rec.onstop = () => voiceProcess();
+    // medidor de nivel
+    try {
+      voice.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      voice.analyser = voice.ctx.createAnalyser();
+      voice.analyser.fftSize = 512;
+      voice.ctx.createMediaStreamSource(voice.stream).connect(voice.analyser);
+    } catch (_) { voice.analyser = null; }
+    voice.started = Date.now();
+    voice.rec.start(250);
+    voice.timer = setInterval(voiceTick, 100);
+    document.addEventListener('keydown', voiceEsc, true);
+    renderVoice();
+  }
+  function voiceEsc(e) {
+    if (e.key === 'Escape' && voice.rec) { e.preventDefault(); e.stopPropagation(); voiceStop(true); }
+  }
+  function voiceTick() {
+    const ms = Date.now() - voice.started;
+    if (ms >= VOICE_MAX_MS) { voiceStop(false); return; }
+    const btn = $('#voice-dock .voice-btn');
+    if (btn) btn.lastChild.textContent = ` Detener · ${fmtClock(ms)}`;
+    const bar = $('#voice-dock .voice-level > span');
+    if (bar && voice.analyser) {
+      const data = new Uint8Array(voice.analyser.fftSize);
+      voice.analyser.getByteTimeDomainData(data);
+      let peak = 0;
+      for (const v of data) peak = Math.max(peak, Math.abs(v - 128));
+      bar.style.width = `${Math.min(100, Math.round((peak / 128) * 160))}%`;
+    }
+  }
+  const fmtClock = (ms) => { const sec = Math.floor(ms / 1000); return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`; };
+  /** cancel = descartar lo grabado (Esc). */
+  function voiceStop(cancel) {
+    if (!voice.rec) return;
+    voice.cancel = cancel;
+    clearInterval(voice.timer);
+    document.removeEventListener('keydown', voiceEsc, true);
+    try { voice.rec.stop(); } catch (_) { /* ya parado */ }
+    for (const tr of voice.stream.getTracks()) tr.stop();
+    if (voice.ctx) voice.ctx.close().catch(() => {});
+    voice.ctx = null;
+    voice.analyser = null;
+    if (cancel) toast('Grabación descartada');
+  }
+  async function voiceProcess() {
+    const chunks = voice.chunks;
+    const ms = Date.now() - voice.started;
+    voice.rec = null;
+    voice.stream = null;
+    if (voice.cancel || !chunks.length) { renderVoice(); return; }
+    if (ms < 400) { toast('Muy corto: mantén la grabación un poco más'); renderVoice(); return; }
+    voice.busy = true;
+    renderVoice();
+    try {
+      const wav = await toWav16k(new Blob(chunks, { type: chunks[0].type }));
+      const r = await Bridge.call('voice.transcribe', { audio: bytesToBase64(wav), lang: state.voice.lang || 'es' });
+      if (!r.text) { toast('No se entendió nada: habla más cerca del micrófono'); return; }
+      voice.last = r.text;
+      const t = voiceTarget(); // la ventana donde estás al terminar
+      if (t) {
+        sendToTerminal(r.text, false);
+        toast(`Pegado en ${termTitle(t)} (${(r.ms / 1000).toFixed(1)} s)`, 'ok');
+      } else {
+        toast(`${VOICE_INCOMPATIBLE} El texto quedó en el módulo de voz.`, 'err');
+      }
+    } catch (e) {
+      toast(e.message, 'err');
+    } finally {
+      voice.busy = false;
+      renderVoice();
+    }
+  }
+  /** Audio grabado (webm/opus…) → WAV PCM 16 bits, 16 kHz, mono (lo que espera whisper.cpp). */
+  async function toWav16k(blob) {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    let decoded;
+    try { decoded = await ctx.decodeAudioData(await blob.arrayBuffer()); } finally { ctx.close().catch(() => {}); }
+    const rate = 16000;
+    const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * rate)), rate);
+    const src = off.createBufferSource();
+    src.buffer = decoded;
+    src.connect(off.destination);
+    src.start();
+    const pcm = (await off.startRendering()).getChannelData(0);
+    const out = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+    const str = (o, txt) => { for (let i = 0; i < txt.length; i++) out.setUint8(o + i, txt.charCodeAt(i)); };
+    str(0, 'RIFF'); out.setUint32(4, 36 + pcm.length * 2, true); str(8, 'WAVE');
+    str(12, 'fmt '); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true);
+    out.setUint32(24, rate, true); out.setUint32(28, rate * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true);
+    str(36, 'data'); out.setUint32(40, pcm.length * 2, true);
+    for (let i = 0; i < pcm.length; i++) {
+      const v = Math.max(-1, Math.min(1, pcm[i]));
+      out.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+    }
+    return new Uint8Array(out.buffer);
+  }
+  function bytesToBase64(bytes) {
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
+
+  function renderVoice() {
+    const dock = $('#voice-dock');
+    if (!dock) return;
+    const t = voiceTarget();
+    const rec = !!voice.rec;
+    const st = voice.status;
+    const btn = h('button.voice-btn', {
+      class: `voice-btn${rec ? ' rec' : ''}${!t && !rec ? ' incompatible' : ''}`,
+      disabled: voice.busy,
+      title: rec ? 'Detener y transcribir (Alt+Shift+V) · Esc: descartar'
+        : t ? `Hablar: el texto se pega en "${termTitle(t)}" (Alt+Shift+V)` : VOICE_INCOMPATIBLE,
+      onclick: voiceToggle,
+    }, h('span.voice-ico', rec ? '■' : '🎤'), document.createTextNode(rec ? ` Detener · ${fmtClock(Date.now() - voice.started)}` : voice.busy ? ' Transcribiendo…' : ' Hablar'));
+    const lang = h('select.voice-lang', { title: 'Idioma de la transcripción', disabled: rec || voice.busy },
+      Object.entries(VOICE_LANGS).map(([v, label]) => h('option', { value: v }, label)));
+    lang.value = state.voice.lang || 'es';
+    lang.addEventListener('change', () => { state.voice.lang = lang.value; save(); });
+    dock.replaceChildren(...[
+      h('div.voice-row',
+        btn,
+        h('span.voice-target.grow', { class: `voice-target grow${t ? '' : ' muted'}`, title: t ? (t.info.meta || {}).cwd || '' : VOICE_INCOMPATIBLE },
+          rec ? h('span.voice-level', h('span')) : t ? `→ ${termTitle(t)}` : 'no compatible'),
+        lang),
+      st && !st.ready ? h('div.voice-warn', 'Motor de voz sin instalar · ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); voiceInstallHelp(st); } }, 'cómo instalar')) : null,
+      voice.last && !rec ? h('div.voice-last',
+        h('span.grow', { title: voice.last }, `“${voice.last}”`),
+        h('button.icon.mini', { title: 'Copiar', onclick: () => { copyText(voice.last); toast('Copiado', 'ok'); } }, '⧉'),
+        t ? h('button.icon.mini', { title: `Pegar otra vez en "${termTitle(t)}"`, onclick: () => sendToTerminal(voice.last, false) }, '⤶') : null,
+        h('button.icon.mini', { title: 'Quitar', onclick: () => { voice.last = ''; renderVoice(); } }, '✕')) : null,
+    ].filter(Boolean)); // replaceChildren(null) insertaría el texto "null"
   }
 
   // ---------- notas: NOTES.md de la carpeta del proyecto (vista por proyecto) ----------
@@ -4934,7 +5136,7 @@
           h('div.field', { style: 'width:150px' }, h('label', 'flag carpeta extra'), l.add))),
         h('h4', { style: 'margin:8px 0 0' }, 'Atajos'),
         h('p.muted.mono', { style: 'margin:0;font-size:11px;white-space:pre-line' },
-          'Alt+1…9  ir a pestaña\nAlt+Shift+T  nueva shell   ·   Alt+Shift+C/X/O  claude/codex/opencode   ·   Alt+Shift+D  DB   ·   Alt+Shift+G  Git   ·   Alt+Shift+F  Archivos   ·   Alt+Shift+N  Notas   ·   Alt+Shift+M  música ⏯\nAlt+Shift+W  cerrar pestaña   ·   Alt+Shift+B / P  ocultar paneles\nCtrl+Shift+C  copiar selección   ·   Ctrl+Shift+V  pegar'),
+          'Alt+1…9  ir a pestaña\nAlt+Shift+T  nueva shell   ·   Alt+Shift+C/X/O  claude/codex/opencode   ·   Alt+Shift+D  DB   ·   Alt+Shift+G  Git   ·   Alt+Shift+F  Archivos   ·   Alt+Shift+N  Notas   ·   Alt+Shift+V  hablar (voz)   ·   Alt+Shift+M  música ⏯\nAlt+Shift+W  cerrar pestaña   ·   Alt+Shift+B / P  ocultar paneles\nCtrl+Shift+C  copiar selección   ·   Ctrl+Shift+V  pegar'),
       ],
       foot: [h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
     });
@@ -4946,7 +5148,7 @@
   function isAppShortcut(e) {
     if (!e.altKey || e.ctrlKey || e.metaKey) return false;
     if (!e.shiftKey && /^Digit[1-9]$/.test(e.code)) return true;
-    return e.shiftKey && ['KeyT', 'KeyW', 'KeyB', 'KeyP', 'KeyC', 'KeyX', 'KeyO', 'KeyD', 'KeyM', 'KeyG', 'KeyF', 'KeyN'].includes(e.code);
+    return e.shiftKey && ['KeyT', 'KeyW', 'KeyB', 'KeyP', 'KeyC', 'KeyX', 'KeyO', 'KeyD', 'KeyM', 'KeyG', 'KeyF', 'KeyN', 'KeyV'].includes(e.code);
   }
   document.addEventListener('keydown', (e) => {
     if (!$('#alarm').classList.contains('hidden')) return; // el aviso bloqueante tiene prioridad
@@ -4967,6 +5169,7 @@
       case 'KeyG': openGitView(); break;
       case 'KeyF': openSftpView(); break;
       case 'KeyN': openNotesView(); break;
+      case 'KeyV': voiceToggle(); break;
       case 'KeyM': togglePlay(); break;
       case 'KeyW':
         if (activeView()) closeView(activeView());
