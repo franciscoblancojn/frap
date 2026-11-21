@@ -103,11 +103,15 @@
     actions: [], // {id, name, cmd, cwd, ready} comandos con nombre que se encienden/apagan
     pages: [], // {id, name, url, mode: 'default'|'tab'|'iframe'} accesos a páginas web
     openPages: [], // ids de páginas abiertas como pestaña interna (iframe)
-    db: { open: false, connId: null, sql: '', limit: 500, history: [] }, // pestaña DB del panel central
+    // vistas del panel central por proyecto: [{kind: 'git'|'db'|'sftp', projectId, open, data}] (ver "vistas por proyecto")
+    views: [],
+    // foto de las terminales abiertas: [{sid, projectId, kind, title, cwd, sshId?}] (para reabrirlas tras apagar el equipo)
+    lastTerms: [],
+    db: { connId: null, sql: '', limit: 500, history: [] }, // datos de la vista DB enlazada (apunta a views[i].data)
     // música: tracks = [{id, type: 'file'|'youtube', title, videoId?, duration?}]; los archivos viven en IndexedDB
     music: { tracks: [], current: null, loop: 'all', shuffle: false, volume: 80 },
-    git: { open: false, repo: null, tab: 'diff' }, // pestaña Git del panel central
-    sftp: { open: false, hostId: null, local: null, remote: {}, hidden: false }, // pestaña Archivos (SFTP); remote = última ruta por servidor
+    git: { repo: null, tab: 'diff' }, // datos de la vista Git enlazada
+    sftp: { hostId: null, local: null, remote: {}, hidden: false }, // datos de la vista Archivos (SFTP) enlazada; remote = última ruta por servidor
     // temporizadores: [{id, icon, title, desc, kind: 'repeat'|'once', every (seg), mode: 'toast'|'modal', sound, enabled, nextAt, startedAt}]
     timers: [],
     settings: {
@@ -125,7 +129,7 @@
 
   function mergeState(base, saved) {
     if (!saved || typeof saved !== 'object') return base;
-    return {
+    return migrateViews({
       ...base,
       ...saved,
       settings: {
@@ -138,7 +142,25 @@
       music: { ...base.music, ...(saved.music || {}) },
       git: { ...base.git, ...(saved.git || {}) },
       sftp: { ...base.sftp, ...(saved.sftp || {}), remote: { ...((saved.sftp || {}).remote || {}) } },
-    };
+    });
+  }
+  /**
+   * Estados viejos: git/DB/SFTP eran una sola pestaña global ("git:main", state.git.open…).
+   * Si estaba abierta pasa a ser la vista del proyecto activo.
+   */
+  function migrateViews(st) {
+    if (!Array.isArray(st.views)) st.views = [];
+    st.views = st.views.filter((v) => v && ['git', 'db', 'sftp'].includes(v.kind) && v.projectId && v.data);
+    for (const kind of ['git', 'db', 'sftp']) {
+      const old = st[kind] || {};
+      if (old.open && st.activeProject && !st.views.some((v) => v.kind === kind && v.projectId === st.activeProject)) {
+        const { open, ...data } = old;
+        st.views.push({ kind, projectId: st.activeProject, open: true, data: JSON.parse(JSON.stringify(data)) });
+      }
+      delete old.open;
+      if (st.activeSid === `${kind}:main`) st.activeSid = st.activeProject ? `${kind}:${st.activeProject}` : null;
+    }
+    return st;
   }
 
   let state = mergeState(DEFAULT_STATE(), storeGet('frap.state', null));
@@ -166,6 +188,103 @@
   })();
 
   const project = (id = state.activeProject) => state.projects.find((p) => p.id === id) || null;
+
+  // ---------- vistas por proyecto: git, DB y SFTP ----------
+  // Como las terminales, cada proyecto tiene sus propias pestañas de git, DB y Archivos (sid "git:<projectId>").
+  // Cada vista tiene su panel DOM. Al activarla, state.git/db/sftp pasan a apuntar a sus datos (v.data) y
+  // gitPane/dbPane/sftpPane/Git a su panel y memoria: el código de cada vista trabaja siempre sobre "la actual".
+  // Lo asíncrono captura su panel antes de esperar y no pinta si mientras tanto se cambió de vista.
+  const VIEW_DATA = {
+    git: () => ({ repo: null, tab: 'diff' }),
+    db: () => ({ connId: null, sql: '', limit: 500, history: [] }),
+    sftp: () => ({ hostId: null, local: null, remote: {}, hidden: false }),
+  };
+  const vSid = (v) => `${v.kind}:${v.projectId}`;
+  const viewKind = (sid) => { const m = /^(git|db|sftp):/.exec(sid || ''); return m ? m[1] : null; };
+  const viewBySid = (sid) => (viewKind(sid) ? state.views.find((v) => v.open && vSid(v) === sid) || null : null);
+  const activeView = () => viewBySid(state.activeSid);
+  const openViewsOf = (pid) => state.views.filter((v) => v.open && v.projectId === pid);
+  const viewPanes = new Map(); // sid -> panel DOM de la vista
+  const gitRts = new Map(); // sid -> memoria de git (status, salida, diff…)
+  let bound = { git: null, db: null, sftp: null }; // sid enlazado por tipo
+  /** Datos de todas las vistas de un tipo (para mantenerlas al borrar conexiones o servidores). */
+  const viewDatas = (kind) => [...new Set([state[kind], ...state.views.filter((v) => v.kind === kind).map((v) => v.data)])];
+  function needProject() {
+    if (project()) return true;
+    toast('Primero crea o selecciona un proyecto', 'err');
+    return false;
+  }
+  function viewFor(kind, pid = state.activeProject) {
+    let v = state.views.find((x) => x.kind === kind && x.projectId === pid);
+    if (!v) { v = { kind, projectId: pid, open: false, data: VIEW_DATA[kind]() }; state.views.push(v); }
+    return v;
+  }
+  function bindView(v) {
+    const sid = vSid(v);
+    if (bound[v.kind] === sid && state[v.kind] === v.data) return;
+    bound[v.kind] = sid;
+    state[v.kind] = v.data;
+    const pane = viewPanes.get(sid) || null;
+    if (v.kind === 'git') {
+      if (!gitRts.has(sid)) gitRts.set(sid, newGitRt());
+      Git = gitRts.get(sid);
+      gitPane = pane;
+    } else if (v.kind === 'db') dbPane = pane;
+    else sftpPane = pane;
+  }
+  /** Enlaza y activa la vista `kind` del proyecto activo. fresh = todavía no tenía panel. */
+  function showView(kind) {
+    const v = viewFor(kind);
+    v.open = true;
+    bindView(v);
+    const fresh = !viewPanes.has(vSid(v));
+    state.activeSid = vSid(v);
+    save();
+    renderAll();
+    return { v, fresh };
+  }
+  function closeView(v) {
+    v.open = false;
+    if (state.activeSid === vSid(v)) {
+      const list = sessionsOf(state.activeProject);
+      const others = openViewsOf(state.activeProject);
+      state.activeSid = list.length ? list[list.length - 1].sid : others.length ? vSid(others[0]) : null;
+    }
+    save();
+    renderAll();
+  }
+  /** Clic en una vista (panel izquierdo o pestaña): activa su proyecto y la abre. */
+  function openViewSid(sid) {
+    const v = viewBySid(sid);
+    if (!v) return;
+    if (project(v.projectId)) state.activeProject = v.projectId;
+    if (v.kind === 'git') openGitView();
+    else if (v.kind === 'db') openDbView();
+    else openSftpView();
+  }
+  /** Al borrar un proyecto: se van sus vistas y sus paneles. */
+  function dropProjectViews(pid) {
+    for (const v of state.views.filter((x) => x.projectId === pid)) {
+      const sid = vSid(v);
+      const pane = viewPanes.get(sid);
+      if (pane) pane.root.remove();
+      viewPanes.delete(sid);
+      gitRts.delete(sid);
+      if (bound[v.kind] === sid) {
+        bound[v.kind] = null;
+        state[v.kind] = VIEW_DATA[v.kind]();
+        if (v.kind === 'git') { gitPane = null; Git = newGitRt(); } else if (v.kind === 'db') dbPane = null; else sftpPane = null;
+      }
+    }
+    state.views = state.views.filter((x) => x.projectId !== pid);
+  }
+  const VIEW_TITLE = { git: 'Git (Alt+Shift+G)', db: 'Consultas SQL (Alt+Shift+D)', sftp: 'Archivos por SFTP (Alt+Shift+F)' };
+  function viewLabel(v) {
+    if (v.kind === 'git') return v.data.repo ? `Git · ${basename(v.data.repo)}` : 'Git';
+    if (v.kind === 'db') { const c = dbConnById(v.data.connId); return c ? `DB · ${c.name}` : 'DB'; }
+    const c = sshInfo && sshInfo.hosts.find((x) => x.id === v.data.hostId);
+    return c ? `⇅ ${c.name}` : '⇅ Archivos';
+  }
 
   // ======================================================================
   // Bridge (WebSocket RPC)
@@ -771,6 +890,7 @@
     );
     if (!ok) return;
     for (const t of live) await closeTerm(t.sid);
+    dropProjectViews(p.id);
     state.projects = state.projects.filter((x) => x.id !== p.id);
     if (state.activeProject === p.id) {
       state.activeProject = state.projects[0] ? state.projects[0].id : null;
@@ -785,7 +905,8 @@
     state.activeProject = id;
     const list = sessionsOf(id);
     const group = splitGroup();
-    state.activeSid = group.length ? group[0].sid : list.length ? list[list.length - 1].sid : null;
+    const views = openViewsOf(id);
+    state.activeSid = group.length ? group[0].sid : list.length ? list[list.length - 1].sid : views.length ? vSid(views[0]) : null;
     save();
     renderAll();
     loadConfig();
@@ -814,6 +935,21 @@
     h('span.tname', termTitle(t)),
     noticeBadge(t),
     kindIcon(termKind(t)) || h(`span.kind.${termKind(t)}`, termKind(t)));
+  }
+
+  /** Vista de git, DB o Archivos del proyecto, listada junto a sus terminales. */
+  function viewItem(v) {
+    const sid = vSid(v);
+    return h('div.term-item.view-item', {
+      class: `term-item view-item${sid === state.activeSid ? ' active' : ''}`,
+      dataset: { sid },
+      title: VIEW_TITLE[v.kind],
+      onclick: () => openViewSid(sid),
+    },
+    h('span.dot.view'),
+    h('span.tname', viewLabel(v)),
+    kindIcon(v.kind) || h(`span.kind.${v.kind}`, v.kind),
+    h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeView(v); } }, '✕'));
   }
 
   /** Aviso de un agente (hook Stop/Notification → $FRAP_NOTIFY): visible hasta abrir la terminal. */
@@ -871,7 +1007,7 @@
           h('div.folder', { title: f },
             h('span', (i === 0 ? '▸ ' : '+ ') + tilde(f)),
             h('button.icon.mini', { title: 'Quitar carpeta', onclick: () => removeFolder(p, f) }, '✕')))),
-        h('div.terms', sessionsOf(p.id).map((t) => termItem(t, slots.get(t.sid))))));
+        h('div.terms', sessionsOf(p.id).map((t) => termItem(t, slots.get(t.sid))), openViewsOf(p.id).map(viewItem))));
     }
     const orphans = orphanSessions();
     if (orphans.length) {
@@ -893,7 +1029,9 @@
         h('span.x', { title: 'Cerrar log (la acción sigue)', onclick: (e) => { e.stopPropagation(); leaveActionLog(); } }, '✕')));
     }
     const slots = splitSlots();
-    for (const t of tabSessions()) {
+    const tabTerms = tabSessions();
+    const orphanTabs = !!project() && tabTerms.some((t) => !project((t.info.meta || {}).projectId));
+    for (const t of tabTerms) {
       const slot = slots.get(t.sid);
       tabs.append(h(`div.tab${t.sid === state.activeSid ? '.active' : ''}${slot != null ? '.grouped' : ''}`, {
         dataset: { sid: t.sid },
@@ -922,34 +1060,17 @@
       h('span.tname', `🌐 ${pg.name}`),
       h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closePageView(id); } }, '✕')));
     }
-    if (state.db.open) {
-      tabs.append(h(`div.tab.db-tab${state.activeSid === DB_VIEW ? '.active' : ''}`, {
-        dataset: { sid: DB_VIEW }, title: 'Consultas SQL (Alt+Shift+D)',
-        onclick: () => openDbView(),
-        onauxclick: (e) => { if (e.button === 1) closeDbView(); },
+    // git, DB y Archivos del proyecto (o de "Sin proyecto" no hay: necesitan una carpeta)
+    for (const v of project() && !orphanTabs ? openViewsOf(state.activeProject) : []) {
+      const sid = vSid(v);
+      tabs.append(h(`div.tab.${v.kind}-tab${state.activeSid === sid ? '.active' : ''}`, {
+        dataset: { sid }, title: VIEW_TITLE[v.kind],
+        onclick: () => openViewSid(sid),
+        onauxclick: (e) => { if (e.button === 1) closeView(v); },
       },
-      kindIcon('db'),
-      h('span.tname', 'DB'),
-      h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeDbView(); } }, '✕')));
-    }
-    if (state.sftp.open) {
-      tabs.append(h(`div.tab.sftp-tab${state.activeSid === SFTP_VIEW ? '.active' : ''}`, {
-        dataset: { sid: SFTP_VIEW }, title: 'Archivos por SFTP (Alt+Shift+F)',
-        onclick: () => openSftpView(),
-        onauxclick: (e) => { if (e.button === 1) closeSftpView(); },
-      },
-      h('span.tname', '⇅ Archivos'),
-      h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeSftpView(); } }, '✕')));
-    }
-    if (state.git.open) {
-      tabs.append(h(`div.tab.git-tab${state.activeSid === GIT_VIEW ? '.active' : ''}`, {
-        dataset: { sid: GIT_VIEW }, title: 'Git (Alt+Shift+G)',
-        onclick: () => openGitView(),
-        onauxclick: (e) => { if (e.button === 1) closeGitView(); },
-      },
-      kindIcon('git'),
-      h('span.tname', 'Git'),
-      h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeGitView(); } }, '✕')));
+      v.kind === 'sftp' ? null : kindIcon(v.kind),
+      h('span.tname', v.kind === 'git' ? 'Git' : v.kind === 'db' ? 'DB' : '⇅ Archivos'),
+      h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeView(v); } }, '✕')));
     }
   }
 
@@ -1015,15 +1136,15 @@
     const pg = isPageView(state.activeSid) ? pageById(state.activeSid.slice(PAGE_PREFIX.length)) : null;
     if (pg) ensurePagePane(pg);
     for (const [id, pane] of pagePanes) pane.classList.toggle('hidden', !pg || pg.id !== id);
-    const dbActive = state.activeSid === DB_VIEW;
+    const av = activeView();
+    if (av) bindView(av);
+    const dbActive = !!av && av.kind === 'db';
     if (dbActive) ensureDbPane();
-    if (dbPane) dbPane.root.classList.toggle('hidden', !dbActive);
-    const gitActive = state.activeSid === GIT_VIEW;
+    const gitActive = !!av && av.kind === 'git';
     if (gitActive) { ensureGitPane(); gitSyncProject(); }
-    if (gitPane) gitPane.root.classList.toggle('hidden', !gitActive);
-    const sftpActive = state.activeSid === SFTP_VIEW;
+    const sftpActive = !!av && av.kind === 'sftp';
     if (sftpActive) ensureSftpPane();
-    if (sftpPane) sftpPane.root.classList.toggle('hidden', !sftpActive);
+    for (const [sid, pane] of viewPanes) pane.root.classList.toggle('hidden', sid !== state.activeSid);
     const p = project();
     $('#empty').classList.toggle('hidden', !!activeTerm() || !!pg || dbActive || gitActive || sftpActive);
     $('#st-project').textContent = p ? p.name : '—';
@@ -1037,6 +1158,82 @@
     renderTabs();
     renderPanes();
     updateTitle();
+    snapshotTerms();
+  }
+
+  // ---------- terminales tras apagar o reiniciar el equipo ----------
+  // Las sesiones sobreviven al bridge, pero no a un apagado: son procesos. Se guarda una foto de las
+  // terminales abiertas (state.lastTerms, persiste en localStorage y state.json). Al conectar, si faltan
+  // terminales de la foto, se ofrece reabrirlas en su carpeta (las IA retoman su última conversación).
+  let restoreChecked = false; // hasta decidir, la foto no se pisa (si no, al arrancar vacío se perdería)
+  let restoreLater = []; // "Ahora no": se siguen ofreciendo la próxima vez
+  function termSnapshot() {
+    return [...terms.values()]
+      .filter((t) => termKind(t) !== 'action' && t.info.alive !== false && project((t.info.meta || {}).projectId))
+      .sort((a, b) => a.info.created - b.info.created)
+      .map((t) => {
+        const m = t.info.meta || {};
+        return { sid: t.sid, projectId: m.projectId, kind: termKind(t), title: m.title || termKind(t), cwd: m.cwd || '', ...(m.sshId ? { sshId: m.sshId } : {}) };
+      });
+  }
+  function snapshotTerms() {
+    if (!restoreChecked || !Bridge.ready) return;
+    const snap = [...termSnapshot(), ...restoreLater.filter((t) => project(t.projectId))];
+    if (JSON.stringify(snap) === JSON.stringify(state.lastTerms || [])) return;
+    state.lastTerms = snap;
+    save();
+  }
+  async function checkRestore() {
+    if (restoreChecked) return;
+    const lost = (state.lastTerms || []).filter((t) => t && !terms.has(t.sid) && project(t.projectId));
+    if (lost.length) {
+      const r = await askRestore(lost);
+      restoreLater = r === undefined ? lost : [];
+      restoreChecked = true;
+      if (r && r.chosen.length) {
+        if (!sshInfo) await loadSsh();
+        await reopenTerminals(r.chosen, r.resume);
+      }
+    }
+    restoreChecked = true;
+    snapshotTerms();
+  }
+  /** null = descartar, undefined = ahora no (se cierra el modal), {chosen, resume} = reabrir. */
+  function askRestore(lost) {
+    return new Promise((resolve) => {
+      const groups = state.projects.map((p) => ({ p, list: lost.filter((t) => t.projectId === p.id) })).filter((g) => g.list.length);
+      const cg = checkGroup('Terminales', groups.map((g) => ({
+        value: g.p.id, label: g.p.name, sub: g.p.folders.map(tilde).join(', '),
+        children: g.list.map((t, i) => ({ value: i, label: t.title, sub: t.kind })),
+      })));
+      const resume = h('input', { type: 'checkbox' });
+      resume.checked = true;
+      let done = false;
+      const finish = (v) => { if (done) return; done = true; close(true); resolve(v); };
+      const close = openModal({
+        title: `Se cerraron ${lost.length} terminal${lost.length === 1 ? '' : 'es'}`,
+        body: [
+          h('p.muted', { style: 'margin:0' }, 'Las terminales viven mientras el equipo está encendido: al apagarlo o reiniciarlo se cierran. ¿Reabrirlas en sus carpetas?'),
+          cg.el,
+          h('label.xp-item', resume, h('span', 'Retomar la última conversación'), h('span.muted', 'claude --continue · codex resume --last · opencode --continue')),
+        ],
+        foot: [
+          h('button', { title: 'No volver a ofrecerlas', onclick: () => finish(null) }, 'Descartar'),
+          h('button', { title: 'Seguir ofreciéndolas la próxima vez', onclick: () => finish(undefined) }, 'Ahora no'),
+          h('span.grow'),
+          h('button.primary', {
+            onclick: () => finish({
+              resume: resume.checked,
+              chosen: cg.selected().map(({ value, children }) => {
+                const g = groups.find((x) => x.p.id === value);
+                return { p: g.p, terminals: children.map((i) => g.list[i]).filter(Boolean) };
+              }).filter((c) => c.terminals.length),
+            }),
+          }, 'Reabrir'),
+        ],
+        onClose: () => { if (!done) { done = true; resolve(undefined); } },
+      });
+    });
   }
 
   // indicadores de actividad sin re-render completo
@@ -1734,9 +1931,8 @@
   }
 
   // ---------- git: interfaz guiada (status, add, commit, ramas, pull/push…) en el panel central ----------
-  const GIT_VIEW = 'git:main';
-  let gitPane = null;
-  const Git = {
+  let gitPane = null; // panel de la vista git enlazada (ver "vistas por proyecto")
+  const newGitRt = () => ({
     repos: [], // repos detectados en las carpetas del proyecto
     projectId: null,
     status: null, // { branch, upstream, ahead, behind, staged, unstaged, untracked, noCommits, detached }
@@ -1746,18 +1942,22 @@
     out: [], // salida de comandos ejecutados (la "guía")
     busy: false,
     selected: null, // { path, area } del diff mostrado
-  };
+  });
+  let Git = newGitRt(); // memoria de la vista git enlazada
   const gitArgsLabel = (args) => 'git ' + args.map((a) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`)).join(' ');
 
-  /** Ejecuta git en el repo actual. log=true lo registra en "Salida" (comandos que hace el usuario). */
-  async function git(args, { log = true, repo = state.git.repo, quiet = false } = {}) {
+  /**
+   * Ejecuta git en el repo actual. log=true lo registra en "Salida" (comandos que hace el usuario).
+   * rt/repo: los fija gitAction para que una acción siga en su repo aunque se cambie de vista a mitad.
+   */
+  async function git(args, { log = true, repo = state.git.repo, quiet = false, rt = Git } = {}) {
     if (!Bridge.ready) throw new Error('Bridge desconectado');
     if (!repo) throw new Error('No hay repositorio seleccionado');
     const r = await Bridge.call('git.run', { cwd: repo, args });
     if (log) {
-      Git.out.push({ cmd: gitArgsLabel(args), code: r.code, text: (r.stdout + (r.stderr ? (r.stdout ? '\n' : '') + r.stderr : '')).trimEnd(), at: Date.now() });
-      if (Git.out.length > 100) Git.out.shift();
-      if (state.git.tab === 'out') renderGitRight();
+      rt.out.push({ cmd: gitArgsLabel(args), code: r.code, text: (r.stdout + (r.stderr ? (r.stdout ? '\n' : '') + r.stderr : '')).trimEnd(), at: Date.now() });
+      if (rt.out.length > 100) rt.out.shift();
+      if (Git === rt && state.git.tab === 'out') renderGitRight();
       if (r.code !== 0 && !quiet) {
         const msg = (r.stderr || r.stdout).trim().split('\n').filter(Boolean).slice(-2).join(' · ');
         toast(`${gitArgsLabel(args)} → ${msg || 'código ' + r.code}`, 'err');
@@ -1766,21 +1966,11 @@
     return r;
   }
 
+  /** Abre (o enfoca) la vista git del proyecto activo. */
   function openGitView() {
-    state.git.open = true;
-    state.activeSid = GIT_VIEW;
-    save();
-    renderAll();
+    if (!needProject()) return;
+    showView('git');
     gitRefresh();
-  }
-  function closeGitView() {
-    state.git.open = false;
-    if (state.activeSid === GIT_VIEW) {
-      const list = sessionsOf(state.activeProject);
-      state.activeSid = list.length ? list[list.length - 1].sid : null;
-    }
-    save();
-    renderAll();
   }
 
   /** Detecta los repos de las carpetas del proyecto activo (cuando cambia el proyecto). */
@@ -1788,19 +1978,21 @@
     const p = project();
     if (!p || !Bridge.ready) return;
     if (!force && Git.projectId === p.id) return;
-    Git.projectId = p.id;
+    const rt = Git;
+    const gs = state.git;
+    rt.projectId = p.id;
     const repos = [];
     for (const f of p.folders) {
       try {
-        const r = await git(['rev-parse', '--show-toplevel'], { log: false, repo: f });
+        const r = await git(['rev-parse', '--show-toplevel'], { log: false, repo: f, rt });
         const top = r.stdout.trim();
         if (r.code === 0 && top && !repos.includes(top)) repos.push(top);
       } catch (_) { /* sin acceso */ }
     }
-    Git.repos = repos;
-    if (!repos.includes(state.git.repo)) state.git.repo = repos[0] || null;
+    rt.repos = repos;
+    if (!repos.includes(gs.repo)) gs.repo = repos[0] || null;
     save();
-    gitRefresh();
+    if (Git === rt) { gitRefresh(); renderProjects(); }
   }
 
   function parseGitStatus(out) {
@@ -1842,16 +2034,19 @@
   }
 
   async function gitRefresh() {
-    if (!gitPane || state.activeSid !== GIT_VIEW) return;
+    if (!gitPane || viewKind(state.activeSid) !== 'git') return;
     if (!state.git.repo) { Git.status = null; renderGit(); return; }
+    const rt = Git;
+    const o = { log: false, rt, repo: state.git.repo };
     try {
       const [st, br, rbr, rem, lg] = await Promise.all([
-        git(['status', '--porcelain=v1', '-b', '-z', '--untracked-files=all'], { log: false }),
-        git(['branch', '--format=%(HEAD)%09%(refname:short)%09%(upstream:short)%09%(upstream:track)'], { log: false }),
-        git(['branch', '-r', '--format=%(refname:short)'], { log: false }),
-        git(['remote'], { log: false }),
-        git(['log', '-n', '60', '--pretty=format:%h%x1f%an%x1f%ar%x1f%D%x1f%s'], { log: false }),
+        git(['status', '--porcelain=v1', '-b', '-z', '--untracked-files=all'], o),
+        git(['branch', '--format=%(HEAD)%09%(refname:short)%09%(upstream:short)%09%(upstream:track)'], o),
+        git(['branch', '-r', '--format=%(refname:short)'], o),
+        git(['remote'], o),
+        git(['log', '-n', '60', '--pretty=format:%h%x1f%an%x1f%ar%x1f%D%x1f%s'], o),
       ]);
+      if (Git !== rt) return; // se cambió de vista mientras git respondía
       if (st.code !== 0) { Git.status = { error: st.stderr.trim() }; renderGit(); return; }
       Git.status = parseGitStatus(st.stdout);
       Git.branches = br.stdout.split('\n').filter(Boolean).map((l) => {
@@ -1864,71 +2059,79 @@
         const [hash, author, when, refs, subject] = l.split('\x1f');
         return { hash, author, when, refs, subject };
       }) : [];
-    } catch (e) { Git.status = { error: e.message }; }
+    } catch (e) { if (Git !== rt) return; Git.status = { error: e.message }; }
     renderGit();
   }
 
-  /** Ejecuta una acción guiada: bloquea botones, refresca al terminar. */
+  /**
+   * Ejecuta una acción guiada: bloquea botones, refresca al terminar. fn(g, pane): `g` es git() fijado
+   * al repo y la memoria de esta vista, así la acción no salta de repo si se cambia de proyecto a mitad.
+   */
   async function gitAction(label, fn) {
-    if (Git.busy) return;
-    Git.busy = true;
-    gitPane.root.classList.add('busy');
-    gitPane.busy.textContent = `${label}…`;
-    try { await fn(); } catch (e) { toast(e.message, 'err'); }
-    Git.busy = false;
-    gitPane.root.classList.remove('busy');
-    gitPane.busy.textContent = '';
-    await gitRefresh();
+    const rt = Git;
+    const pane = gitPane;
+    const repo = state.git.repo;
+    if (!pane || rt.busy) return;
+    rt.busy = true;
+    pane.root.classList.add('busy');
+    pane.busy.textContent = `${label}…`;
+    const g = (args, opts = {}) => git(args, { repo, rt, ...opts });
+    try { await fn(g, pane); } catch (e) { toast(e.message, 'err'); }
+    rt.busy = false;
+    pane.root.classList.remove('busy');
+    pane.busy.textContent = '';
+    if (Git === rt) await gitRefresh();
   }
   const okToast = (r, msg) => { if (r.code === 0) toast(msg, 'ok'); return r.code === 0; };
 
   // ----- acciones -----
-  const gitAdd = (paths) => gitAction('git add', async () => okToast(await git(['add', '--', ...paths]), paths.length > 1 ? `${paths.length} archivos agregados` : `Agregado: ${paths[0]}`));
-  const gitAddAll = () => gitAction('git add -A', async () => okToast(await git(['add', '-A']), 'Todos los cambios agregados'));
-  const gitUnstage = (paths) => gitAction('git restore --staged', async () => {
-    const r = Git.status && Git.status.noCommits ? await git(['rm', '--cached', '-r', '-q', '--', ...paths]) : await git(['restore', '--staged', '--', ...paths]);
+  const gitAdd = (paths) => gitAction('git add', async (g) => okToast(await g(['add', '--', ...paths]), paths.length > 1 ? `${paths.length} archivos agregados` : `Agregado: ${paths[0]}`));
+  const gitAddAll = () => gitAction('git add -A', async (g) => okToast(await g(['add', '-A']), 'Todos los cambios agregados'));
+  const gitUnstage = (paths) => gitAction('git restore --staged', async (g) => {
+    const r = Git.status && Git.status.noCommits ? await g(['rm', '--cached', '-r', '-q', '--', ...paths]) : await g(['restore', '--staged', '--', ...paths]);
     okToast(r, paths.length > 1 ? `${paths.length} archivos quitados del stage` : `Quitado del stage: ${paths[0]}`);
   });
   async function gitDiscard(f) {
     const untracked = f.code === '?';
     if (!(await confirmBox(`¿Descartar los cambios de "${f.path}"?`, untracked ? 'El archivo sin seguimiento se BORRARÁ del disco (git clean -f). No se puede deshacer.' : 'Se perderán los cambios sin preparar (git restore). No se puede deshacer.'))) return;
-    gitAction('descartar', async () => okToast(untracked ? await git(['clean', '-f', '--', f.path]) : await git(['restore', '--', f.path]), `Descartado: ${f.path}`));
+    gitAction('descartar', async (g) => okToast(untracked ? await g(['clean', '-f', '--', f.path]) : await g(['restore', '--', f.path]), `Descartado: ${f.path}`));
   }
   async function gitCommit(andPush) {
     const msg = gitPane.msg.value.trim();
     if (!msg) { toast('Escribe un mensaje de commit', 'err'); gitPane.msg.focus(); return; }
     const st = Git.status || {};
+    const rt = Git;
     let addAll = false;
     if (!(st.staged || []).length) {
       if (!(st.unstaged || []).length && !(st.untracked || []).length) { toast('No hay cambios para commitear'); return; }
       if (!(await confirmBox('No hay archivos preparados', '¿Agregar TODOS los cambios (git add -A) y hacer commit?'))) return;
       addAll = true;
     }
-    gitAction('git commit', async () => {
-      if (addAll && (await git(['add', '-A'])).code !== 0) return;
-      const r = await git(['commit', '-m', msg]);
+    gitAction('git commit', async (g, pane) => {
+      if (addAll && (await g(['add', '-A'])).code !== 0) return;
+      const r = await g(['commit', '-m', msg]);
       if (r.code !== 0) return;
-      gitPane.msg.value = '';
+      pane.msg.value = '';
       toast(`Commit creado: ${msg.split('\n')[0]}`, 'ok');
-      if (andPush) await doPush();
+      if (andPush) await doPush(g, rt);
     });
   }
-  async function doPush() {
-    const st = Git.status || {};
-    if (!Git.remotes.length) { toast('El repositorio no tiene remotos (git remote add origin <url>)', 'err'); return; }
+  async function doPush(g, rt) {
+    const st = rt.status || {};
+    if (!rt.remotes.length) { toast('El repositorio no tiene remotos (git remote add origin <url>)', 'err'); return; }
     // sin upstream: publica la rama en el primer remoto y la enlaza
-    const args = st.upstream ? ['push'] : ['push', '-u', Git.remotes.includes('origin') ? 'origin' : Git.remotes[0], 'HEAD'];
-    okToast(await git(args), 'Push completado');
+    const args = st.upstream ? ['push'] : ['push', '-u', rt.remotes.includes('origin') ? 'origin' : rt.remotes[0], 'HEAD'];
+    okToast(await g(args), 'Push completado');
   }
-  const gitPush = () => gitAction('git push', doPush);
-  const gitPull = () => gitAction('git pull', async () => okToast(await git(['pull', '--no-edit']), 'Pull completado'));
-  const gitFetch = () => gitAction('git fetch', async () => okToast(await git(['fetch', '--all', '--prune']), 'Fetch completado'));
-  const gitStash = () => gitAction('git stash', async () => okToast(await git(['stash', 'push', '-u', '-m', `FRAP ${new Date().toLocaleString()}`]), 'Cambios guardados en el stash'));
-  const gitStashPop = () => gitAction('git stash pop', async () => okToast(await git(['stash', 'pop']), 'Stash aplicado'));
-  const gitInit = () => gitAction('git init', async () => {
+  const gitPush = () => { const rt = Git; gitAction('git push', (g) => doPush(g, rt)); };
+  const gitPull = () => gitAction('git pull', async (g) => okToast(await g(['pull', '--no-edit']), 'Pull completado'));
+  const gitFetch = () => gitAction('git fetch', async (g) => okToast(await g(['fetch', '--all', '--prune']), 'Fetch completado'));
+  const gitStash = () => gitAction('git stash', async (g) => okToast(await g(['stash', 'push', '-u', '-m', `FRAP ${new Date().toLocaleString()}`]), 'Cambios guardados en el stash'));
+  const gitStashPop = () => gitAction('git stash pop', async (g) => okToast(await g(['stash', 'pop']), 'Stash aplicado'));
+  const gitInit = () => gitAction('git init', async (g) => {
     const p = project();
     if (!p) return;
-    if ((await git(['init'], { repo: p.folders[0] })).code === 0) { toast('Repositorio creado', 'ok'); await gitSyncProject(true); }
+    if ((await g(['init'], { repo: p.folders[0] })).code === 0) { toast('Repositorio creado', 'ok'); await gitSyncProject(true); }
   });
 
   async function gitCheckout(name, isRemote) {
@@ -1938,19 +2141,19 @@
     }
     // rama remota (origin/x) -> rama local que la sigue
     const args = isRemote ? ['checkout', '--track', name] : ['checkout', name];
-    gitAction(gitArgsLabel(args), async () => okToast(await git(args), `Ahora en ${isRemote ? name.split('/').slice(1).join('/') : name}`));
+    gitAction(gitArgsLabel(args), async (g) => okToast(await g(args), `Ahora en ${isRemote ? name.split('/').slice(1).join('/') : name}`));
   }
   function gitNewBranch() {
     const name = gitPane.newBranch.value.trim();
     if (!name) { toast('Escribe el nombre de la nueva rama', 'err'); gitPane.newBranch.focus(); return; }
     if (!/^(?!-)(?!.*\.\.)(?!.*\/\/)[\w./-]+(?<![./])$/.test(name)) { toast('Nombre de rama inválido', 'err'); return; }
-    gitAction('git checkout -b', async () => {
-      if (okToast(await git(['checkout', '-b', name]), `Rama "${name}" creada`)) gitPane.newBranch.value = '';
+    gitAction('git checkout -b', async (g, pane) => {
+      if (okToast(await g(['checkout', '-b', name]), `Rama "${name}" creada`)) pane.newBranch.value = '';
     });
   }
   async function gitDeleteBranch(b) {
     if (!(await confirmBox(`¿Eliminar la rama "${b.name}"?`, 'Usa git branch -d: si tiene commits sin fusionar, git se negará y no se pierde nada.'))) return;
-    gitAction('git branch -d', async () => okToast(await git(['branch', '-d', b.name]), `Rama "${b.name}" eliminada`));
+    gitAction('git branch -d', async (g) => okToast(await g(['branch', '-d', b.name]), `Rama "${b.name}" eliminada`));
   }
 
   /** Comando libre: "git log --oneline -5" o "log --oneline -5". */
@@ -1974,10 +2177,10 @@
     if (args[0] === 'git') args = args.slice(1);
     if (!args.length) return;
     state.git.tab = 'out';
-    gitAction(gitArgsLabel(args), async () => {
-      const r = await git(args, { quiet: true });
-      if (r.code === 0) gitPane.free.value = '';
-      renderGitRight();
+    gitAction(gitArgsLabel(args), async (g, pane) => {
+      const r = await g(args, { quiet: true });
+      if (r.code === 0) pane.free.value = '';
+      if (gitPane === pane) renderGitRight();
     });
   }
 
@@ -1989,7 +2192,9 @@
     if (area === 'untracked') args = ['diff', '--no-index', '--', '/dev/null', f.path];
     else if (area === 'staged') args = ['diff', '--cached', '--', f.path];
     else args = ['diff', '--', f.path];
+    const rt = Git;
     const r = await git(args, { log: false });
+    if (Git !== rt) return;
     Git.diff = { title: `${f.path} · ${area === 'staged' ? 'preparado' : area === 'untracked' ? 'nuevo' : 'sin preparar'}`, cmd: gitArgsLabel(args), text: r.stdout || r.stderr || '(sin diferencias)' };
     renderGit();
   }
@@ -1997,7 +2202,9 @@
     state.git.tab = 'diff';
     Git.selected = null;
     const args = ['show', '--stat', '--patch', '--format=commit %H%nAutor: %an <%ae>%nFecha: %ad%n%n    %s%n%n%b', c.hash];
+    const rt = Git;
     const r = await git(args, { log: false });
+    if (Git !== rt) return;
     Git.diff = { title: `${c.hash} · ${c.subject}`, cmd: gitArgsLabel(args), text: r.stdout || r.stderr };
     renderGit();
   }
@@ -2021,7 +2228,7 @@
   function ensureGitPane() {
     if (gitPane) return gitPane;
     const repo = h('select.git-repo', { title: 'Repositorio' });
-    repo.addEventListener('change', () => { state.git.repo = repo.value; Git.diff = null; save(); gitRefresh(); renderPanes(); });
+    repo.addEventListener('change', () => { state.git.repo = repo.value; Git.diff = null; save(); gitRefresh(); renderPanes(); renderProjects(); });
     const btn = (label, title, fn, cls = '') => h(`button${cls}`, { title, onclick: fn }, label);
     const branch = h('span.git-branch');
     const busy = h('span.git-busy.muted');
@@ -2050,11 +2257,12 @@
           h('div.git-free', h('span.mono.muted', '$ git'), free, h('button', { onclick: gitFree, title: 'Ejecutar el comando (Enter)' }, 'Ejecutar')))));
     $('#term-host').append(root);
     gitPane = { root, repo, branch, busy, msg, newBranch, free, left, rtabs, right };
-    // refresco automático mientras la pestaña está visible
-    setInterval(() => { if (state.activeSid === GIT_VIEW && !document.hidden && !Git.busy && !modalClose) gitRefresh(); }, 5000);
-    window.addEventListener('focus', () => { if (state.activeSid === GIT_VIEW) gitRefresh(); });
+    viewPanes.set(bound.git, gitPane);
     return gitPane;
   }
+  // refresco automático mientras una vista git está visible
+  setInterval(() => { if (viewKind(state.activeSid) === 'git' && !document.hidden && !Git.busy && !modalClose) gitRefresh(); }, 5000);
+  window.addEventListener('focus', () => { if (viewKind(state.activeSid) === 'git') gitRefresh(); });
 
   function fileRow(f, area) {
     const sel = Git.selected && Git.selected.path === f.path && Git.selected.area === area;
@@ -2189,15 +2397,13 @@
   }
 
   // ---------- bases de datos: conexiones (.env del bridge) + pestaña DB en el centro ----------
-  const DB_VIEW = 'db:main';
-  const isViewSid = (sid) => isPageView(sid) || sid === DB_VIEW || sid === GIT_VIEW || sid === SFTP_VIEW;
+  const isViewSid = (sid) => isPageView(sid) || !!viewBySid(sid);
   const DB_ENGINES = { mysql: 'MySQL / MariaDB', postgres: 'PostgreSQL', sqlite: 'SQLite' };
   const DB_PORTS = { mysql: '3306', postgres: '5432' };
   /** Respuesta de db.list: { envFile, cli, clients, skills, conns } (sin contraseñas). */
   let dbInfo = null;
   let dbError = null; // error de la última carga (p. ej. bridge desactualizado)
-  let dbPane = null;
-  let dbLast = null; // último resultado { columns, rows, … } para exportar
+  let dbPane = null; // panel de la vista DB enlazada; dbPane.last = último resultado (para exportar)
   const dbConnById = (id) => (dbInfo ? dbInfo.conns.find((c) => c.id === id) : null) || null;
   const dbTarget = (c) => (c.engine === 'sqlite' ? tilde(c.database) : `${c.user}@${c.host || 'localhost'}:${c.port || DB_PORTS[c.engine]}${c.database ? '/' + c.database : ''}`);
 
@@ -2208,10 +2414,13 @@
       if (state.ui.rtab === 'dbs') renderRight(); else toast(e.message, 'err');
       return;
     }
-    const cur = dbConnById(state.db.connId);
-    if (state.db.connId && !(cur && cur.enabled)) state.db.connId = null;
     const first = dbInfo.conns.find((c) => c.enabled);
-    if (!state.db.connId && first) state.db.connId = first.id;
+    for (const d of viewDatas('db')) {
+      const cur = dbConnById(d.connId);
+      if (d.connId && !(cur && cur.enabled)) d.connId = null;
+      if (!d.connId && first) d.connId = first.id;
+    }
+    renderProjects();
     if (state.ui.rtab === 'dbs') renderRight();
     if (dbPane) { renderDbBar(); loadDbTables(); }
   }
@@ -2380,7 +2589,7 @@
     if (!(await confirmBox(`¿Eliminar la conexión "${c.name}"?`, 'Se borra del .env; los agentes dejarán de verla.'))) return;
     try {
       await Bridge.call('db.delete', { id: c.id });
-      if (state.db.connId === c.id) state.db.connId = null;
+      for (const d of viewDatas('db')) if (d.connId === c.id) d.connId = null;
       save();
       loadDbs();
     } catch (e) { toast(e.message, 'err'); }
@@ -2398,6 +2607,7 @@
     try { sshInfo = await Bridge.call('ssh.list'); sshError = null; } catch (e) { sshError = e.message; }
     if (state.ui.rtab === 'ssh') renderRight();
     renderSftpBar();
+    renderProjects(); // nombres de servidor en las vistas Archivos
   }
 
   function renderSsh() {
@@ -2535,7 +2745,7 @@
     const doSave = async () => {
       try {
         const saved = await Bridge.call('ssh.save', { host: collect() });
-        if (c && (c.dir || '') !== (saved.dir || '')) { delete state.sftp.remote[saved.id]; save(); } // SFTP arranca en la nueva ruta
+        if (c && (c.dir || '') !== (saved.dir || '')) { for (const d of viewDatas('sftp')) delete d.remote[saved.id]; save(); } // SFTP arranca en la nueva ruta
         modalClose(true);
         toast(`Guardado en ${tilde(sshInfo ? sshInfo.envFile : 'ssh.env')}`, 'ok');
         loadSsh();
@@ -2576,9 +2786,8 @@
   // ----- pestaña Archivos (SFTP, panel central) -----
   // Dos paneles como FileZilla: local (dentro de FRAP_FS_ROOT) ↔ servidor SSH. Las transferencias van
   // en una cola, de a una, y cada una es un `sftp` del bridge (la contraseña la entrega askpass).
-  const SFTP_VIEW = 'sftp:main';
-  let sftpPane = null;
-  const sftpQueue = []; // {tid, up, name, from, to, isDir, hostId, status: wait|run|ok|err|cancel, msg, started, ms}
+  let sftpPane = null; // panel de la vista Archivos enlazada
+  const sftpQueue = []; // cola común a todas las vistas Archivos (una transferencia a la vez) // {tid, up, name, from, to, isDir, hostId, status: wait|run|ok|err|cancel, msg, started, ms}
   let sftpBusy = false;
   const fmtBytes = (n) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`
     : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`);
@@ -2592,13 +2801,17 @@
   const sftpHosts = () => (sshInfo ? sshInfo.hosts.filter((c) => c.enabled) : []);
   const sftpHost = () => sftpHosts().find((c) => c.id === state.sftp.hostId) || null;
 
+  /** Abre (o enfoca) la vista Archivos del proyecto activo; con hostId, cambia a ese servidor. */
   function openSftpView(hostId) {
-    state.sftp.open = true;
+    if (!needProject()) return;
+    bindView(viewFor('sftp')); // enlazar antes de tocar state.sftp
     if (hostId) state.sftp.hostId = hostId;
-    state.activeSid = SFTP_VIEW;
-    save();
-    renderAll();
+    const { fresh } = showView('sftp');
+    const pane = sftpPane;
     (sshInfo ? Promise.resolve() : loadSsh()).then(() => {
+      if (sftpPane !== pane) return;
+      renderSftpQueue();
+      if (!fresh && !hostId) { renderSftpBar(); return; } // ya abierta: se queda donde estaba
       const hosts = sftpHosts();
       if (!sftpHost() && hosts.length) state.sftp.hostId = hosts[0].id;
       const c0 = sftpHost();
@@ -2607,15 +2820,6 @@
       sftpLoad('local');
       sftpLoad('remote');
     });
-  }
-  function closeSftpView() {
-    state.sftp.open = false;
-    if (state.activeSid === SFTP_VIEW) {
-      const list = sessionsOf(state.activeProject);
-      state.activeSid = list.length ? list[list.length - 1].sid : null;
-    }
-    save();
-    renderAll();
   }
   function sftpStatusLine() {
     const c = sftpHost();
@@ -2671,7 +2875,7 @@
   function ensureSftpPane() {
     if (sftpPane) return sftpPane;
     const host = h('select.db-conn', { title: 'Servidor (los de la pestaña SSH que estén activos)' });
-    host.addEventListener('change', () => { state.sftp.hostId = host.value; const hc = sftpHost(); if (hc && hc.dir) delete state.sftp.remote[hc.id]; save(); renderSftpBar(); sftpLoad('remote'); renderPanes(); });
+    host.addEventListener('change', () => { state.sftp.hostId = host.value; const hc = sftpHost(); if (hc && hc.dir) delete state.sftp.remote[hc.id]; save(); renderSftpBar(); sftpLoad('remote'); renderPanes(); renderProjects(); });
     const hidden = h('input', { type: 'checkbox' });
     hidden.checked = !!state.sftp.hidden;
     hidden.addEventListener('change', () => { state.sftp.hidden = hidden.checked; save(); sftpLoad('local'); renderSftpList('remote'); });
@@ -2690,6 +2894,7 @@
       queue);
     $('#term-host').append(root);
     sftpPane = { root, host, hidden, local, remote, queue };
+    viewPanes.set(bound.sftp, sftpPane);
     renderSftpBar();
     renderSftpQueue();
     return sftpPane;
@@ -2719,6 +2924,7 @@
       const r = remote
         ? await Bridge.call('sftp.list', { id: c.id, path: target })
         : await Bridge.call('fs.list', { path: target, dirsOnly: false, hidden: true, details: true });
+      if (sftpPane !== p) { s.loading = false; return; } // se cambió de vista mientras cargaba
       if (remote && state.sftp.hostId !== c.id) return; // cambió de servidor mientras cargaba
       if (r.path !== s.path) { s.sel.clear(); s.last = null; }
       s.path = r.path;
@@ -2730,6 +2936,7 @@
       else state.sftp.local = r.path;
       save();
     } catch (e) {
+      if (sftpPane !== p) { s.loading = false; return; }
       s.error = e.message;
       if (remote && path == null && state.sftp.remote[c.id]) { delete state.sftp.remote[c.id]; save(); } // la ruta guardada ya no existe
     }
@@ -2828,7 +3035,7 @@
         tid: uid(), up, name: e.name, isDir: !!e.dir, hostId: c.id, size: e.dir ? null : e.size,
         from: up ? joinLocal(src.path, e.name) : joinRemote(src.path, e.name),
         to: up ? joinRemote(dst.path, e.name) : joinLocal(dst.path, e.name),
-        status: 'wait',
+        status: 'wait', pane: p,
       });
     }
     renderSftpQueue();
@@ -2857,7 +3064,7 @@
     sftpBusy = false;
     renderSftpQueue();
     // refresca el lado de destino si sigue abierto en esa carpeta
-    if (sftpPane && !sftpQueue.some((j) => j.status === 'wait' && j.up === job.up)) {
+    if (sftpPane && sftpPane === job.pane && !sftpQueue.some((j) => j.status === 'wait' && j.up === job.up)) {
       const key = job.up ? 'remote' : 'local';
       if (!job.up || state.sftp.hostId === job.hostId) sftpLoad(key, sftpPane[key].path);
     }
@@ -2929,24 +3136,15 @@
   }
 
   // ----- pestaña DB (panel central) -----
+  /** Abre (o enfoca) la vista DB del proyecto activo; con connId, cambia a esa conexión. */
   function openDbView(connId) {
-    state.db.open = true;
+    if (!needProject()) return;
+    bindView(viewFor('db')); // enlazar antes de tocar state.db
     if (connId) state.db.connId = connId;
-    state.activeSid = DB_VIEW;
-    save();
-    renderAll();
+    const { fresh } = showView('db');
     if (!dbInfo) loadDbs();
-    else { renderDbBar(); loadDbTables(); }
+    else if (!fresh || connId) { renderDbBar(); loadDbTables(); }
     requestAnimationFrame(() => dbPane && dbPane.sql.focus());
-  }
-  function closeDbView() {
-    state.db.open = false;
-    if (state.activeSid === DB_VIEW) {
-      const list = sessionsOf(state.activeProject);
-      state.activeSid = list.length ? list[list.length - 1].sid : null;
-    }
-    save();
-    renderAll();
   }
   function dbStatusLine() {
     const c = dbConnById(state.db.connId);
@@ -2961,7 +3159,7 @@
   function ensureDbPane() {
     if (dbPane) return dbPane;
     const conn = h('select.db-conn', { title: 'Conexión' });
-    conn.addEventListener('change', () => { state.db.connId = conn.value; save(); renderDbBar(); loadDbTables(); renderPanes(); });
+    conn.addEventListener('change', () => { state.db.connId = conn.value; save(); renderDbBar(); loadDbTables(); renderPanes(); renderProjects(); });
     const mode = h('span.badge');
     const limit = h('select', { title: 'Máximo de filas' }, [100, 500, 1000, 5000, 20000].map((n) => h('option', { value: String(n) }, `${n} filas`)));
     limit.value = String(state.db.limit || 500);
@@ -2998,7 +3196,8 @@
         h('div.db-side', filter, tableList),
         h('div.db-work', sql, result)));
     $('#term-host').append(root);
-    dbPane = { root, conn, mode, limit, history, run, sql, tableList, filter, result, status };
+    dbPane = { root, conn, mode, limit, history, run, sql, tableList, filter, result, status, last: null };
+    viewPanes.set(bound.db, dbPane);
     renderDbBar();
     loadDbTables();
     return dbPane;
@@ -3027,14 +3226,15 @@
 
   async function loadDbTables() {
     if (!dbPane) return;
-    const list = dbPane.tableList;
+    const pane = dbPane;
+    const list = pane.tableList;
     const cc = dbConnById(state.db.connId);
     const c = cc && cc.enabled ? cc : null;
     if (!c || !Bridge.ready) { list.replaceChildren(h('p.muted', c ? 'Bridge desconectado.' : 'Elige una conexión activa.')); return; }
     list.replaceChildren(h('p.muted', 'Cargando tablas…'));
     try {
       const tables = await Bridge.call('db.tables', { id: c.id });
-      if (state.db.connId !== c.id) return;
+      if (dbPane !== pane || state.db.connId !== c.id) return; // cambió de vista o de conexión
       list.replaceChildren(...(tables.length ? tables.map((t) => h('div.db-table', {
         dataset: { name: t.name },
         title: 'Clic: ver 100 filas · doble clic: insertar el nombre',
@@ -3046,13 +3246,14 @@
         },
         ondblclick: () => { dbPane.sql.setRangeText(quoteIdent(c.engine, t.name), dbPane.sql.selectionStart, dbPane.sql.selectionEnd, 'end'); dbPane.sql.focus(); },
       }, `${t.view ? '◫' : '▦'} ${t.name}`)) : [h('p.muted', 'Sin tablas.')]));
-      dbPane.filter.dispatchEvent(new Event('input'));
+      pane.filter.dispatchEvent(new Event('input'));
     } catch (e) { list.replaceChildren(h('p.muted', { style: 'color:var(--err)' }, e.message)); }
   }
 
   async function runDbQuery() {
     const p = ensureDbPane();
-    const c = dbConnById(state.db.connId);
+    const st = state.db; // la consulta sigue en su vista aunque se cambie de proyecto mientras corre
+    const c = dbConnById(st.connId);
     if (!c) { toast('Elige una conexión', 'err'); return; }
     const { selectionStart: a, selectionEnd: b } = p.sql;
     const sql = (a !== b ? p.sql.value.slice(a, b) : p.sql.value).trim();
@@ -3061,7 +3262,7 @@
     p.status.textContent = 'Ejecutando…';
     p.result.classList.add('running');
     try {
-      const args = { id: c.id, sql, limit: state.db.limit || 500 };
+      const args = { id: c.id, sql, limit: st.limit || 500 };
       let r;
       try {
         r = await Bridge.call('db.query', args); // primero siempre en solo lectura
@@ -3080,14 +3281,14 @@
         p.status.textContent = 'Ejecutando…';
         r = await Bridge.call('db.query', { ...args, write: true });
       }
-      dbLast = r;
-      renderDbResult(r);
+      p.last = r;
+      renderDbResult(r, p);
       p.status.textContent = `${r.rowCount} fila${r.rowCount === 1 ? '' : 's'}${r.truncated ? ' (truncado)' : ''} · ${r.ms} ms`;
-      state.db.history = [sql, ...state.db.history.filter((q) => q !== sql)].slice(0, 30);
+      st.history = [sql, ...st.history.filter((q) => q !== sql)].slice(0, 30);
       save();
-      renderDbBar();
+      if (dbPane === p) renderDbBar();
     } catch (e) {
-      dbLast = null;
+      p.last = null;
       p.result.replaceChildren(h('pre.db-error', e.message));
       p.status.textContent = 'Error';
     }
@@ -3095,8 +3296,7 @@
     p.run.disabled = false;
   }
 
-  function renderDbResult(r) {
-    const p = dbPane;
+  function renderDbResult(r, p = dbPane) {
     if (!r.columns.length) { p.result.replaceChildren(h('p.muted', r.message || 'Sin filas.')); return; }
     const cell = (v) => {
       if (v === null) return h('td.null', 'NULL');
@@ -3125,6 +3325,7 @@
   }
 
   function exportDbCsv() {
+    const dbLast = dbPane && dbPane.last;
     if (!dbLast || !dbLast.columns.length) { toast('No hay resultados para exportar', 'err'); return; }
     const q = (v) => (v === null ? '' : /[",\n\r]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
     const text = [dbLast.columns.map(q).join(','), ...dbLast.rows.map((r) => r.map(q).join(','))].join('\n');
@@ -4271,9 +4472,7 @@
       case 'KeyF': openSftpView(); break;
       case 'KeyM': togglePlay(); break;
       case 'KeyW':
-        if (state.activeSid === DB_VIEW) closeDbView();
-        else if (state.activeSid === GIT_VIEW) closeGitView();
-        else if (state.activeSid === SFTP_VIEW) closeSftpView();
+        if (activeView()) closeView(activeView());
         else if (isPageView(state.activeSid)) closePageView(state.activeSid.slice(PAGE_PREFIX.length));
         else if (state.activeSid) closeTerm(state.activeSid);
         break;
@@ -4616,6 +4815,7 @@
       const remote = await Bridge.call('state.get');
       if (remote && (remote.savedAt || 0) > (state.savedAt || 0)) {
         state = mergeState(DEFAULT_STATE(), remote);
+        bound = { git: null, db: null, sftp: null }; // las vistas se vuelven a enlazar con los datos nuevos
         storeSet('frap.state', state);
         applyPanels();
         for (const b of $$('#rtabs button')) b.classList.toggle('active', b.dataset.rtab === state.ui.rtab);
@@ -4624,6 +4824,8 @@
       }
     } catch (_) { /* sin estado remoto */ }
     await syncSessions(true);
+    restoreChecked = false; // en cada (re)conexión: ¿se perdieron terminales? (equipo apagado/reiniciado)
+    checkRestore();
     tickTimers();
     loadConfig(true);
     loadDbs();

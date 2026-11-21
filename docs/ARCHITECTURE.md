@@ -27,6 +27,20 @@ navegador (file://src/index.html)                     máquina local
 - **YouTube:** rechaza embeds desde `file://` (error 153, sin Referer). Por eso el bridge sirve `GET /yt-player`, un relé en `http://127.0.0.1:<puerto>` que carga la IFrame API de YouTube. La UI lo incrusta y le habla por `postMessage` (`{frap:'yt', cmd:'load'|'play'|'pause'|'seek'|'volume'}`), y recibe de vuelta `ready`, `state`, `time` y `error`. La UI valida `event.source` y `event.origin`, y el relé solo acepta mensajes de su ventana padre. El relé no usa token, y el WebSocket rechaza su Origin http, así que no da acceso al bridge.
 - El reproductor (dock) vive fuera de `#rbody`, así que re-renderizar el panel no corta la música. Fuera de la pestaña Música el video se minimiza, pero sigue sonando.
 
+## Terminales tras apagar el equipo
+
+- Las sesiones sobreviven al bridge, pero no a un apagado: son procesos `frap_pty.py` con su socket en `$XDG_RUNTIME_DIR` (tmpfs), y ambos desaparecen al apagar.
+- La UI guarda una foto de las terminales vivas en `state.lastTerms` (`[{sid, projectId, kind, title, cwd, sshId?}]`), que persiste en localStorage y state.json. Se actualiza en cada `renderAll`, solo si cambió.
+- En cada conexión al bridge, `checkRestore()` busca los sids de la foto que ya no están en `sessions.list`. Si falta alguno, ofrece reabrirlos con `reopenTerminals` (lo mismo que el import), retomando la última conversación de cada IA (`claude --continue`, `codex resume --last`, `opencode --continue`).
+- Hasta que el usuario decide, la foto no se pisa, porque si no, el arranque vacío la borraría. "Ahora no" las sigue ofreciendo; "Descartar" las olvida.
+
+## Vistas por proyecto (git, DB, Archivos)
+
+- Como las terminales, cada proyecto tiene sus propias pestañas de Git, DB y Archivos (SFTP), listadas en el panel izquierdo junto a sus terminales. Sid: `git:<projectId>`, `db:<projectId>`, `sftp:<projectId>`. Una por tipo y proyecto: los launchers y Alt+Shift+G/D/F abren o enfocan la del proyecto activo. Requieren un proyecto.
+- Persisten en `state.views = [{kind, projectId, open, data}]`. `data` es lo de cada vista (repo, conexión, SQL e historial, servidor y rutas). Cerrar la pestaña deja `open: false` y conserva `data`. Borrar el proyecto borra sus vistas.
+- Hay un panel DOM por vista (`viewPanes`). `bindView(v)` hace que `state.git/db/sftp` apunten a `v.data` y `gitPane`/`dbPane`/`sftpPane`/`Git` a su panel y memoria, así el código de cada vista opera sobre "la enlazada". Lo asíncrono captura su panel (o `rt`) antes de esperar y no pinta si se cambió de vista. `gitAction` fija repo y memoria (`fn(g, pane)`), así una acción no salta de repo a mitad. La cola de transferencias SFTP es común a todas las vistas.
+- Estados viejos (`git:main`, `state.git.open`…) se migran a la vista del proyecto activo (`migrateViews`).
+
 ## Rutas clicables
 
 - Cada xterm registra un *link provider* (`pathLinkProvider`). Por cada fila, `logicalLine()` une las filas partidas (`isWrapped`) y arma un mapa índice → celda que respeta los caracteres anchos (emoji, CJK). `pathCandidates()` busca rutas con un `:línea:col` opcional, y `paths.check` filtra las que existen, con una caché de 15 s.

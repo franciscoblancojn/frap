@@ -55,6 +55,6 @@ docs/                  arquitectura, protocolo y roadmap
 - Los tests aíslan `HOME`, `FRAP_HOME` y `FRAP_FS_ROOT` en un tmpdir. Nunca dependas del `~/.claude` real.
 - Las sesiones **sobreviven al bridge**: un test que crea terminales debe cerrarlas con `session.kill`, porque matar el bridge no basta y quedarían procesos vivos.
 - Los tests de SQLite corren siempre. Los de MySQL y PostgreSQL solo si defines `FRAP_TEST_MYSQL` / `FRAP_TEST_PG` con el JSON de la conexión (ver la cabecera de `tests/db.test.js`).
-- El estado de la UI vive en `state` (index.js). Se persiste en localStorage y en `~/.config/frap/state.json` vía `state.set`, y gana el `savedAt` más reciente. Las terminales **no** se persisten en el estado: se derivan de `sessions.list` del bridge (`meta.projectId`).
+- El estado de la UI vive en `state` (index.js). Se persiste en localStorage y en `~/.config/frap/state.json` vía `state.set`, y gana el `savedAt` más reciente. Las terminales **no** se persisten en el estado: se derivan de `sessions.list` del bridge (`meta.projectId`). Solo se guarda una foto (`state.lastTerms`) para ofrecer reabrirlas si al conectar faltan (equipo apagado o reiniciado).
 - Para cambios visuales, verifica en un navegador real: abre `src/index.html` con el bridge corriendo y revisa la consola.
 - Actualiza `docs/ROADMAP.md` cuando completes o agregues ítems.
