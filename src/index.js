@@ -128,6 +128,7 @@
     timers: [],
     // secciones del panel izquierdo: la primera es siempre "Todas" (ver ensureSections)
     sections: [{ id: 'all', icon: '🗂️', title: 'Todas', desc: 'Todas las carpetas', display: 'both' }],
+    modules: { off: [] }, // módulos de la UI apagados (Ajustes → Módulos); vacío = todo activado
     settings: {
       fontSize: 13,
       editor: 'frap', // rutas clicadas en la terminal: 'frap' = editor de código de FRAP; si no, un comando (code, cursor…)
@@ -158,6 +159,7 @@
       music: { ...base.music, ...(saved.music || {}) },
       git: { ...base.git, ...(saved.git || {}) },
       voice: { ...base.voice, ...(saved.voice || {}) },
+      modules: { off: Array.isArray((saved.modules || {}).off) ? saved.modules.off.filter((k) => typeof k === 'string') : [] },
       sftp: { ...base.sftp, ...(saved.sftp || {}), remote: { ...((saved.sftp || {}).remote || {}) } },
       seeded: Array.isArray(saved.seeded) ? saved.seeded : [], // no el del estado por defecto: si no, nunca se siembra
     });
@@ -861,7 +863,8 @@
   const extEditorName = () => cmdName(extEditorCmd());
   /** Ruta clicada en la terminal: al editor de FRAP (por defecto) o al comando configurado en Ajustes. */
   async function openInEditor(p, line, col, isDir, pid) {
-    if ((state.settings.editor || 'frap') === 'frap') { await openInFrap(p, line, col, isDir, pid); return; }
+    if ((state.settings.editor || 'frap') === 'frap' && launchOn('code')) { await openInFrap(p, line, col, isDir, pid); return; }
+    if ((state.settings.editor || 'frap') === 'frap') { await openExternal(p, line, col); return; } // editor de FRAP apagado (Módulos)
     await openExternal(p, line, col, state.settings.editor);
   }
   async function openExternal(p, line, col, cmd = extEditorCmd()) {
@@ -880,7 +883,7 @@
     const p = { id: uid(), name: basename(folder), folders: [folder] };
     state.projects.push(p);
     const sec = (state.sections || []).find((s) => s.id === state.ui.section);
-    if (sec && sec.id !== 'all') addToSection(sec, p.id); // creada estando en una sección: queda en ella
+    if (sec && sec.id !== 'all' && modOn('left.sections')) addToSection(sec, p.id); // creada estando en una sección: queda en ella
     state.activeProject = p.id;
     state.activeSid = null;
     save();
@@ -1406,10 +1409,12 @@
     if (dragging) { dragging.pendingRender = true; return; } // no romper el arrastre en curso
     hideProjectTip();
     ensureSections();
-    renderSections();
+    const secOn = modOn('left.sections');
+    $('#sections').classList.toggle('hidden', !secOn);
+    if (secOn) renderSections();
     const root = $('#projects');
     root.replaceChildren();
-    const sec = activeSection();
+    const sec = secOn ? activeSection() : state.sections[0]; // apagadas: "Todas"
     const shown = sectionProjects(sec);
     if (!state.projects.length) {
       root.append(h('div.empty-list', 'Sin proyectos. Pulsa ＋ para agregar una carpeta.'));
@@ -1601,7 +1606,7 @@
     document.addEventListener('mousemove', move);
     document.addEventListener('mouseup', up);
   }
-  const splitN = () => Math.min(SPLIT_MAX, Math.max(1, Number(state.ui.split) || 1));
+  const splitN = () => (modOn('center.split') ? Math.min(SPLIT_MAX, Math.max(1, Number(state.ui.split) || 1)) : 1);
   /** Terminales agrupadas (vacío si no hay división o hay menos de 2). */
   function splitGroup() {
     const n = splitN();
@@ -1947,8 +1952,12 @@
     updateDock();
   }
   function renderRight() {
-    const fn = RTABS[state.ui.rtab] || renderProcs;
     const body = $('#rbody');
+    if (!visibleRtabs().length) {
+      body.replaceChildren(h('div.empty-list', 'Todas las pestañas del panel derecho están apagadas. Actívalas en ⚙ Ajustes → Módulos.'));
+      return;
+    }
+    const fn = RTABS[state.ui.rtab] || renderProcs;
     const scroll = body.scrollTop;
     body.replaceChildren(...[].concat(fn()).filter(Boolean));
     body.scrollTop = scroll;
@@ -6230,7 +6239,7 @@
   }
 
   function updateDock() {
-    const has = M().tracks.length > 0;
+    const has = M().tracks.length > 0 && rtabOn('music');
     const root = $('#music-dock');
     root.classList.toggle('hidden', !has);
     renderStatusMusic();
@@ -6424,7 +6433,7 @@
   function tickTimers() {
     const now = Date.now();
     for (const t of state.timers) {
-      if (t.enabled && t.nextAt && t.nextAt <= now) fireTimer(t, now - t.nextAt > 60 * 1000);
+      if (t.enabled && t.nextAt && t.nextAt <= now && rtabOn('timers')) fireTimer(t, now - t.nextAt > 60 * 1000);
     }
     // actualiza contadores visibles sin re-renderizar
     for (const el of $$('[data-timer-left]')) {
@@ -6445,7 +6454,7 @@
   function renderStatusTimer() {
     const el = $('#st-timer');
     if (!el) return;
-    const next = state.timers.filter((t) => t.enabled && t.nextAt).sort((a, b) => a.nextAt - b.nextAt)[0];
+    const next = state.timers.filter((t) => t.enabled && t.nextAt && rtabOn('timers')).sort((a, b) => a.nextAt - b.nextAt)[0];
     const label = next ? `${next.icon || '⏰'} ${fmtCountdown(timerLeft(next))} ${next.title.length > 18 ? next.title.slice(0, 17) + '…' : next.title}` : '';
     if (el.dataset.label === label) return;
     el.dataset.label = label;
@@ -6825,6 +6834,10 @@
         h('div.field', h('label', 'Editor para rutas clicadas en la terminal'), editor,
           h('span.muted', { style: 'font-size:11px' }, 'frap = el editor de código de FRAP (pestaña "Código"). O un comando: code (VS Code), cursor, codium, windsurf…')),
         h('div.field', h('label', 'Editor externo ("Abrir en…" desde el editor de FRAP)'), extEditor),
+        h('h4', { style: 'margin:8px 0 0' }, 'Módulos'),
+        h('div.field-row', { style: 'align-items:center' },
+          h('span.muted.grow', `Elige qué botones y pestañas se ven en cada panel: ${MODULE_LIST.filter((m) => modOn(m.key)).length} de ${MODULE_LIST.length} activados.`),
+          h('button', { onclick: () => { modalClose(true); openModules(); } }, '🧩 Personalizar módulos…')),
         h('h4', { style: 'margin:8px 0 0' }, 'Lanzadores'),
         h('p.muted', { style: 'margin:0' }, 'Comando que se escribe en una shell nueva. La primera carpeta del proyecto es el cwd; las demás se pasan con el flag de "carpeta extra".'),
         ...launchers.map((l) => h('div.field-row',
@@ -6836,6 +6849,113 @@
           'Alt+1…9  ir a pestaña\nAlt+Shift+T  nueva shell   ·   Alt+Shift+C/X/O  claude/codex/opencode   ·   Alt+Shift+D  DB   ·   Alt+Shift+G  Git   ·   Alt+Shift+F  Archivos   ·   Alt+Shift+N  Notas   ·   Alt+Shift+V  hablar (voz)   ·   Alt+Shift+M  música ⏯\nAlt+Shift+W  cerrar pestaña   ·   Alt+Shift+B / P  ocultar paneles\nCtrl+Shift+C  copiar selección   ·   Ctrl+Shift+V  pegar'),
       ],
       foot: [h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
+    });
+  }
+
+  // ======================================================================
+  // Módulos: qué partes de la UI se muestran (Ajustes → Módulos)
+  // ======================================================================
+  // state.modules.off = claves desactivadas (todo lo nuevo sale activado). Desactivar un módulo oculta su botón,
+  // pestaña o barra y su atajo; lo que ya está abierto (una vista de Git, una terminal) sigue hasta cerrarlo.
+  const MODULES = {
+    left: [
+      { key: 'left.sections', icon: '🗂️', name: 'Secciones de carpetas', desc: 'Barra de secciones arriba de las carpetas (Todas, Trabajo…)' },
+    ],
+    center: [
+      { key: 'center.shell', launch: 'shell', icon: '＞_', name: 'Shell', desc: 'Nueva terminal (Alt+Shift+T)' },
+      { key: 'center.claude', launch: 'claude', img: 'claude', name: 'Claude Code', desc: 'Alt+Shift+C' },
+      { key: 'center.codex', launch: 'codex', img: 'codex', name: 'Codex', desc: 'Alt+Shift+X' },
+      { key: 'center.opencode', launch: 'opencode', img: 'opencode', name: 'opencode', desc: 'Alt+Shift+O' },
+      { key: 'center.git', launch: 'git', img: 'git', name: 'Git', desc: 'Vista de git guiada (Alt+Shift+G)' },
+      { key: 'center.ssh', launch: 'ssh', img: 'ssh', name: 'SSH', desc: 'Conectar a un servidor' },
+      { key: 'center.sftp', launch: 'sftp', icon: '⇅', name: 'Archivos (SFTP)', desc: 'Subir y descargar (Alt+Shift+F)' },
+      { key: 'center.db', launch: 'db', img: 'db', name: 'Bases de datos', desc: 'Consultas SQL (Alt+Shift+D)' },
+      { key: 'center.notes', launch: 'notes', img: 'notes', name: 'Notas', desc: 'NOTES.md de la carpeta (Alt+Shift+N)' },
+      { key: 'center.code', launch: 'code', img: 'code', name: 'Editor de código', desc: 'Alt+Shift+E · si se apaga, las rutas clicadas van al editor externo' },
+      { key: 'center.split', icon: '⊞', name: 'Pantalla dividida', desc: 'Botón para ver hasta 4 terminales a la vez' },
+    ],
+    right: [
+      { key: 'right.procs', rtab: 'procs', icon: '⚙️', name: 'Procesos', desc: 'Procesos de las terminales del proyecto' },
+      { key: 'right.prompts', rtab: 'prompts', icon: '💬', name: 'Prompts', desc: 'Prompts guardados para enviar a la IA' },
+      { key: 'right.actions', rtab: 'actions', icon: '▶️', name: 'Acciones', desc: 'Comandos con nombre que se encienden y apagan' },
+      { key: 'right.pages', rtab: 'pages', icon: '🌐', name: 'Páginas', desc: 'Accesos a páginas web' },
+      { key: 'right.dbs', rtab: 'dbs', icon: '🛢️', name: 'Bases de datos', desc: 'Conexiones de BD' },
+      { key: 'right.ssh', rtab: 'ssh', icon: '🔐', name: 'SSH', desc: 'Servidores SSH' },
+      { key: 'right.music', rtab: 'music', icon: '🎵', name: 'Música', desc: 'Reproductor (y su barra abajo)' },
+      { key: 'right.timers', rtab: 'timers', icon: '⏰', name: 'Temporizador', desc: 'Recordatorios (apagado: no avisan)' },
+      { key: 'right.agents', rtab: 'agents', icon: '🤖', name: 'Agentes', desc: 'Subagentes de claude/codex' },
+      { key: 'right.skills', rtab: 'skills', icon: '🧩', name: 'Skills', desc: 'Skills instaladas' },
+      { key: 'right.commands', rtab: 'commands', icon: '⌘', name: 'Comandos', desc: 'Comandos / de las IA' },
+      { key: 'right.hooks', rtab: 'hooks', icon: '🪝', name: 'Hooks', desc: 'Hooks de claude' },
+      { key: 'right.memory', rtab: 'memory', icon: '🧠', name: 'Memoria', desc: 'CLAUDE.md / AGENTS.md' },
+      { key: 'right.voice', icon: '🎤', name: 'Voz (Hablar)', desc: 'Dictado a la IA, abajo del panel (Alt+Shift+V)' },
+    ],
+  };
+  const MODULE_LIST = [...MODULES.left, ...MODULES.center, ...MODULES.right];
+  const MODULE_PANELS = [['left', 'Panel izquierdo'], ['center', 'Panel central'], ['right', 'Panel derecho']];
+  const modOn = (key) => !((state.modules && state.modules.off) || []).includes(key);
+  const launchOn = (kind) => modOn(`center.${kind}`);
+  const rtabOn = (tab) => modOn(`right.${tab}`);
+  const visibleRtabs = () => MODULES.right.filter((m) => m.rtab && modOn(m.key)).map((m) => m.rtab);
+  /** Atajo Alt+Shift+… → módulo que lo da (si está apagado, el atajo no hace nada). */
+  const SHORTCUT_MODULE = { KeyT: 'center.shell', KeyC: 'center.claude', KeyX: 'center.codex', KeyO: 'center.opencode', KeyD: 'center.db', KeyG: 'center.git', KeyF: 'center.sftp', KeyN: 'center.notes', KeyE: 'center.code', KeyV: 'right.voice', KeyM: 'right.music' };
+
+  function setModule(key, on) {
+    const off = new Set((state.modules && state.modules.off) || []);
+    if (on) off.delete(key); else off.add(key);
+    state.modules = { off: [...off] };
+    save();
+    applyModules();
+  }
+  /** Muestra/oculta botones, pestañas y barras según state.modules. */
+  function applyModules() {
+    for (const m of MODULES.center) {
+      if (m.launch) { const b = $(`#launchers [data-launch="${m.launch}"]`); if (b) b.classList.toggle('hidden', !modOn(m.key)); }
+    }
+    $('#btn-split').classList.toggle('hidden', !modOn('center.split'));
+    for (const b of $$('#rtabs button')) b.classList.toggle('hidden', !rtabOn(b.dataset.rtab));
+    const tabs = visibleRtabs();
+    $('#rtabs').classList.toggle('hidden', !tabs.length);
+    $('#voice-dock').classList.toggle('hidden', !modOn('right.voice'));
+    if (tabs.length && !tabs.includes(state.ui.rtab)) setRtab(tabs[0]); // la pestaña elegida se apagó
+    else { renderRight(); updateDock(); }
+    renderAll();
+  }
+
+  /** Modal de Módulos: tres columnas (izquierdo, central, derecho) con un switch por módulo. */
+  function openModules() {
+    const sw = (m) => {
+      const b = h('button', { role: 'switch', class: `switch ${modOn(m.key) ? 'on' : 'off'}`, 'aria-checked': String(modOn(m.key)), 'aria-label': m.name });
+      b.onclick = () => { setModule(m.key, !modOn(m.key)); refresh(); };
+      return b;
+    };
+    const cols = h('div.mod-cols');
+    const refresh = () => {
+      cols.replaceChildren(...MODULE_PANELS.map(([panel, title]) => {
+        const list = MODULES[panel];
+        const on = list.filter((m) => modOn(m.key)).length;
+        return h('div.mod-col',
+          h('div.mod-head', h('h4', title), h('span.muted', `${on}/${list.length}`), h('span.grow'),
+            list.length > 1 ? h('button.mini', { onclick: () => { for (const m of list) setModule(m.key, on < list.length); refresh(); } }, on < list.length ? 'Activar todo' : 'Desactivar todo') : null),
+          list.map((m) => h(`label.mod-row${modOn(m.key) ? '' : '.off'}`,
+            h('span.mod-ico', m.img ? h('img', { src: `vendor/icons/${m.img}.svg`, alt: '' }) : m.icon),
+            h('span.mod-txt', h('span.mod-name', m.name), h('span.mod-desc.muted', m.desc)),
+            sw(m))));
+      }));
+    };
+    refresh();
+    openModal({
+      title: 'Módulos',
+      wide: true,
+      body: [
+        h('p.muted', { style: 'margin:0 0 4px' }, 'Elige qué se muestra en cada panel. Todo viene activado; apagar un módulo oculta su botón o pestaña y su atajo (lo que ya está abierto sigue hasta que lo cierres). Se exporta e importa con la configuración.'),
+        cols,
+      ],
+      foot: [
+        h('button', { onclick: () => { state.modules = { off: [] }; save(); applyModules(); refresh(); } }, 'Restablecer (todo activado)'),
+        h('span.grow'),
+        h('button.primary', { onclick: () => modalClose(true) }, 'Listo'),
+      ],
     });
   }
 
@@ -6852,6 +6972,7 @@
     if (e.key === 'Escape' && modalClose) { modalClose(); return; }
     if (!isAppShortcut(e) || modalClose) return;
     e.preventDefault();
+    if (SHORTCUT_MODULE[e.code] && e.shiftKey && !modOn(SHORTCUT_MODULE[e.code])) return; // módulo apagado
     if (/^Digit/.test(e.code)) {
       const t = tabSessions()[Number(e.code.slice(5)) - 1];
       if (t) activate(t.sid);
@@ -6959,6 +7080,7 @@
     { key: 'actions', label: 'Acciones', count: (c) => (c.actions || []).length },
     { key: 'pages', label: 'Páginas', count: (c) => (c.pages || []).length },
     { key: 'timers', label: 'Temporizadores', count: (c) => (c.timers || []).length },
+    { key: 'modules', label: 'Módulos', count: (c) => MODULE_LIST.length - (((c.modules || {}).off) || []).length, sub: 'qué se muestra en cada panel' },
     { key: 'sections', label: 'Secciones del panel izquierdo', count: (c) => (c.sections || []).filter((s) => s.id !== 'all').length },
     { key: 'music', label: 'Música', count: (c) => ((c.music || {}).tracks || []).filter((t) => t.type === 'youtube').length, sub: 'solo enlaces de YouTube' },
     { key: 'settings', label: 'Ajustes', sub: 'fuente, editor, lanzadores de claude/codex/opencode' },
@@ -7128,6 +7250,9 @@
         } else if (key === 'timers') {
           state.timers = mergeById(state.timers, v);
           for (const t of state.timers) if (t.enabled && !t.nextAt) startTimer(t);
+        } else if (key === 'modules') {
+          state.modules = { off: Array.isArray((v || {}).off) ? v.off.filter((k) => typeof k === 'string') : [] };
+          applyModules();
         } else if (Array.isArray(v)) {
           state[key] = mergeById(state[key], v);
         }
@@ -7214,10 +7339,11 @@
       const remote = await Bridge.call('state.get');
       if (remote && (remote.savedAt || 0) > (state.savedAt || 0)) {
         state = mergeState(DEFAULT_STATE(), remote);
-        bound = { git: null, db: null, sftp: null, notes: null }; // las vistas se vuelven a enlazar con los datos nuevos
+        bound = { git: null, db: null, sftp: null, notes: null, code: null }; // las vistas se vuelven a enlazar con los datos nuevos
         storeSet('frap.state', state);
         applyPanels();
         for (const b of $$('#rtabs button')) b.classList.toggle('active', b.dataset.rtab === state.ui.rtab);
+        applyModules();
       } else if (!remote || (remote.savedAt || 0) < (state.savedAt || 0)) {
         save();
       }
@@ -7237,6 +7363,7 @@
 
   applyPanels();
   for (const b of $$('#rtabs button')) b.classList.toggle('active', b.dataset.rtab === state.ui.rtab);
+  applyModules();
   updateDock();
   renderAll();
   renderRight();

@@ -34,6 +34,18 @@ navegador (file://src/index.html)                     máquina local
 - En cada conexión al bridge, `checkRestore()` busca los sids de la foto que ya no están en `sessions.list`. Si falta alguno, ofrece reabrirlos con `reopenTerminals` (lo mismo que el import), retomando la última conversación de cada IA (`claude --continue`, `codex resume --last`, `opencode --continue`).
 - Hasta que el usuario decide, la foto no se pisa, porque si no, el arranque vacío la borraría. "Ahora no" las sigue ofreciendo; "Descartar" las olvida.
 
+## Módulos (Ajustes → Módulos)
+
+- Modal con tres columnas (panel izquierdo, central y derecho) y un switch por módulo: secciones de carpetas; lanzadores (shell, claude, codex, opencode, git, ssh, sftp, db, notas, código) y pantalla dividida; pestañas del panel derecho y el dock de voz. Lista en `MODULES` (index.js).
+- `state.modules.off` guarda solo lo apagado, así lo nuevo sale activado. `applyModules()` oculta botones, pestañas y barras (al arrancar, al cambiar algo y al llegar un estado remoto). Se exporta e importa como parte de la configuración ("Módulos").
+- Apagar un módulo oculta su botón o pestaña y su atajo; lo ya abierto sigue hasta cerrarlo. Además:
+  - Secciones apagadas: se ve "Todas".
+  - Pantalla dividida apagada: `splitN()` es 1.
+  - Editor apagado: las rutas clicadas van al editor externo.
+  - Música apagada: se oculta su barra.
+  - Temporizador apagado: no avisa.
+  - Si se apaga la pestaña derecha activa, pasa a la primera visible. Sin ninguna, el panel muestra un aviso.
+
 ## Secciones del panel izquierdo
 
 - Barra de chips arriba de las carpetas, como las listas de WhatsApp. `state.sections = [{id, icon, title, desc, display: 'both'|'icon'|'title', projects: [pid]}]` y `state.ui.section` guarda la elegida.
