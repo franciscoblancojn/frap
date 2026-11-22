@@ -270,7 +270,7 @@ function exportLocal() {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const abs = path.join(dir, e.name);
       const r = rel ? `${rel}/${e.name}` : e.name;
-      if (e.isDirectory()) walk(abs, r);
+      if (e.isDirectory()) { if (e.name !== 'node_modules') walk(abs, r); } // dependencias: se reinstalan (bun install)
       else if (e.isFile()) {
         const st = fs.statSync(abs);
         total += st.size;
@@ -361,7 +361,7 @@ Herramienta: \`node ${CLI}\`
 
 ## Scripts de una issue
 - Van en \`${path.join(LOCAL_DIR, 'scripts')}/<ID>/\` (no en la carpeta de la issue ni en los repos), numerados y descriptivos, con un comentario al inicio (qué hace, qué genera, cómo se ejecuta). Lo generado va en \`<ID>/salida/\`.
-- Si \`${path.join(LOCAL_DIR, 'scripts')}\` tiene utilidades compartidas (p. ej. \`conexion.ts\`, \`select.ts\`), se reutilizan y se ejecuta desde ahí (\`bun <ID>/<script>.ts\`). Las reglas propias del workspace (CLAUDE.md del repo o del workspace) mandan.
+- Se crean con \`frap-scripts new <ID>/<nombre.ext>\` y se ejecutan con \`frap-scripts run <ID>/<script>\` (skill frap-scripts: respeta el interruptor «IA» de cada script; si está apagado, se le pide al usuario). Las utilidades compartidas de \`${path.join(LOCAL_DIR, 'scripts')}\` (p. ej. \`conexion.ts\`, \`select.ts\`) se reutilizan. Las reglas propias del workspace (CLAUDE.md del repo o del workspace) mandan.
 - No escriben en bases de datos: si hace falta corregir datos, generan un \`.sql\` para revisarlo y ejecutarlo a mano.
 - Servidores y bases de datos solo por FRAP (skills frap-ssh y frap-db, solo lectura en BD).
 

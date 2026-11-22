@@ -422,7 +422,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'issues.list', 'issues.create', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -1942,6 +1942,7 @@
     hooks: renderHooks,
     memory: renderMemory,
     issues: renderIssues,
+    scripts: renderScripts,
     tunnels: renderTunnels,
   };
   function setRtab(name) {
@@ -1952,6 +1953,7 @@
     if (name === 'procs') pollProcs();
     else if (name === 'issues') loadIssues();
     else if (name === 'tunnels') loadTunnels(true);
+    else if (name === 'scripts') { loadScripts(); if (!issuesInfo) loadIssues(); }
     else if (name !== 'prompts' && name !== 'actions' && name !== 'pages' && name !== 'dbs' && name !== 'ssh' && name !== 'music' && name !== 'timers') loadConfig();
     if (name === 'dbs') loadDbs();
     if (name === 'ssh') loadSsh();
@@ -3651,8 +3653,16 @@
       !isRoot && { label: 'Mover a la papelera', danger: true, action: () => codeTrash(abs, isDir) },
       isDir && { label: 'Abrir terminal aquí', action: () => launch('shell', { cwd: abs, title: basename(abs) }) },
       (isDir || /\.(html?|svg|pdf|png|jpe?g|gif|webp|mp4|webm)$/i.test(abs)) && rtabOn('tunnels') && { label: 'Compartir por túnel…', action: () => { setRtab('tunnels'); editTunnel(null, { kind: 'path', path: abs, name: basename(abs) }); } },
+      { label: isDir ? 'Abrir en el explorador de archivos' : 'Mostrar en el explorador de archivos', action: () => openInFileManager(abs) },
       { label: `Abrir en ${extEditorName()}`, action: () => openExternal(abs) },
     ]);
+  }
+  /** Abre la carpeta (o la carpeta del archivo, con él seleccionado) en el explorador de archivos del sistema. */
+  async function openInFileManager(p) {
+    try {
+      const r = await Bridge.call('open.folder', { path: p });
+      toast(r.how === 'select' ? `Mostrando ${basename(p)} en el explorador` : `Abriendo ${tilde(r.opened)} en el explorador`, 'ok');
+    } catch (e) { toast(e.message, 'err'); }
   }
   async function codeNewFile(dir) {
     if (!dir) return;
@@ -4252,6 +4262,7 @@
       { label: 'Copiar ruta relativa', action: () => codeCopy(codeRel(file)) },
       { label: 'Enviar ruta a la IA', hint: 'Ctrl+Alt+I', action: () => codeSendToAi(file) },
       { label: 'Revelar en el árbol', action: () => codeReveal(file) },
+      { label: 'Mostrar en el explorador de archivos', action: () => openInFileManager(file) },
       '-',
       c.groups.length < CODE_MAX_GROUPS && { label: 'Dividir: abrir en panel nuevo', hint: 'Ctrl+\\', action: () => { c.groups[gi].active = file; codeSplit(gi); } },
       ...c.groups.map((_, j) => j !== gi && { label: `Mover al panel ${j + 1}`, action: () => codeMoveTab(gi, file, j) }),
@@ -7026,6 +7037,167 @@
     input.click();
   }
 
+  // ---------- módulo interno: scripts (pestaña "Scripts" del panel derecho) ----------
+  // local/scripts/<carpeta>/<script>, con interruptores «Usuario» (ejecutar desde FRAP) e «IA» (frap-scripts run).
+  let scrInfo = null; // respuesta de scripts.list
+  let scrError = null;
+  let scrSynced = null; // último estado aplicado de la skill/módulo
+  async function loadScripts() {
+    if (!Bridge.ready || !modOn('internal.scripts')) return;
+    try { scrInfo = await Bridge.call('scripts.list'); scrError = null; } catch (e) { scrError = e.message; }
+    if (state.ui.rtab === 'scripts') renderRight();
+  }
+  /** Skill frap-scripts + `frap-scripts run`: activos con el módulo, quitados/bloqueados sin él. */
+  async function syncScriptsModule(force) {
+    if (!Bridge.ready) return;
+    const on = modOn('internal.scripts');
+    if (!force && scrSynced === on) return;
+    try {
+      const r = await Bridge.call('scripts.setModule', { on });
+      scrSynced = on;
+      if (r.changed.length) toast(on ? 'Skill frap-scripts lista en claude y codex: los scripts que pidas se crean en local/scripts' : 'Skill frap-scripts quitada; la IA ya no puede ejecutar scripts', 'ok');
+    } catch (e) { toast(`Skill frap-scripts: ${e.message}`, 'err'); }
+  }
+  async function setScriptFlag(sc, key) {
+    try {
+      const r = await Bridge.call('scripts.set', { path: sc.path, [key]: !sc[key] });
+      Object.assign(sc, r);
+      toast(`${sc.name}: ${key === 'ai' ? (r.ai ? 'la IA lo puede ejecutar' : 'la IA ya no lo puede ejecutar') : (r.user ? 'habilitado para ejecutarlo desde FRAP' : 'deshabilitado para ejecutarlo desde FRAP')}`, 'ok');
+      renderRight();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  /** Lo ejecuta en una terminal nueva del proyecto activo (desde local/scripts), para ver la salida en vivo. */
+  async function runScript(sc, args = '') {
+    try {
+      const c = await Bridge.call('scripts.command', { path: sc.path });
+      await launch('shell', { cwd: c.cwd, title: `▶ ${sc.name}`, init: `${c.line}${args ? ` ${args}` : ''}` });
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  function runScriptWithArgs(sc) {
+    const args = h('input.mono', { placeholder: 'argumentos (como en la terminal)', value: (state.ui.scriptArgs || {})[sc.path] || '' });
+    const go = () => {
+      state.ui.scriptArgs = { ...(state.ui.scriptArgs || {}), [sc.path]: args.value };
+      save();
+      modalClose(true);
+      runScript(sc, args.value.trim());
+    };
+    args.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+    openModal({
+      title: `Ejecutar · ${sc.name}`,
+      body: [h('p.muted', { style: 'margin-top:0' }, sc.desc || sc.path), h('div.field', h('label', 'Argumentos'), args)],
+      foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: go }, '▶ Ejecutar')],
+    });
+    requestAnimationFrame(() => args.focus());
+  }
+  async function trashScript(sc) {
+    if (!(await confirmBox(`¿Mandar "${sc.path}" a la papelera?`, 'Se puede recuperar desde la papelera del sistema.'))) return;
+    try { await Bridge.call('fs.trash', { path: sc.abs }); toast(`${sc.name} en la papelera`, 'ok'); loadScripts(); } catch (e) { toast(e.message, 'err'); }
+  }
+  function scriptMenu(ev, sc) {
+    popMenu(ev, [
+      sc.runnable && { label: 'Ejecutar con argumentos…', disabled: !sc.user, action: () => runScriptWithArgs(sc) },
+      { label: 'Abrir en el editor', action: () => openInFrap(sc.abs) },
+      '-',
+      { label: 'Copiar ruta', action: () => { copyText(sc.abs); toast('Ruta copiada', 'ok'); } },
+      sc.runnable && { label: 'Copiar comando para la IA', action: () => { const t = `frap-scripts run ${sc.path}`; copyText(t); toast(`Copiado: ${t}`, 'ok'); } },
+      { label: 'Mostrar en el explorador de archivos', action: () => openInFileManager(sc.abs) },
+      '-',
+      { label: 'Mover a la papelera', danger: true, action: () => trashScript(sc) },
+    ]);
+  }
+  function newScript(folder) {
+    const folders = (scrInfo ? scrInfo.folders.map((f) => f.name) : []);
+    const ids = issuesInfo ? issuesInfo.issues.filter((i) => !i.closed).map((i) => i.id) : [];
+    const list = h('datalist', { id: 'scr-folders' }, [...new Set([...ids, ...folders])].map((f) => h('option', { value: f })));
+    const dir = h('input.mono', { list: 'scr-folders', value: folder || '', placeholder: 'AVE-1630 o un-tema-corto' });
+    const name = h('input.mono', { placeholder: '1-leads-con-telefono' });
+    const ext = h('select', ...['ts', 'js', 'py', 'sh', 'php', 'sql'].map((x) => h('option', { value: x }, `.${x}`)));
+    ext.value = state.ui.scriptExt || 'ts';
+    const desc = h('input', { placeholder: 'Qué hace (va en la cabecera del archivo)' });
+    const doCreate = async () => {
+      const d = dir.value.trim().replace(/^\/+|\/+$/g, '');
+      const n = name.value.trim().replace(/\.(ts|js|py|sh|php|sql)$/i, '');
+      if (!d || !/^[\w][\w.-]*$/.test(d)) { toast('Carpeta inválida (letras, números y guiones)', 'err'); dir.focus(); return; }
+      if (!n || !/^[\w][\w.-]*$/.test(n)) { toast('Nombre inválido (letras, números y guiones)', 'err'); name.focus(); return; }
+      state.ui.scriptExt = ext.value;
+      try {
+        const r = await Bridge.call('scripts.create', { path: `${d}/${n}.${ext.value}`, desc: desc.value.trim() });
+        modalClose(true);
+        state.ui.scriptsOpen = [...new Set([...(state.ui.scriptsOpen || []), d])];
+        save();
+        toast(`Creado ${r.path}`, 'ok');
+        await loadScripts();
+        openInFrap(r.abs);
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    [dir, name, desc].forEach((el) => el.addEventListener('keydown', (e) => { if (e.key === 'Enter') doCreate(); }));
+    openModal({
+      title: 'Nuevo script',
+      body: [
+        list,
+        h('div.field', h('label', 'Carpeta (ID de la issue o un tema)'), dir),
+        h('div.field-row', h('div.field.grow', h('label', 'Nombre'), name), h('div.field', h('label', 'Tipo'), ext)),
+        h('div.field', h('label', 'Descripción'), desc),
+        h('p.muted', { style: 'margin:0;font-size:11px' }, `Se crea en ${scrInfo ? tilde(scrInfo.dir) : 'local/scripts'}/<carpeta>/ con Usuario e IA habilitados. Para pedírselo a la IA basta con decirle "hazme un script que…".`),
+      ],
+      foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doCreate }, 'Crear y abrir')],
+    });
+    requestAnimationFrame(() => (folder ? name : dir).focus());
+  }
+  function scriptSwitch(sc, key) {
+    const on = !!sc[key];
+    return h('label.scr-sw', { title: key === 'ai' ? 'La IA lo puede ejecutar (frap-scripts run)' : 'Lo puedes ejecutar desde FRAP (▶)' },
+      h('button', { class: `switch ${on ? 'on' : 'off'}`, role: 'switch', 'aria-checked': String(on), onclick: (e) => { e.preventDefault(); setScriptFlag(sc, key); } }),
+      key === 'ai' ? 'IA' : 'Usuario');
+  }
+  function renderScripts() {
+    if (!Bridge.ready) return [section('Scripts'), h('div.empty-list', 'Bridge desconectado.')];
+    if (scrError) return [section('Scripts'), h('div.empty-list', scrError)];
+    if (!scrInfo) { loadScripts(); return [section('Scripts'), h('div.empty-list', 'Cargando…')]; }
+    const q = (state.ui.scriptsQuery || '').toLowerCase();
+    const open = new Set(state.ui.scriptsOpen || []);
+    const list = scrInfo.scripts.filter((s) => !q || `${s.path} ${s.desc}`.toLowerCase().includes(q));
+    const groups = new Map();
+    for (const s of list) { const g = s.folder.split('/')[0] || ''; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(s); }
+    const order = ['', ...scrInfo.folders.map((f) => f.name).filter((f) => groups.has(f))]; // compartidos primero, luego lo más reciente
+    const search = h('input.filter', { placeholder: 'Buscar script…', value: state.ui.scriptsQuery || '' });
+    search.addEventListener('input', debounce(() => { state.ui.scriptsQuery = search.value; save(); renderRight(); requestAnimationFrame(() => { const s = $('#rbody .filter'); if (s) { s.focus(); s.setSelectionRange(s.value.length, s.value.length); } }); }, 200));
+    const toggle = (g) => { const s = new Set(state.ui.scriptsOpen || []); if (s.has(g)) s.delete(g); else s.add(g); state.ui.scriptsOpen = [...s]; save(); renderRight(); };
+    const row = (sc) => h(`div.scr-row${sc.user ? '' : '.off'}`,
+      h('div.scr-main',
+        h('a.scr-name.mono', { href: '#', title: `${sc.path} · clic: abrir en el editor`, onclick: (e) => { e.preventDefault(); openInFrap(sc.abs); } }, sc.folder ? sc.path.slice(sc.folder.split('/')[0].length + 1) : sc.name),
+        sc.desc ? h('div.scr-desc.muted', sc.desc) : null),
+      h('div.scr-ctrl',
+        scriptSwitch(sc, 'user'),
+        scriptSwitch(sc, 'ai'),
+        sc.runnable ? h('button.mini', { title: sc.user ? `Ejecutar (${sc.runner}) en una terminal` : 'Deshabilitado (interruptor Usuario)', disabled: !sc.user, onclick: () => runScript(sc) }, '▶') : h('span.muted.scr-noexec', { title: 'Este tipo de archivo no se ejecuta: revísalo y córrelo a mano' }, 'ver'),
+        h('button.icon', { title: 'Más', onclick: (e) => scriptMenu(e, sc) }, '⋯')));
+    return [
+      section('Scripts',
+        h('button.icon', { title: 'Recargar', onclick: () => loadScripts() }, '⟳'),
+        h('button.primary.mini', { onclick: () => newScript() }, '+ Nuevo')),
+      h('p.muted.scr-hint', `En ${tilde(scrInfo.dir)} (fuera de git). Pídele a la IA "hazme un script que…" y lo crea aquí. «Usuario»: ejecutarlo desde FRAP · «IA»: que la IA lo ejecute.`),
+      !scrInfo.bun && scrInfo.scripts.some((s) => s.runner === 'bun') ? h('p.scr-warn', '⚠ No encuentro bun: los .ts no se podrán ejecutar (curl -fsSL https://bun.sh/install | bash).') : null,
+      search,
+      list.length ? h('div.scr-groups', order.map((g) => {
+        const items = groups.get(g) || [];
+        const f = scrInfo.folders.find((x) => x.name === g);
+        const isOpen = q || open.has(g);
+        const isIssue = issuesInfo && issuesInfo.issues.some((i) => i.id === g);
+        return h('div.scr-group',
+          h('div.scr-ghead', { onclick: () => toggle(g) },
+            h('span.scr-caret', isOpen ? '▾' : '▸'),
+            h('span.scr-gname', g || 'Compartidos'),
+            isIssue ? h('span.badge', { title: 'Carpeta de una issue' }, '🎫') : null,
+            h('span.muted.scr-count', String(items.length)),
+            h('span.grow'),
+            f && f.salida ? h('button.mini', { title: `Abrir ${g}/salida en el explorador de archivos`, onclick: (e) => { e.stopPropagation(); openInFileManager(`${scrInfo.dir}/${g}/salida`); } }, `📂 salida ${f.salida}`) : null,
+            g ? h('button.icon', { title: `Nuevo script en ${g}`, onclick: (e) => { e.stopPropagation(); newScript(g); } }, '＋') : null),
+          isOpen ? h('div.scr-items', items.map(row)) : null);
+      })) : h('div.empty-list', scrInfo.scripts.length ? 'Nada con esa búsqueda.' : 'Sin scripts todavía. Crea uno o pídeselo a la IA.'),
+    ];
+  }
+
   // ---------- túneles (pestaña del panel derecho): compartir por URL pública lo que corre en local ----------
   // state.tunnels = [{id, name, kind: 'port'|'url'|'path', port, url, path, provider, password, hostRewrite, rewriteUrls}]
   // El bridge los corre (tunnel.start) y avisa con el evento `tunnel`; no sobreviven a reiniciar el bridge.
@@ -7260,13 +7432,14 @@
     // funciones propias de FRAP que agregan comportamiento (no solo un botón)
     internal: [
       { key: 'internal.issues', icon: '🎫', name: 'Gestión de issues', desc: 'Issues en local/issues (fuera de git), pestaña Issues y skill frap-issues para las IA' },
+      { key: 'internal.scripts', icon: '📜', name: 'Scripts', desc: 'Scripts en local/scripts con interruptores Usuario / IA, pestaña Scripts y skill frap-scripts' },
     ],
   };
   const MODULE_LIST = [...MODULES.left, ...MODULES.center, ...MODULES.right, ...MODULES.internal];
   const MODULE_PANELS = [['left', 'Panel izquierdo'], ['center', 'Panel central'], ['right', 'Panel derecho'], ['internal', 'Módulos internos']];
   const modOn = (key) => !((state.modules && state.modules.off) || []).includes(key);
   const launchOn = (kind) => modOn(`center.${kind}`);
-  const RTAB_MODULE = { issues: 'internal.issues' }; // pestañas que pertenecen a un módulo interno
+  const RTAB_MODULE = { issues: 'internal.issues', scripts: 'internal.scripts' }; // pestañas que pertenecen a un módulo interno
   const rtabOn = (tab) => modOn(RTAB_MODULE[tab] || `right.${tab}`);
   const visibleRtabs = () => $$('#rtabs button').map((b) => b.dataset.rtab).filter(rtabOn);
   /** Atajo Alt+Shift+… → módulo que lo da (si está apagado, el atajo no hace nada). */
@@ -7293,6 +7466,7 @@
     else { renderRight(); updateDock(); }
     renderAll();
     syncIssuesSkill();
+    syncScriptsModule();
   }
 
   /** Modal de Módulos: tres columnas (izquierdo, central, derecho) con un switch por módulo. */
@@ -7737,7 +7911,9 @@
     loadSsh();
     pollProcs();
     syncIssuesSkill(true);
+    syncScriptsModule(true);
     loadIssues();
+    loadScripts();
     loadTunnels(state.ui.rtab === 'tunnels');
     renderRight();
   });

@@ -66,6 +66,18 @@ navegador (file://src/index.html)                     máquina local
 - **Vida útil:** los túneles no sobreviven al bridge. `shutdown` y `exit` los detienen, y las URLs gratuitas cambian en cada arranque. La configuración vive en `state.tunnels` y se exporta como parte de la configuración, con sus contraseñas. El bridge avisa cada cambio con el evento `tunnel`.
 - **UI:** muestra las tarjetas de túneles (estado, URL, copiar con o sin clave, visitantes, registro del proveedor) y los "Servidores detectados", asociados al proyecto por la carpeta del proceso. El árbol del editor tiene "Compartir por túnel…" para HTML, medios y carpetas, y la barra de estado muestra 🚇 N.
 
+## Scripts (módulo interno)
+
+- Los scripts viven en `local/scripts/<carpeta>/<script>`: la carpeta es el ID de la issue o un tema. Las utilidades compartidas (`conexion.ts`, `select.ts`, `package.json`) van en la raíz, y lo generado en `<carpeta>/salida/`. Todo está en `bridge/scripts.js`; `bridge/frap-scripts.js` es el CLI para agentes.
+- **Interruptores**, como en las bases de datos: cada script tiene «Usuario» (se puede ejecutar desde FRAP) e «IA» (la IA lo puede ejecutar con `frap-scripts run`). Los dos vienen encendidos por defecto.
+  - Se guardan en `local/scripts/.frap-scripts.json`, junto con `enabled`, que indica si el módulo está activo, así que viajan en el zip de `local/`.
+  - Al listar se limpian los interruptores de scripts que ya no existen.
+- **Ejecución:** se usa bun para `.ts` y `.js` (o node si no hay bun), python3, bash, php o ruby, siempre desde `local/scripts`. Los `.sql` no se ejecutan: se muestran para revisarlos.
+  - Desde FRAP (▶), el script corre en una terminal nueva del proyecto ("▶ nombre"). Se le pueden pasar argumentos, que se recuerdan por script.
+  - La IA solo lo ejecuta con `frap-scripts run`, que revisa el módulo y el interruptor «IA». La skill le prohíbe saltárselo. Esto no es un bloqueo duro, porque la IA tiene shell: es la misma confianza que con las instrucciones de cualquier skill.
+- **Skill `frap-scripts`:** con el módulo activo se instala en `~/.claude/skills` y `~/.codex/skills`. Explica dónde crear los scripts (`frap-scripts new <carpeta>/<nombre.ext>`, con cabecera), cómo nombrarlos, que no escriban en bases de datos (generan un `.sql`) y que se anoten en el changelog de la issue. Al apagar el módulo se quita la skill y `run` queda bloqueado.
+- **Pestaña Scripts:** grupos por carpeta ("Compartidos" primero; 🎫 si la carpeta es una issue), con su botón "📂 salida N". Cada script tiene descripción (el primer comentario del archivo), interruptores, ▶ y un menú con ejecutar con argumentos, abrir en el editor, copiar ruta o el comando para la IA, mostrar en el explorador y mandar a la papelera. "+ Nuevo" crea el script con cabecera y lo abre en el editor.
+
 ## Gestión de issues (módulo interno)
 
 - Replica dentro de FRAP el harness de tareas `_linear`. Cada issue vive en `local/issues/<ID>/` de la carpeta de FRAP, con `issue.md` (copia fiel del tracker), `changelog.md`, `status.md` y `final.md` al cerrar.
@@ -79,7 +91,7 @@ navegador (file://src/index.html)                     máquina local
   - "Nueva" crea la carpeta y puede pedirle a la IA que la traiga.
   - "Retomar", "Cerrar" y "Fin de jornada" escriben el pedido en la terminal de IA del proyecto, sin Enter. Si no hay terminal de IA, lo copian al portapapeles.
   - ⇩ importa carpetas de un harness existente.
-- **Zip:** en Exportar / importar, "Carpeta local (.zip)" descarga o restaura todo `local/` (`local.export` / `local.import`). El zip se escribe y se lee a mano (deflate de zlib y CRC32 propio). Al importar se descartan las rutas con `..`.
+- **Zip:** en Exportar / importar, "Carpeta local (.zip)" descarga o restaura todo `local/` (issues, scripts con sus interruptores…, sin `node_modules`, que se reinstala con `bun install`) (`local.export` / `local.import`). El zip se escribe y se lee a mano (deflate de zlib y CRC32 propio). Al importar se descartan las rutas con `..`.
 
 ## Secciones del panel izquierdo
 
@@ -239,6 +251,7 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `db.tables` | `{id}` | `[{name, view}]` |
 | `paths.check` | `{cwd, paths}` | `[{input, path, dir}]` de las rutas que existen (las relativas se resuelven contra `cwd`; solo dentro de `FRAP_FS_ROOT`) |
 | `open.editor` | `{path, line?, col?, editor?}` | abre en el editor sin shell; la familia VS Code recibe `--goto ruta:línea:col` |
+| `open.folder` | `{path}` | abre en el explorador de archivos: una carpeta con `xdg-open`; un archivo, su carpeta con él seleccionado (`FileManager1.ShowItems` por D-Bus, si no `xdg-open` de la carpeta). macOS: `open` / `open -R`. `{opened, how}` |
 | `git.run` | `{cwd, args}` | `{code, stdout, stderr}`; ejecuta `git` sin shell, solo subcomandos de `GIT_ALLOWED`, sin `-c`/`--upload-pack`/`--exec`…; un código distinto de 0 no lanza error |
 | `music.ytInfo` | `{id}` | `{title, author}` vía oEmbed público de YouTube |
 | `ssh.list` | — | `{envFile, cli, client, skills, hosts}` (sin contraseñas) |
@@ -263,6 +276,12 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `tunnel.ports` | — | servidores escuchando en el equipo (`ss -ltnp`), sin puertos no web, de las IA ni de FRAP: `[{port, host, pid, name, cmd, cwd}]` |
 | `tunnel.start` | `{id, name, target: {type:'url', url\|port} \| {type:'path', path}, provider, password?, hostRewrite?, rewriteUrls?}` | arranca la puerta local y el proveedor; la URL pública llega en el evento `tunnel` |
 | `tunnel.stop` | `{id}` | detiene el proveedor y cierra la puerta (también sus WebSocket) |
+| `scripts.list` | — | `{dir, enabled, bun, scripts: [{path, abs, folder, name, ext, runnable, runner, desc, size, mtime, user, ai}], folders: [{name, salida}]}` |
+| `scripts.set` | `{path, user?, ai?}` | cambia los interruptores de un script (en `local/scripts/.frap-scripts.json`) |
+| `scripts.create` | `{path, desc?}` | crea `local/scripts/<carpeta>/<nombre.ext>` con cabecera; interruptores encendidos |
+| `scripts.command` | `{path}` | `{cwd, line, rel}` para ejecutarlo en una terminal de FRAP; falla si el módulo o «Usuario» están apagados |
+| `scripts.skill` | — | `{claude, codex}`: `{installed, current, file}` de la skill `frap-scripts` |
+| `scripts.setModule` | `{on}` | instala/quita la skill `frap-scripts` y habilita/bloquea `frap-scripts run` |
 | `issues.list` | — | `{dir, local, issues: [{id, title, estado, url, updated, closed, pending, files}]}` de `local/issues/` |
 | `issues.create` | `{id, title?}` | crea `local/issues/<ID>/` desde las plantillas; si existe no toca nada. `{id, dir, created}` |
 | `issues.importDir` | `{path}` | copia carpetas `<ID>/` de otra carpeta (o de su `issues/`) sin pisar las existentes. `{from, copied, skipped}` |

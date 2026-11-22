@@ -188,6 +188,31 @@ test('init escribe el comando inicial en la shell', async () => {
   await client.call('session.kill', { sid: s.sid });
 });
 
+test('open.folder: carpeta con xdg-open; archivo seleccionado por D-Bus o, si falla, su carpeta', async () => {
+  const fake = path.join(root, 'fakebin');
+  const log = path.join(root, 'open.log');
+  const logger = `#!/bin/sh\necho "$(basename "$0") $*" >> "${log}"\n`;
+  fs.writeFileSync(path.join(fake, 'xdg-open'), logger, { mode: 0o755 });
+  fs.writeFileSync(path.join(fake, 'gdbus'), logger, { mode: 0o755 });
+  const dir = path.join(root, 'explorar', "it's mío");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'a b.txt'), 'x');
+  const waitLog = async (re) => { for (let i = 0; i < 50; i++) { const t = fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : ''; if (re.test(t)) return t; await new Promise((r) => setTimeout(r, 40)); } throw new Error(`sin ${re}`); };
+  assert.deepEqual(await client.call('open.folder', { path: dir }), { opened: dir, how: 'xdg-open' });
+  await waitLog(new RegExp(`xdg-open ${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  const r = await client.call('open.folder', { path: path.join(dir, 'a b.txt') });
+  assert.equal(r.how, 'select');
+  const t = await waitLog(/gdbus call/);
+  assert.match(t, /org\.freedesktop\.FileManager1\.ShowItems \['file:\/\/[^ ]*it%27s%20m%C3%ADo\/a%20b\.txt'\]/);
+  // sin gestor de archivos por D-Bus: abre la carpeta del archivo
+  fs.writeFileSync(path.join(fake, 'gdbus'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  assert.deepEqual(await client.call('open.folder', { path: path.join(dir, 'a b.txt') }), { opened: dir, how: 'xdg-open' });
+  await assert.rejects(client.call('open.folder', { path: '/etc' }), /fuera/);
+  await assert.rejects(client.call('open.folder', { path: path.join(dir, 'no-existe') }), /No existe/);
+  fs.rmSync(path.join(fake, 'gdbus'));
+  fs.rmSync(path.join(fake, 'xdg-open'));
+});
+
 test('fs: escribir/leer dentro de la raíz, rechazar fuera', async () => {
   const f = path.join(root, 'proj', 'nota.md');
   await client.call('fs.write', { path: f, content: 'hola' });
@@ -967,4 +992,83 @@ test('tunnel.*: proveedor, puerta local (contraseña, Host, redirecciones, URLs,
   assert.match(err.tunnel.error, /ERR_NGROK_4018/);
   assert.equal(err.tunnel.target, 'http://192.168.1.50:8080');
   await client.call('tunnel.stop', { id: 't3' });
+});
+
+test('scripts.*: crear, listar, interruptores Usuario/IA, comando, CLI frap-scripts (run respeta IA y módulo) y skill', async () => {
+  const { execFileSync, spawnSync } = require('child_process');
+  const sdir = path.join(root, 'local', 'scripts');
+  const cli = (...args) => spawnSync(process.execPath, [path.join(__dirname, '..', 'bridge', 'frap-scripts.js'), ...args], { env: { ...process.env, FRAP_LOCAL: path.join(root, 'local') }, encoding: 'utf8' });
+  // crear con cabecera; nombre y ruta validados
+  const c = await client.call('scripts.create', { path: 'AVE-7/1-contar.sh', desc: 'Cuenta los argumentos' });
+  assert.equal(c.path, 'AVE-7/1-contar.sh');
+  assert.ok(c.user && c.ai);
+  assert.match(fs.readFileSync(c.abs, 'utf8'), /^#!\/usr\/bin\/env bash\n# Cuenta los argumentos\n/);
+  fs.appendFileSync(c.abs, 'echo "args=$# cwd=$(pwd) primero=$1"\n');
+  await assert.rejects(client.call('scripts.create', { path: 'AVE-7/1-contar.sh' }), /Ya existe/);
+  await assert.rejects(client.call('scripts.create', { path: '../fuera.sh' }), /inválida/);
+  await assert.rejects(client.call('scripts.create', { path: 'node_modules/x.js' }), /inválida/);
+  await assert.rejects(client.call('scripts.create', { path: 'AVE-7/sin-extension' }), /Nombre inválido/);
+  // listar: descripción, carpetas, salida/ y node_modules fuera, .sql no ejecutable
+  fs.mkdirSync(path.join(sdir, 'AVE-7', 'salida'), { recursive: true });
+  fs.writeFileSync(path.join(sdir, 'AVE-7', 'salida', 'r.csv'), 'a');
+  fs.writeFileSync(path.join(sdir, 'AVE-7', 'salida', 'gen.ts'), '// generado');
+  fs.mkdirSync(path.join(sdir, 'node_modules', 'pkg'), { recursive: true });
+  fs.writeFileSync(path.join(sdir, 'node_modules', 'pkg', 'index.js'), '//');
+  fs.writeFileSync(path.join(sdir, 'AVE-7', '2-fix.sql'), '-- Corrige algo\nUPDATE x SET y=1;');
+  fs.writeFileSync(path.join(sdir, 'comun.ts'), '/**\n * Utilidades compartidas\n */\nexport {}');
+  const l = await client.call('scripts.list');
+  assert.deepEqual(l.scripts.map((x) => x.path), ['comun.ts', 'AVE-7/1-contar.sh', 'AVE-7/2-fix.sql']);
+  assert.equal(l.scripts[0].desc, 'Utilidades compartidas');
+  assert.equal(l.scripts[1].desc, 'Cuenta los argumentos');
+  assert.equal(l.scripts[2].runnable, false);
+  assert.deepEqual(l.folders.find((f) => f.name === 'AVE-7'), { name: 'AVE-7', salida: 2, mtime: l.folders.find((f) => f.name === 'AVE-7').mtime });
+  assert.ok(!l.folders.some((f) => f.name === 'node_modules'));
+  // comando para la terminal de FRAP (con comillas si hace falta)
+  const cmd = await client.call('scripts.command', { path: 'AVE-7/1-contar.sh' });
+  assert.equal(cmd.cwd, sdir);
+  assert.equal(cmd.line, 'bash AVE-7/1-contar.sh');
+  await assert.rejects(client.call('scripts.command', { path: 'AVE-7/2-fix.sql' }), /no se ejecuta/);
+  // CLI: run con argumentos desde local/scripts
+  const r1 = cli('run', 'AVE-7/1-contar.sh', 'hola mundo', 'b');
+  assert.equal(r1.status, 0, r1.stderr);
+  assert.match(r1.stdout, new RegExp(`args=2 cwd=${sdir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} primero=hola mundo`));
+  assert.match(cli('list').stdout, /AVE-7\/1-contar\.sh\tusuario:sí\tIA:sí\tCuenta/);
+  // interruptor IA apagado: la CLI se niega; Usuario apagado: FRAP no lo ejecuta
+  assert.deepEqual(await client.call('scripts.set', { path: 'AVE-7/1-contar.sh', ai: false }), { path: 'AVE-7/1-contar.sh', user: true, ai: false });
+  const r2 = cli('run', 'AVE-7/1-contar.sh');
+  assert.equal(r2.status, 1);
+  assert.match(r2.stderr, /no está habilitado para la IA/);
+  assert.equal(r2.stdout, '');
+  await client.call('scripts.set', { path: 'AVE-7/1-contar.sh', user: false, ai: true });
+  await assert.rejects(client.call('scripts.command', { path: 'AVE-7/1-contar.sh' }), /Usuario/);
+  assert.equal(cli('run', 'AVE-7/1-contar.sh', 'x').status, 0);
+  // CLI new: registra el script
+  const n = cli('new', 'tema-x/1-algo.py', 'Hace', 'algo');
+  assert.equal(n.status, 0, n.stderr);
+  assert.match(fs.readFileSync(path.join(sdir, 'tema-x', '1-algo.py'), 'utf8'), /^# Hace algo\n/);
+  assert.equal(cli('run', '../../etc/passwd').status, 1);
+  // módulo: skill y bloqueo de run
+  const on = await client.call('scripts.setModule', { on: true });
+  assert.equal(on.changed.length, 2);
+  const sk = await client.call('scripts.skill');
+  assert.ok(sk.claude.current && sk.codex.current);
+  assert.ok(fs.readFileSync(sk.claude.file, 'utf8').includes(sdir));
+  await client.call('scripts.setModule', { on: false });
+  assert.ok(!fs.existsSync(sk.claude.file));
+  const r3 = cli('run', 'AVE-7/1-contar.sh');
+  assert.equal(r3.status, 1);
+  assert.match(r3.stderr, /módulo Scripts está apagado/);
+  assert.equal((await client.call('scripts.list')).enabled, false);
+  await client.call('scripts.setModule', { on: true });
+  assert.equal(cli('run', 'AVE-7/1-contar.sh', 'x').status, 0);
+  // los interruptores viajan en el zip de local/ (y node_modules no)
+  const ents = issuesMod.unzip(Buffer.from((await client.call('local.export')).data, 'base64')).map((e) => e.name);
+  assert.ok(ents.includes('local/scripts/.frap-scripts.json'));
+  assert.ok(ents.includes('local/scripts/AVE-7/1-contar.sh'));
+  assert.ok(!ents.some((e) => e.includes('node_modules')));
+  // borrar un script limpia su interruptor al listar
+  fs.rmSync(path.join(sdir, 'tema-x', '1-algo.py'));
+  await client.call('scripts.list');
+  assert.ok(!('tema-x/1-algo.py' in JSON.parse(fs.readFileSync(path.join(sdir, '.frap-scripts.json'), 'utf8')).scripts));
+  void execFileSync;
 });

@@ -22,6 +22,7 @@ const ssh = require('./ssh');
 const sftp = require('./sftp');
 const issues = require('./issues');
 const tunnels = require('./tunnels');
+const scripts = require('./scripts');
 
 const VERSION = '1.3.0';
 const STARTED_AT = Date.now();
@@ -1214,6 +1215,22 @@ const ops = {
     return tunnels.start({ ...o, target });
   },
   'tunnel.stop': ({ id }) => tunnels.stop(String(id || '')),
+  // ----- módulo interno "Scripts": local/scripts/<carpeta>/ con interruptores Usuario / IA -----
+  /** {dir, enabled, bun, scripts: [{path, abs, folder, name, ext, runnable, runner, desc, size, mtime, user, ai}], folders: [{name, salida}]} */
+  'scripts.list': () => scripts.listScripts(),
+  /** Cambia los interruptores de un script. {path, user?, ai?} → {path, user, ai} */
+  'scripts.set': ({ path: p, user, ai }) => scripts.setFlags(p, { user, ai }),
+  /** Crea local/scripts/<carpeta>/<nombre.ext> con cabecera. {path, desc?} → {path, abs, user, ai} */
+  'scripts.create': ({ path: p, desc }) => scripts.createScript(p, desc),
+  /** Línea para ejecutarlo en una terminal de FRAP (revisa el módulo y el interruptor «Usuario»). {cwd, line, rel} */
+  'scripts.command': ({ path: p }) => {
+    const c = scripts.commandFor(p, 'user');
+    const q = (a) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, "'\\''")}'`);
+    return { cwd: c.cwd, rel: c.rel, line: [c.bin, ...c.args].map(q).join(' ') };
+  },
+  'scripts.skill': () => scripts.skillStatus(),
+  /** on: instala/actualiza la skill frap-scripts y habilita `frap-scripts run`; off: la quita y lo bloquea. */
+  'scripts.setModule': ({ on }) => scripts.setModule(!!on),
   // ----- módulo interno "Gestión de issues": local/issues/<ID>/ de FRAP (fuera de git) -----
   /** {dir, local, issues: [{id, title, estado, url, updated, closed, pending, files}]} */
   'issues.list': () => issues.listIssues(),
@@ -1373,6 +1390,34 @@ const ops = {
       child.once('error', (e) => reject(new Error(e.code === 'ENOENT' ? `No se encontró el editor "${cmd}". Cámbialo en ⚙ Ajustes.` : e.message)));
       child.once('spawn', () => { child.unref(); resolve({ opened: abs, cmd: [cmd, ...args].join(' ') }); });
     });
+  },
+  /**
+   * Abre en el explorador de archivos del sistema: una carpeta tal cual; un archivo, su carpeta con él seleccionado
+   * (FileManager1.ShowItems por D-Bus: Nautilus, Dolphin, Nemo…; si no hay, xdg-open de la carpeta). macOS: open / open -R.
+   */
+  'open.folder': async ({ path: p }) => {
+    const abs = safePath(p);
+    if (!exists(abs)) throw new Error(`No existe: ${abs}`);
+    const isDir = fs.statSync(abs).isDirectory();
+    const launch = (cmd, args) => new Promise((resolve, reject) => {
+      const child = spawn(cmd, args, { detached: true, stdio: 'ignore', env: childEnv({}) });
+      child.once('error', (e) => reject(new Error(e.code === 'ENOENT' ? `No se encontró "${cmd}" para abrir el explorador de archivos` : e.message)));
+      child.once('spawn', () => { child.unref(); resolve(); });
+    });
+    if (process.platform === 'darwin') {
+      await launch('open', isDir ? [abs] : ['-R', abs]);
+      return { opened: abs, how: 'open' };
+    }
+    if (!isDir) {
+      const uri = `file://${abs.split('/').map((s) => encodeURIComponent(s).replace(/'/g, '%27')).join('/')}`;
+      const ok = await new Promise((resolve) => execFile('gdbus', ['call', '--session', '--dest', 'org.freedesktop.FileManager1',
+        '--object-path', '/org/freedesktop/FileManager1', '--method', 'org.freedesktop.FileManager1.ShowItems', `['${uri}']`, ''],
+      { timeout: 4000, env: childEnv({}) }, (err) => resolve(!err)));
+      if (ok) return { opened: abs, how: 'select' };
+    }
+    const dir = isDir ? abs : path.dirname(abs);
+    await launch('xdg-open', [dir]);
+    return { opened: dir, how: 'xdg-open' };
   },
   /** Título/autor de un video (oEmbed público de YouTube, sin API key). */
   'music.ytInfo': async ({ id }) => {

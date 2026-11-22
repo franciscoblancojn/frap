@@ -1120,3 +1120,26 @@ li.CodeMirror-hint-active { background: var(--accent); color: var(--bg); }
 .tun-pdesc { font-size: 12px; display: flex; gap: 6px; align-items: center; overflow: hidden; white-space: nowrap; }
 .st-tun { cursor: pointer; color: var(--ok); }
 .tun-warn { font-size: 11px; color: var(--warn); overflow-wrap: anywhere; line-height: 1.4; }
+
+/* ---------- scripts (módulo interno, pestaña del panel derecho) ---------- */
+.scr-hint { font-size: 11px; margin: 0 0 6px; }
+.scr-warn { font-size: 11px; color: var(--warn); margin: 0 0 6px; }
+.scr-groups { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.scr-group { border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2); }
+.scr-ghead { display: flex; align-items: center; gap: 6px; padding: 5px 8px; cursor: pointer; user-select: none; }
+.scr-ghead:hover { background: var(--bg-hover); }
+.scr-caret { width: 10px; color: var(--fg-3); font-size: 11px; }
+.scr-gname { font: 600 12px var(--mono); color: var(--accent); }
+.scr-count { font-size: 11px; }
+.scr-items { border-top: 1px solid var(--line); }
+.scr-row { display: flex; align-items: flex-start; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.scr-row:last-child { border-bottom: 0; }
+.scr-row.off .scr-name { opacity: .55; }
+.scr-main { flex: 1; min-width: 0; }
+.scr-name { font-size: 12px; color: var(--fg); text-decoration: none; overflow-wrap: anywhere; }
+.scr-name:hover { color: var(--accent); }
+.scr-desc { font-size: 11px; line-height: 1.35; margin-top: 2px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.scr-ctrl { display: flex; align-items: center; gap: 6px; flex: none; }
+.scr-sw { display: flex; flex-direction: column; align-items: center; gap: 1px; font-size: 9.5px; color: var(--fg-3); cursor: pointer; }
+.scr-sw .switch { transform: scale(.8); }
+.scr-noexec { font-size: 10.5px; padding: 0 4px; }

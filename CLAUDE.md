@@ -38,6 +38,8 @@ bridge/sftp.js         SFTP (pestaña Archivos): argumentos de sftp, escape de r
 bridge/tunnels.js      túneles: puerta local (contraseña, Host, estáticos, WebSocket) + cloudflared / localhost.run (ssh) / ngrok
 bridge/issues.js       módulo interno "Gestión de issues": local/issues/<ID>/, plantillas, skill frap-issues, zip de local/
 bridge/frap-issues.js  CLI para agentes (skill frap-issues): new / list / path de las issues locales
+bridge/scripts.js      módulo interno "Scripts": local/scripts/<carpeta>/, interruptores Usuario/IA, skill frap-scripts
+bridge/frap-scripts.js CLI para agentes (skill frap-scripts): new / run (respeta «IA») / list
 local/                 datos locales de FRAP (issues…): ignorada en git, nunca se sube
 tests/bridge.test.js   tests de integración del bridge (node:test)
 tests/db.test.js       clasificador, parsers, .env, motores y CLI
