@@ -135,8 +135,12 @@ navegador (file://src/index.html)                     máquina local
 
 - **Con botón** "👁 Vista previa" (arriba a la derecha de cada panel del editor y en la barra de Notas; también Ctrl+Shift+V): `.md`, `.csv`/`.tsv`, `.svg` y `.html`. Alterna con el editor, se recuerda por archivo (`state.code.preview`, `state.notes.preview`) y se repinta al escribir o cuando una IA cambia el archivo.
 - **Automática** (no se editan): imágenes, video, audio y PDF. Se cargan directo del disco como `file://` (el PDF con el visor de Chrome en un iframe).
-- **Markdown:** renderizador propio (`mdBlocks` / `mdInline`, subconjunto de GFM) que arma nodos con `h()`, nunca HTML: el HTML crudo del .md se ve como texto. Las imágenes relativas van como `file://`. Un enlace relativo se abre en el editor de FRAP (`#L12` = línea) y uno externo en otra pestaña. `javascript:` y similares no se enlazan.
+- **Markdown:** renderizador propio (`mdBlocks` / `mdInline`, subconjunto de GFM) que arma nodos con `h()`, nunca HTML: el HTML crudo del .md se ve como texto. Las casillas `[ ]` se marcan en la vista previa del editor y de Notas: cada ítem recuerda su línea del archivo (también en listas anidadas y dentro de citas) y se cambia `[ ]` ⇄ `[x]` en esa línea. En Notas se autoguarda. Las imágenes relativas van como `file://`. Un enlace relativo se abre en el editor de FRAP (`#L12` = línea) y uno externo en otra pestaña. `javascript:` y similares no se enlazan.
 - **CSV:** parser con comillas, detecta el separador (`,` `;` tab `|`) y muestra hasta 3000 filas.
+  - En el editor las celdas son editables (`contenteditable`). Al confirmar (Enter, Tab o clic fuera) se vuelve a parsear el texto actual y se reemplaza **solo el campo crudo** de esa celda. Lleva comillas si lo necesita o si ya las tenía, y el resto del archivo queda igual byte a byte.
+  - El número de fila da un menú para insertar o eliminar filas, y debajo de la tabla hay "+ fila".
+  - Los cambios entran al documento como una edición normal: quedan sin guardar, se guardan con Ctrl+S desde la vista previa y se deshacen con Ctrl+Z.
+  - No se repinta mientras hay una celda con el foco.
 - **SVG:** `<img>` con un blob URL, donde el SVG no ejecuta scripts.
 - **HTML:** iframe `srcdoc` con `sandbox="allow-scripts allow-forms allow-popups allow-modals"`, **sin `allow-same-origin`**. En Chrome todas las páginas `file://` comparten localStorage, donde está el token del bridge; con origen opaco la página no puede leerlo ni tocar a FRAP. Como ese origen tampoco puede cargar `file://`, `htmlInline` incrusta los recursos relativos: `<link stylesheet>` pasa a `<style>` (con sus `url()`), `<script src>` a inline, y las imágenes, íconos y posters a `data:`, leídos con `fs.read` (`encoding: 'base64'` para binarios).
 

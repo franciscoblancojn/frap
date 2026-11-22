@@ -3172,10 +3172,14 @@
   }
 
   /** Vista previa de un archivo de texto (md, csv, svg, html) con su contenido actual (aunque no esté guardado). */
-  function renderPreview(file, text) {
+  /**
+   * opts.edit(text => nuevoTexto): si viene, la vista previa se puede editar (celdas del CSV, casillas [ ] del Markdown);
+   * recibe una función que transforma el texto actual del archivo y la aplica (al documento del editor o a las notas).
+   */
+  function renderPreview(file, text, opts = {}) {
     const ext = (file.match(/\.(\w+)$/) || [])[1].toLowerCase();
     const dir = dirOf(file);
-    if (ext === 'csv' || ext === 'tsv') return renderCsv(text, ext === 'tsv' ? '\t' : null);
+    if (ext === 'csv' || ext === 'tsv') return renderCsv(text, ext === 'tsv' ? '\t' : null, opts.edit);
     if (ext === 'svg') {
       const url = URL.createObjectURL(new Blob([text], { type: 'image/svg+xml' })); // en <img> el SVG no ejecuta scripts
       const img = h('img', { src: url, alt: basename(file) });
@@ -3190,7 +3194,7 @@
       htmlInline(text, dir).then((doc) => { frame.srcdoc = doc; }).catch(() => { frame.srcdoc = text; });
       return h('div.fp-htmlwrap', frame);
     }
-    return h('div.md-body', mdBlocks(text, dir));
+    return h('div.md-body', mdBlocks(text, dir, { edit: opts.edit }));
   }
 
   const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', ico: 'image/x-icon', bmp: 'image/bmp', avif: 'image/avif', woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf', mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg', ogg: 'audio/ogg', wav: 'audio/wav' };
@@ -3250,51 +3254,113 @@
   }
 
   // ----- CSV -----
+  /**
+   * rows: valores; spans[r][c] = {s, e, q}: posición del campo crudo en el texto (q = venía entre comillas);
+   * ends[r] = posición donde empieza la fila siguiente (después del salto de línea).
+   */
   function parseCsv(text, delim, max) {
     const rows = [];
+    const spans = [];
+    const ends = [];
     let row = [];
+    let sp = [];
     let field = '';
     let q = false;
+    let quoted = false;
+    let start = 0;
+    const endField = (i) => { row.push(field); sp.push({ s: start, e: i, q: quoted }); field = ''; quoted = false; start = i + 1; };
     for (let i = 0; i < text.length; i++) {
       const c = text[i];
       if (q) {
         if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; } else field += c;
-      } else if (c === '"' && field === '') q = true;
-      else if (c === delim) { row.push(field); field = ''; }
+      } else if (c === '"' && field === '' && i === start) { q = true; quoted = true; }
+      else if (c === delim) endField(i);
       else if (c === '\n' || c === '\r') {
+        endField(i);
         if (c === '\r' && text[i + 1] === '\n') i++;
-        row.push(field); rows.push(row); row = []; field = '';
-        if (rows.length >= max) return { rows, more: i < text.length - 1 };
+        start = i + 1;
+        rows.push(row); spans.push(sp); ends.push(i + 1); row = []; sp = [];
+        if (rows.length >= max) return { rows, spans, ends, more: i < text.length - 1 };
       } else field += c;
     }
-    if (field || row.length) { row.push(field); rows.push(row); }
-    return { rows, more: false };
+    if (field || row.length || quoted) { endField(text.length); rows.push(row); spans.push(sp); ends.push(text.length); }
+    return { rows, spans, ends, more: false };
   }
-  function renderCsv(text, delim) {
-    if (!delim) {
-      const first = text.slice(0, text.indexOf('\n') >>> 0 || text.length);
-      const counts = [',', ';', '\t', '|'].map((d) => [d, first.split(d).length]);
-      delim = counts.sort((a, b) => b[1] - a[1])[0][0];
-    }
+  function csvDelim(text) {
+    const first = text.slice(0, text.indexOf('\n') >>> 0 || text.length);
+    const counts = [',', ';', '\t', '|'].map((d) => [d, first.split(d).length]);
+    return counts.sort((a, b) => b[1] - a[1])[0][0];
+  }
+  /** Valor → campo crudo: entre comillas si lo necesita (o si ya las tenía). */
+  const csvField = (v, delim, wasQuoted) => (wasQuoted || v.includes(delim) || /["\r\n]/.test(v) || /^\s|\s$/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  /** edit(fn): si viene, las celdas se editan (solo cambia el campo tocado; el resto del archivo queda igual). */
+  function renderCsv(text, delim, edit) {
+    delim = delim || csvDelim(text);
     const MAX = 3000;
     const { rows, more } = parseCsv(text, delim, MAX + 1);
-    if (!rows.length) return h('div.fp-csv', h('p.muted', 'Archivo vacío.'));
-    const [head, ...body] = rows;
-    const cols = Math.max(...rows.map((r) => r.length));
+    if (!rows.length && !edit) return h('div.fp-csv', h('p.muted', 'Archivo vacío.'));
+    const [head = [], ...body] = rows;
+    const cols = Math.max(1, ...rows.map((r) => r.length));
     const pad = (r) => Array.from({ length: cols }, (_, i) => r[i] ?? '');
     const num = (v) => /^-?[\d.,]+%?$/.test(v.trim()) && v.trim() !== '';
-    return h('div.fp-csv',
-      h('div.fp-csv-info.muted', `${body.length}${more ? '+' : ''} fila${body.length === 1 ? '' : 's'} · ${cols} columna${cols === 1 ? '' : 's'} · separador "${delim === '\t' ? 'tab' : delim}"${more ? ` · se muestran las primeras ${MAX}` : ''}`),
+    const eol = /\r\n/.test(text) ? '\r\n' : '\n';
+    // reemplaza el campo [r][c] sobre el texto ACTUAL (se vuelve a parsear: lo de antes pudo cambiar)
+    const setCell = (r, c, v) => edit((cur) => {
+      const P = parseCsv(cur, delim, r + 2);
+      if (r >= P.rows.length) { // fila que no existía: se agrega al final
+        const fields = Array.from({ length: cols }, (_, k) => (k === c ? csvField(v, delim) : ''));
+        return `${cur}${cur && !/\r?\n$/.test(cur) ? eol : ''}${fields.join(delim)}${eol}`;
+      }
+      const sp = P.spans[r];
+      if (c < sp.length) return cur.slice(0, sp[c].s) + csvField(v, delim, sp[c].q) + cur.slice(sp[c].e);
+      const last = sp[sp.length - 1]; // columna que la fila no tenía: se rellena hasta ella
+      return cur.slice(0, last.e) + delim.repeat(c - sp.length + 1) + csvField(v, delim) + cur.slice(last.e);
+    });
+    const rowOp = (r, op) => edit((cur) => {
+      const P = parseCsv(cur, delim, r + 2);
+      if (r >= P.rows.length) return cur;
+      const s0 = r ? P.ends[r - 1] : 0;
+      const e0 = P.ends[r];
+      if (op === 'delete') return cur.slice(0, s0) + cur.slice(e0);
+      const blank = `${delim.repeat(cols - 1)}`;
+      const lineEnd = /\r?\n$/.test(cur.slice(s0, e0)) ? '' : eol;
+      return op === 'above' ? cur.slice(0, s0) + blank + eol + cur.slice(s0) : cur.slice(0, e0) + lineEnd + blank + eol + cur.slice(e0);
+    });
+    const cell = (tag, v, r, c) => {
+      if (!edit) return h(num(v) && tag === 'td' ? 'td.num' : tag, v);
+      const el = h(`${tag}${num(v) && tag === 'td' ? '.num' : ''}.fp-edit`, { contenteditable: 'plaintext-only', spellcheck: 'false', dataset: { r: String(r), c: String(c) } }, v);
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); el.blur(); }
+        else if (e.key === 'Escape') { el.textContent = v; el.blur(); }
+      });
+      el.addEventListener('blur', () => {
+        const nv = el.textContent.replace(/\r/g, '');
+        if (nv !== v) { v = nv; setCell(r, c, nv); }
+      });
+      return el;
+    };
+    const rnMenu = (e, r) => popMenu(e, [
+      { label: 'Insertar fila arriba', action: () => rowOp(r, 'above') },
+      { label: 'Insertar fila debajo', action: () => rowOp(r, 'below') },
+      '-',
+      { label: 'Eliminar fila', danger: true, action: () => rowOp(r, 'delete') },
+    ]);
+    return h(`div.fp-csv${edit ? '.editable' : ''}`,
+      h('div.fp-csv-info.muted', `${body.length}${more ? '+' : ''} fila${body.length === 1 ? '' : 's'} · ${cols} columna${cols === 1 ? '' : 's'} · separador "${delim === '\t' ? 'tab' : delim}"${more ? ` · se muestran las primeras ${MAX}` : ''}${edit ? ' · clic en una celda para editarla (Enter confirma, Esc deshace) · Ctrl+S guarda' : ''}`),
       h('table.fp-table',
-        h('thead', h('tr', h('th.fp-rn', '#'), pad(head).map((c) => h('th', c)))),
-        h('tbody', body.slice(0, MAX).map((r, i) => h('tr', h('td.fp-rn', String(i + 1)), pad(r).map((c) => h(num(c) ? 'td.num' : 'td', c)))))));
+        h('thead', h('tr', h('th.fp-rn', '#'), pad(head).map((c, k) => cell('th', c, 0, k)))),
+        h('tbody', body.slice(0, MAX).map((r, i) => h('tr',
+          h('td.fp-rn', edit ? { title: 'Clic: insertar o eliminar fila', onclick: (e) => rnMenu(e, i + 1) } : null, String(i + 1)),
+          pad(r).map((c, k) => cell('td', c, i + 1, k)))))),
+      edit && !more ? h('button.mini.fp-addrow', { onclick: () => rowOp(rows.length - 1, 'below'), title: 'Agregar una fila vacía al final' }, '+ fila') : null);
   }
 
   // ----- Markdown (subconjunto de GFM: títulos, listas y tareas, citas, código, tablas, enlaces, imágenes) -----
   const MD_BLOCK_START = /^(#{1,6}\s|\s*```|\s*~~~|\s*>|\s*([-*+]|\d+[.)])\s+|\s*([-*_])(\s*\3){2,}\s*$)/;
   const mdSlug = (s) => s.toLowerCase().trim().replace(/[^\p{L}\p{N}\s-]/gu, '').replace(/\s+/g, '-');
   const MD_TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
-  function mdBlocks(src, dir) {
+  /** ctx.edit: casillas [ ] clicables (cambian esa línea del archivo); base: línea del archivo donde empieza src. */
+  function mdBlocks(src, dir, ctx = {}, base = 0) {
     const lines = src.replace(/\r\n?/g, '\n').split('\n');
     const out = [];
     let i = 0;
@@ -3316,8 +3382,9 @@
       if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(l)) { out.push(h('hr')); i++; continue; }
       if (/^\s*>/.test(l)) {
         const body = [];
+        const at = i;
         while (i < lines.length && !blank(lines[i]) && (/^\s*>/.test(lines[i]) || !MD_BLOCK_START.test(lines[i]))) body.push(lines[i++].replace(/^\s*> ?/, ''));
-        out.push(h('blockquote', mdBlocks(body.join('\n'), dir)));
+        out.push(h('blockquote', mdBlocks(body.join('\n'), dir, ctx, base + at)));
         continue;
       }
       if (l.includes('|') && i + 1 < lines.length && MD_TABLE_SEP.test(lines[i + 1]) && lines[i + 1].includes('-')) {
@@ -3333,14 +3400,14 @@
           h('tbody', rows.map((r) => h('tr', head.map((_, k) => h('td', st(k), mdInline(r[k] || '', dir)))))))));
         continue;
       }
-      if (/^\s*([-*+]|\d+[.)])\s+/.test(l)) { const [el, ni] = mdList(lines, i, dir); out.push(el); i = ni; continue; }
+      if (/^\s*([-*+]|\d+[.)])\s+/.test(l)) { const [el, ni] = mdList(lines, i, dir, ctx, base); out.push(el); i = ni; continue; }
       const body = [];
       while (i < lines.length && !blank(lines[i]) && (!body.length || !MD_BLOCK_START.test(lines[i]))) body.push(lines[i++]);
       out.push(h('p', mdInline(body.join('\n'), dir)));
     }
     return out;
   }
-  function mdList(lines, i, dir) {
+  function mdList(lines, i, dir, ctx = {}, base = 0) {
     const indent = lines[i].match(/^\s*/)[0].length;
     const ordered = /^\s*\d+[.)]/.test(lines[i]);
     const start = ordered ? parseInt(lines[i].trim(), 10) : 1;
@@ -3349,8 +3416,8 @@
       const l = lines[i];
       const m = l.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
       const ind = l.match(/^\s*/)[0].length;
-      if (m && ind === indent) { items.push({ text: [m[3]], sub: [] }); i++; continue; }
-      if (m && ind > indent && items.length) { const [el, ni] = mdList(lines, i, dir); items[items.length - 1].sub.push(el); i = ni; continue; }
+      if (m && ind === indent) { items.push({ text: [m[3]], sub: [], line: base + i }); i++; continue; }
+      if (m && ind > indent && items.length) { const [el, ni] = mdList(lines, i, dir, ctx, base); items[items.length - 1].sub.push(el); i = ni; continue; }
       if (!m && l.trim() && items.length && (ind > indent || !MD_BLOCK_START.test(l))) {
         if (ind > indent && /^\s*(```|~~~)/.test(l)) { // bloque de código dentro del ítem
           const block = [];
@@ -3378,10 +3445,25 @@
     const lis = items.map((it) => {
       const t = it.text.join('\n');
       const task = t.match(/^\[([ xX])\]\s+([\s\S]*)$/);
-      if (task) return h('li.md-task', h('input', { type: 'checkbox', disabled: true, checked: task[1] !== ' ' }), ' ', mdInline(task[2], dir), it.sub);
+      if (task) {
+        const box = h('input', { type: 'checkbox', disabled: !ctx.edit, checked: task[1] !== ' ', title: ctx.edit ? 'Marcar / desmarcar (cambia el archivo)' : null });
+        if (ctx.edit) box.addEventListener('change', () => mdToggleTask(ctx.edit, it.line, box.checked));
+        return h(`li.md-task${task[1] !== ' ' ? '.done' : ''}`, box, ' ', mdInline(task[2], dir), it.sub);
+      }
       return h('li', mdInline(t, dir), it.sub);
     });
     return [h(ordered ? 'ol' : 'ul', ordered && start !== 1 ? { start: String(start) } : null, lis), i];
+  }
+  /** Cambia "[ ]" ⇄ "[x]" en la línea `line` del archivo (la del ítem de la lista). */
+  function mdToggleTask(edit, line, checked) {
+    edit((cur) => {
+      const ls = cur.split('\n');
+      if (line >= ls.length) return cur;
+      const nl = ls[line].replace(/^(\s*(?:>\s*)*(?:[-*+]|\d+[.)])\s+)\[[ xX]\]/, `$1[${checked ? 'x' : ' '}]`);
+      if (nl === ls[line]) return cur;
+      ls[line] = nl;
+      return ls.join('\n');
+    });
   }
   const MD_INLINE = new RegExp([
     /\\([\\`*_{}[\]()#+\-.!|~>])/.source, // 1 escape
@@ -4117,10 +4199,33 @@
     if (codePreviewOn(file)) {
       if (!f.previewHook) {
         // cambios en el texto (tecleo, recarga del disco al editarlo una IA): se repinta la vista previa
-        f.previewHook = debounce(() => state.code.groups.forEach((gg, i) => { if (codePane && gg.active === file && codePreviewOn(file)) codeShowActive(i); }), 350);
+        f.previewHook = debounce(() => state.code.groups.forEach((gg, i) => {
+          if (!codePane || gg.active !== file || !codePreviewOn(file)) return;
+          const P = codePane.groups[i];
+          if (P && P.preview && P.preview.contains(document.activeElement) && document.activeElement.isContentEditable) return; // editando una celda
+          codeShowActive(i);
+        }), 350);
         f.master.on('change', f.previewHook);
       }
-      G.preview = h('div.code-preview', renderPreview(file, f.master.getValue()));
+      // la vista previa edita el documento (como teclear): queda "sin guardar" y se guarda con Ctrl+S
+      const edit = (fn) => {
+        const cur = f.master.getValue();
+        const next = fn(cur);
+        if (next == null || next === cur) return;
+        // solo el tramo que cambió (cursor, historial y deshacer como una edición normal)
+        let a = 0;
+        while (a < cur.length && a < next.length && cur[a] === next[a]) a++;
+        let b = 0;
+        while (b < cur.length - a && b < next.length - a && cur[cur.length - 1 - b] === next[next.length - 1 - b]) b++;
+        f.master.replaceRange(next.slice(a, next.length - b), f.master.posFromIndex(a), f.master.posFromIndex(cur.length - b), '+preview');
+        codeRenderTabsOnly();
+        codeRenderStatus();
+      };
+      G.preview = h('div.code-preview', { tabindex: '-1' }, renderPreview(file, f.master.getValue(), { edit }));
+      G.preview.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); codeSave(gi); }
+        else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z' && !e.target.isContentEditable) { e.preventDefault(); f.master.undo(); }
+      });
       G.preview.dataset.file = file;
       G.bodyEl.append(G.preview);
       if (keepScroll) G.preview.scrollTop = keepScroll;
@@ -4795,7 +4900,15 @@
     if (!p || !p.file || p.previewText === p.ta.value) return;
     p.previewText = p.ta.value;
     const top = p.previewEl.scrollTop;
-    p.previewEl.replaceChildren(renderPreview(p.file, p.ta.value));
+    p.previewEl.replaceChildren(renderPreview(p.file, p.ta.value, {
+      edit: (fn) => {
+        const next = fn(p.ta.value);
+        if (next == null || next === p.ta.value) return;
+        p.ta.value = next;
+        p.ta.dispatchEvent(new Event('input')); // estado "sin guardar" + autoguardado
+        notesRenderPreview();
+      },
+    }));
     p.previewEl.scrollTop = top;
   }
   function notesTogglePreview() {
