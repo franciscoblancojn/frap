@@ -197,6 +197,69 @@ test('fs: escribir/leer dentro de la raíz, rechazar fuera', async () => {
   await assert.rejects(client.call('fs.write', { path: path.join(root, '..', 'x') }), /fuera/);
 });
 
+test('editor (fs.stat/mkdir/rename/trash, code.files, code.search): con y sin git, dentro de la raíz', async () => {
+  const { execFileSync } = require('child_process');
+  const plain = path.join(root, 'code-plain');
+  fs.mkdirSync(path.join(plain, 'src', 'lib'), { recursive: true });
+  fs.mkdirSync(path.join(plain, 'node_modules', 'x'), { recursive: true });
+  fs.writeFileSync(path.join(plain, 'src', 'app.js'), 'const a = 1;\nfunction Buscame() {}\n');
+  fs.writeFileSync(path.join(plain, 'src', 'lib', 'util.js'), 'export const buscame = 2;\n');
+  fs.writeFileSync(path.join(plain, 'node_modules', 'x', 'i.js'), 'buscame');
+  fs.writeFileSync(path.join(plain, 'img.bin'), Buffer.from([0, 1, 2, 98, 117, 115, 99, 97, 109, 101]));
+
+  // sin git: recorre carpetas, salta node_modules
+  const fl = await client.call('code.files', { root: plain });
+  assert.equal(fl.git, false);
+  assert.deepEqual(fl.files.sort(), ['img.bin', 'src/app.js', 'src/lib/util.js']);
+  const s1 = await client.call('code.search', { root: plain, query: 'buscame' });
+  assert.deepEqual(s1.results.map((r) => `${r.file}:${r.line}:${r.col}`).sort(), ['src/app.js:2:10', 'src/lib/util.js:1:14']);
+  const s2 = await client.call('code.search', { root: plain, query: 'Buscame', caseSensitive: true });
+  assert.deepEqual(s2.results.map((r) => r.file), ['src/app.js']);
+  const s3 = await client.call('code.search', { root: plain, query: 'busc[a]me\\b', regex: true });
+  assert.equal(s3.results.length, 2);
+  await assert.rejects(client.call('code.search', { root: plain, query: '(', regex: true }), /regular/);
+  await assert.rejects(client.call('code.search', { root: plain, query: '' }), /inválida/);
+  await assert.rejects(client.call('code.files', { root: '/etc' }), /fuera/);
+
+  // con git: respeta .gitignore e incluye archivos sin seguimiento
+  const repo = path.join(root, 'code-repo');
+  fs.mkdirSync(path.join(repo, 'dist'), { recursive: true });
+  execFileSync('git', ['init', '-q', repo]);
+  fs.writeFileSync(path.join(repo, '.gitignore'), 'dist/\n');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'uno\nOpción con: dos puntos\n');
+  fs.writeFileSync(path.join(repo, 'dist', 'b.txt'), 'Opción');
+  execFileSync('git', ['-C', repo, 'add', '.gitignore']);
+  const fg = await client.call('code.files', { root: repo });
+  assert.equal(fg.git, true);
+  assert.deepEqual(fg.files.sort(), ['.gitignore', 'a.txt']);
+  const sg = await client.call('code.search', { root: repo, query: 'opción con:' });
+  assert.deepEqual(sg.results, [{ file: 'a.txt', line: 2, col: 1, text: 'Opción con: dos puntos' }]);
+  // una búsqueda que empieza con "-" no se toma como opción de git
+  assert.deepEqual((await client.call('code.search', { root: repo, query: '--version' })).results, []);
+
+  // stat / mkdir / rename / trash
+  const st = await client.call('fs.stat', { paths: [path.join(plain, 'src', 'app.js'), path.join(plain, 'no')] });
+  assert.equal(st[0].exists, true);
+  assert.ok(st[0].mtime > 0);
+  assert.equal(st[1].exists, false);
+  await assert.rejects(client.call('fs.stat', { paths: ['/etc/passwd'] }), /fuera/);
+  await client.call('fs.mkdir', { path: path.join(plain, 'nueva', 'sub') });
+  assert.ok(fs.statSync(path.join(plain, 'nueva', 'sub')).isDirectory());
+  await assert.rejects(client.call('fs.mkdir', { path: path.join(plain, 'nueva') }), /Ya existe/);
+  await client.call('fs.rename', { from: path.join(plain, 'src', 'app.js'), to: path.join(plain, 'src', 'main.js') });
+  assert.ok(fs.existsSync(path.join(plain, 'src', 'main.js')));
+  await assert.rejects(client.call('fs.rename', { from: path.join(plain, 'src', 'main.js'), to: path.join(plain, 'src', 'lib', 'util.js') }), /Ya existe/);
+  await assert.rejects(client.call('fs.rename', { from: path.join(plain, 'src', 'main.js'), to: '/tmp/fuera.js' }), /fuera/);
+  const tr = await client.call('fs.trash', { path: path.join(plain, 'src', 'main.js') });
+  assert.equal(fs.existsSync(path.join(plain, 'src', 'main.js')), false);
+  assert.equal(tr.trashed, path.join(root, '.local', 'share', 'Trash', 'files', 'main.js'));
+  assert.equal(fs.readFileSync(tr.trashed, 'utf8'), 'const a = 1;\nfunction Buscame() {}\n');
+  assert.match(fs.readFileSync(path.join(root, '.local', 'share', 'Trash', 'info', 'main.js.trashinfo'), 'utf8'), /^\[Trash Info\]\nPath=.*code-plain\/src\/main\.js\nDeletionDate=\d{4}-/);
+  fs.writeFileSync(path.join(plain, 'main.js'), 'otro');
+  assert.equal((await client.call('fs.trash', { path: path.join(plain, 'main.js') })).trashed, path.join(root, '.local', 'share', 'Trash', 'files', 'main.js.2'));
+  await assert.rejects(client.call('fs.trash', { path: root }), /raíz/);
+});
+
 test('config.scan encuentra agentes, comandos, skills, hooks y memoria del proyecto', async () => {
   const p = path.join(root, 'proj');
   fs.mkdirSync(path.join(p, '.claude', 'agents'), { recursive: true });

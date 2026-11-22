@@ -610,6 +610,100 @@ function sshHost(id) {
 }
 
 // ---------- SFTP (gestor de archivos) ----------
+// ---------- editor de código (vista "Código"): lista de archivos, búsqueda y papelera ----------
+// Los archivos se leen/escriben con fs.read / fs.write (limitados a FS_ROOT como todo fs.*).
+const CODE_SKIP_DIRS = new Set(['.git', 'node_modules', '__pycache__', '.venv', 'venv', '.next', '.nuxt', '.cache', '.idea', '.gradle', '.terraform', '.svelte-kit', '.mypy_cache', '.pytest_cache']);
+const CODE_MAX_FILES = 20000;
+const CODE_GIT_ENV = () => childEnv({ GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', GIT_PAGER: 'cat' });
+/** execFile de git con argumentos fijos (sin pasar por la lista blanca de git.run: aquí no hay args del usuario salvo tras -e/--). */
+function gitOut(dir, args, max = 16 * 1024 * 1024) {
+  return new Promise((resolve) => {
+    execFile('git', ['-c', 'core.quotepath=off', ...args], { cwd: dir, timeout: 30000, maxBuffer: max, env: CODE_GIT_ENV() },
+      (err, stdout) => resolve(err && !(typeof err.code === 'number' && err.code === 1) ? null : { code: err ? 1 : 0, stdout }));
+  });
+}
+/** Archivos (rutas relativas) bajo dir: en un repo, los de git (respeta .gitignore); si no, recorriendo carpetas. */
+async function codeFiles(dir) {
+  const inRepo = await gitOut(dir, ['rev-parse', '--show-toplevel']);
+  if (inRepo && inRepo.code === 0) {
+    const r = await gitOut(dir, ['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
+    if (r && r.code === 0) {
+      const files = [...new Set(r.stdout.split('\0').filter(Boolean))].filter((f) => exists(path.join(dir, f)));
+      return { files: files.slice(0, CODE_MAX_FILES), truncated: files.length > CODE_MAX_FILES, git: true };
+    }
+  }
+  const files = [];
+  const walk = async (rel) => {
+    let ents;
+    try { ents = await fs.promises.readdir(path.join(dir, rel), { withFileTypes: true }); } catch (_) { return; }
+    for (const e of ents) {
+      if (files.length >= CODE_MAX_FILES) return;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) { if (!CODE_SKIP_DIRS.has(e.name)) await walk(r); } else if (e.isFile()) files.push(r);
+    }
+  };
+  await walk('');
+  return { files: files.sort(), truncated: files.length >= CODE_MAX_FILES, git: false };
+}
+/** Busca texto en los archivos de dir. Devuelve [{file, line, col, text}] (máx. `max`). */
+async function codeSearch(dir, query, { regex = false, caseSensitive = false, max = 500 } = {}) {
+  const out = [];
+  const inRepo = await gitOut(dir, ['rev-parse', '--show-toplevel']);
+  if (inRepo && inRepo.code === 0) {
+    const args = ['grep', '-z', '-n', '--column', '-I', '--no-color', '--untracked', ...(caseSensitive ? [] : ['-i']), regex ? '-E' : '-F', '-e', query, '--'];
+    const r = await gitOut(dir, args);
+    if (r) {
+      for (const ln of r.stdout.split('\n')) {
+        if (!ln) continue;
+        const [file, line, col, ...rest] = ln.split('\0');
+        if (!file || !line) continue;
+        out.push({ file, line: Number(line), col: Number(col) || 1, text: rest.join('\0').slice(0, 400) });
+        if (out.length >= max) break;
+      }
+      return { results: out, truncated: out.length >= max };
+    }
+  }
+  let re;
+  try { re = new RegExp(regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? '' : 'i'); } catch (e) { throw new Error(`Expresión regular inválida: ${e.message}`); }
+  const { files } = await codeFiles(dir);
+  for (const f of files) {
+    let buf;
+    try {
+      const abs = path.join(dir, f);
+      if ((await fs.promises.stat(abs)).size > 1024 * 1024) continue;
+      buf = await fs.promises.readFile(abs);
+    } catch (_) { continue; }
+    if (buf.subarray(0, 8000).includes(0)) continue; // binario
+    const lines = buf.toString('utf8').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const m = re.exec(lines[i]);
+      if (!m) continue;
+      out.push({ file: f, line: i + 1, col: m.index + 1, text: lines[i].slice(0, 400) });
+      if (out.length >= max) return { results: out, truncated: true };
+    }
+  }
+  return { results: out, truncated: false };
+}
+/** Mueve a la papelera de freedesktop (~/.local/share/Trash): se puede recuperar desde el gestor de archivos. */
+function moveToTrash(abs) {
+  const trash = path.join(process.env.XDG_DATA_HOME || path.join(HOME, '.local', 'share'), 'Trash');
+  fs.mkdirSync(path.join(trash, 'files'), { recursive: true });
+  fs.mkdirSync(path.join(trash, 'info'), { recursive: true });
+  const base = path.basename(abs);
+  let name = base;
+  for (let i = 2; exists(path.join(trash, 'files', name)) || exists(path.join(trash, 'info', `${name}.trashinfo`)); i++) name = `${base}.${i}`;
+  const info = path.join(trash, 'info', `${name}.trashinfo`);
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  fs.writeFileSync(info, `[Trash Info]\nPath=${encodeURI(abs)}\nDeletionDate=${date}\n`);
+  try { fs.renameSync(abs, path.join(trash, 'files', name)); } catch (e) {
+    fs.rmSync(info, { force: true });
+    throw new Error(e.code === 'EXDEV' ? 'No se puede mover a la papelera (está en otro disco)' : e.message);
+  }
+  return path.join(trash, 'files', name);
+}
+
 const sftpTransfers = new Map(); // tid -> proceso sftp en curso (para cancelar)
 /** Ejecuta comandos sftp en un servidor activo; lanza un Error legible si falla. */
 async function sftpRun(id, lines, { timeoutMs, tid } = {}) {
@@ -839,6 +933,51 @@ const ops = {
     return { path: f, mtime: fs.statSync(f).mtimeMs };
   },
   'fs.exists': ({ path: p }) => exists(safePath(p)),
+  /** mtime/tamaño de varias rutas (el editor vigila así los archivos abiertos). [{path, exists, mtime, size, dir}] */
+  'fs.stat': ({ paths }) => {
+    if (!Array.isArray(paths) || paths.length > 500) throw new Error('paths debe ser una lista (máx. 500)');
+    return paths.map((p) => {
+      const abs = safePath(String(p));
+      try { const st = fs.statSync(abs); return { path: abs, exists: true, mtime: st.mtimeMs, size: st.size, dir: st.isDirectory() }; } catch (_) { return { path: abs, exists: false }; }
+    });
+  },
+  /** Crea una carpeta (y las intermedias). */
+  'fs.mkdir': ({ path: p }) => {
+    const d = safePath(p);
+    if (exists(d)) throw new Error(`Ya existe: ${d}`);
+    fs.mkdirSync(d, { recursive: true });
+    return { path: d };
+  },
+  /** Renombra o mueve un archivo/carpeta (sin pisar uno existente). */
+  'fs.rename': ({ from, to }) => {
+    const a = safePath(from);
+    const b = safePath(to);
+    if (a === FS_ROOT) throw new Error('No se puede mover la carpeta raíz');
+    if (!exists(a)) throw new Error(`No existe: ${a}`);
+    if (exists(b)) throw new Error(`Ya existe: ${b}`);
+    fs.mkdirSync(path.dirname(b), { recursive: true });
+    fs.renameSync(a, b);
+    return { path: b };
+  },
+  /** Manda un archivo/carpeta a la papelera (no borra: se puede recuperar). */
+  'fs.trash': ({ path: p }) => {
+    const a = safePath(p);
+    if (a === FS_ROOT) throw new Error('No se puede borrar la carpeta raíz');
+    if (!exists(a)) throw new Error(`No existe: ${a}`);
+    return { path: a, trashed: moveToTrash(a) };
+  },
+  /** Archivos de una carpeta (editor: Ctrl+P). {root, files: [relativas], truncated, git} */
+  'code.files': async ({ root: r }) => {
+    const dir = safePath(r);
+    if (!fs.statSync(dir).isDirectory()) throw new Error(`No es una carpeta: ${dir}`);
+    return { root: dir, ...(await codeFiles(dir)) };
+  },
+  /** Buscar en archivos (editor: Ctrl+Shift+F). {root, results: [{file, line, col, text}], truncated} */
+  'code.search': async ({ root: r, query, regex = false, caseSensitive = false }) => {
+    const dir = safePath(r);
+    if (typeof query !== 'string' || !query || query.length > 500 || /\n/.test(query)) throw new Error('Búsqueda inválida');
+    return { root: dir, ...(await codeSearch(dir, query, { regex: !!regex, caseSensitive: !!caseSensitive })) };
+  },
   'config.scan': ({ folders }) => scanConfig(folders),
   'db.list': () => ({
     envFile: DB_ENV,

@@ -49,6 +49,7 @@
     git: 'vendor/icons/git.svg',
     ssh: 'vendor/icons/ssh.svg',
     notes: 'vendor/icons/notes.svg',
+    code: 'vendor/icons/code.svg',
   };
   const kindIcon = (kind) => (ICONS[kind] ? h('img.ico', { src: ICONS[kind], alt: kind, title: kind }) : null);
   const uid = () => Math.random().toString(36).slice(2, 10);
@@ -114,19 +115,21 @@
     views: [],
     // foto de las terminales abiertas: [{sid, projectId, kind, title, cwd, sshId?}] (para reabrirlas tras apagar el equipo)
     lastTerms: [],
-    seeded: ['notes-prompts'], // siembras ya aplicadas (ver migrateViews)
+    seeded: ['notes-prompts', 'frap-editor'], // siembras ya aplicadas (ver migrateViews)
     db: { connId: null, sql: '', limit: 500, history: [] }, // datos de la vista DB enlazada (apunta a views[i].data)
     // música: tracks = [{id, type: 'file'|'youtube', title, videoId?, duration?}]; los archivos viven en IndexedDB
     music: { tracks: [], current: null, loop: 'all', shuffle: false, volume: 80 },
     git: { repo: null, tab: 'diff' }, // datos de la vista Git enlazada
     sftp: { hostId: null, local: null, remote: {}, hidden: false }, // datos de la vista Archivos (SFTP) enlazada; remote = última ruta por servidor
     notes: { gitignore: true }, // datos de la vista Notas enlazada: gitignore = agregar NOTES.md al .gitignore
+    code: { groups: [{ tabs: [], active: null }], focus: 0, expanded: [], side: 'tree', hidden: false, wrap: false, cursors: {} }, // vista Código enlazada
     voice: { lang: 'es' }, // módulo de voz (panel derecho): idioma para whisper.cpp ("auto" = detectar)
     // temporizadores: [{id, icon, title, desc, kind: 'repeat'|'once', every (seg), mode: 'toast'|'modal', sound, enabled, nextAt, startedAt}]
     timers: [],
     settings: {
       fontSize: 13,
-      editor: 'code', // comando para abrir archivos clicados en la terminal (VS Code)
+      editor: 'frap', // rutas clicadas en la terminal: 'frap' = editor de código de FRAP; si no, un comando (code, cursor…)
+      extEditor: 'code', // "Abrir en editor externo" desde el editor de FRAP (VS Code)
       pageMode: 'tab', // cómo se abren las páginas por defecto: 'tab' (navegador) | 'iframe' (pestaña interna)
       launchers: {
         claude: { cmd: 'claude', addDir: '--add-dir' },
@@ -168,8 +171,17 @@
       st.seeded.push('notes-prompts');
       for (const np of NOTES_PROMPTS) if (!(st.prompts || []).some((x) => x.title === np.title)) st.prompts = [...(st.prompts || []), { id: uid(), ...np }];
     }
+    if (!st.seeded.includes('frap-editor')) {
+      // con el editor de código integrado, las rutas clicadas se abren en FRAP (antes: VS Code por defecto)
+      st.seeded.push('frap-editor');
+      if (st.settings) {
+        const old = st.settings.editor;
+        if (old && old !== 'code' && old !== 'frap') st.settings.extEditor = old;
+        st.settings.editor = 'frap';
+      }
+    }
     if (!Array.isArray(st.views)) st.views = [];
-    st.views = st.views.filter((v) => v && ['git', 'db', 'sftp', 'notes'].includes(v.kind) && v.projectId && v.data);
+    st.views = st.views.filter((v) => v && ['git', 'db', 'sftp', 'notes', 'code'].includes(v.kind) && v.projectId && v.data);
     for (const kind of ['git', 'db', 'sftp']) {
       const old = st[kind] || {};
       if (old.open && st.activeProject && !st.views.some((v) => v.kind === kind && v.projectId === st.activeProject)) {
@@ -218,9 +230,10 @@
     db: () => ({ connId: null, sql: '', limit: 500, history: [] }),
     sftp: () => ({ hostId: null, local: null, remote: {}, hidden: false }),
     notes: () => ({ gitignore: true }),
+    code: () => ({ groups: [{ tabs: [], active: null }], focus: 0, expanded: [], side: 'tree', hidden: false, wrap: false, cursors: {} }),
   };
   const vSid = (v) => `${v.kind}:${v.projectId}`;
-  const viewKind = (sid) => { const m = /^(git|db|sftp|notes):/.exec(sid || ''); return m ? m[1] : null; };
+  const viewKind = (sid) => { const m = /^(git|db|sftp|notes|code):/.exec(sid || ''); return m ? m[1] : null; };
   const viewBySid = (sid) => (viewKind(sid) ? state.views.find((v) => v.open && vSid(v) === sid) || null : null);
   const activeView = () => viewBySid(state.activeSid);
   const openViewsOf = (pid) => {
@@ -229,7 +242,7 @@
   };
   const viewPanes = new Map(); // sid -> panel DOM de la vista
   const gitRts = new Map(); // sid -> memoria de git (status, salida, diff…)
-  let bound = { git: null, db: null, sftp: null, notes: null }; // sid enlazado por tipo
+  let bound = { git: null, db: null, sftp: null, notes: null, code: null }; // sid enlazado por tipo
   /** Datos de todas las vistas de un tipo (para mantenerlas al borrar conexiones o servidores). */
   const viewDatas = (kind) => [...new Set([state[kind], ...state.views.filter((v) => v.kind === kind).map((v) => v.data)])];
   function needProject() {
@@ -254,7 +267,8 @@
       gitPane = pane;
     } else if (v.kind === 'db') dbPane = pane;
     else if (v.kind === 'sftp') sftpPane = pane;
-    else notesPane = pane;
+    else if (v.kind === 'notes') notesPane = pane;
+    else codePane = pane;
   }
   /** Enlaza y activa la vista `kind` del proyecto activo. fresh = todavía no tenía panel. */
   function showView(kind) {
@@ -267,7 +281,18 @@
     renderAll();
     return { v, fresh };
   }
-  function closeView(v) {
+  function closeView(v, force) {
+    if (v.kind === 'code' && !force) {
+      if (codeViewDirty(v)) { confirmBox('Cerrar editor', 'Hay archivos con cambios sin guardar. ¿Cerrar el editor y descartarlos?').then((ok) => ok && closeView(v, true)); return; }
+    }
+    if (v.kind === 'code') {
+      // al cerrarlo se suelta su panel (al reabrirlo vuelven las mismas pestañas, recargadas del disco)
+      const sid = vSid(v);
+      const pane = viewPanes.get(sid);
+      if (pane) pane.root.remove();
+      viewPanes.delete(sid);
+      if (bound.code === sid) codePane = null;
+    }
     v.open = false;
     if (state.activeSid === vSid(v)) {
       const list = sessionsOf(state.activeProject);
@@ -285,7 +310,8 @@
     if (v.kind === 'git') openGitView();
     else if (v.kind === 'db') openDbView();
     else if (v.kind === 'sftp') openSftpView();
-    else openNotesView();
+    else if (v.kind === 'notes') openNotesView();
+    else openCodeView();
   }
   /** Al borrar un proyecto: se van sus vistas y sus paneles. */
   function dropProjectViews(pid) {
@@ -298,14 +324,15 @@
       if (bound[v.kind] === sid) {
         bound[v.kind] = null;
         state[v.kind] = VIEW_DATA[v.kind]();
-        if (v.kind === 'git') { gitPane = null; Git = newGitRt(); } else if (v.kind === 'db') dbPane = null; else if (v.kind === 'sftp') sftpPane = null; else notesPane = null;
+        if (v.kind === 'git') { gitPane = null; Git = newGitRt(); } else if (v.kind === 'db') dbPane = null; else if (v.kind === 'sftp') sftpPane = null; else if (v.kind === 'notes') notesPane = null; else codePane = null;
       }
     }
     state.views = state.views.filter((x) => x.projectId !== pid);
   }
-  const VIEW_TITLE = { git: 'Git (Alt+Shift+G)', db: 'Consultas SQL (Alt+Shift+D)', sftp: 'Archivos por SFTP (Alt+Shift+F)', notes: 'Notas: NOTES.md de la carpeta (Alt+Shift+N)' };
+  const VIEW_TITLE = { git: 'Git (Alt+Shift+G)', db: 'Consultas SQL (Alt+Shift+D)', sftp: 'Archivos por SFTP (Alt+Shift+F)', notes: 'Notas: NOTES.md de la carpeta (Alt+Shift+N)', code: 'Editor de código (Alt+Shift+E)' };
   function viewLabel(v) {
     if (v.kind === 'notes') return 'Notas';
+    if (v.kind === 'code') { const g = (v.data.groups || [])[v.data.focus || 0]; return g && g.active ? `Código · ${basename(g.active)}` : 'Código'; }
     if (v.kind === 'git') return v.data.repo ? `Git · ${basename(v.data.repo)}` : 'Git';
     if (v.kind === 'db') { const c = dbConnById(v.data.connId); return c ? `DB · ${c.name}` : 'DB'; }
     const c = sshInfo && sshInfo.hosts.find((x) => x.id === v.data.hostId);
@@ -389,7 +416,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -505,7 +532,8 @@
     Bridge.send('session.resize', { sid: t.sid, cols, rows });
   }
   const fitAll = debounce(() => terms.forEach(fitTerm), 60);
-  new ResizeObserver(fitAll).observe($('#term-host'));
+  new ResizeObserver(() => { fitAll(); codeRefreshSoon(); }).observe($('#term-host'));
+  const codeRefreshSoon = debounce(() => codeRefreshEditors(), 80);
 
   function disposeTerm(sid) {
     const t = terms.get(sid);
@@ -603,9 +631,11 @@
 
   function activeTerm() { return terms.get(state.activeSid) || null; }
 
+  let lastAiSid = null; // última terminal de IA activada (destino de "Enviar a la IA" del editor)
   function activate(sid) {
     const t = terms.get(sid);
     if (!t) return;
+    if (['claude', 'codex', 'opencode'].includes(termKind(t))) lastAiSid = sid;
     const pid = (t.info.meta || {}).projectId;
     if (pid && project(pid)) state.activeProject = pid;
     state.activeSid = sid;
@@ -711,7 +741,7 @@
   }
 
   // ======================================================================
-  // Rutas clicables en la terminal: clic = abrir en el editor (VS Code)
+  // Rutas clicables en la terminal: clic = abrir en el editor de FRAP (o el comando de Ajustes)
   // ======================================================================
   // Candidatas: /abs/ruta, ~/ruta, ./ruta, ../ruta, dir/archivo y archivo.ext, con :línea:col opcional.
   // Solo se subrayan las que el bridge confirma que existen.
@@ -805,7 +835,7 @@
               decorations: { underline: true, pointerCursor: true },
               activate: (ev) => {
                 if (ev && ev.button !== 0) return;
-                openInEditor(f.path, c.line, c.col);
+                openInEditor(f.path, c.line, c.col, f.dir, (t.info.meta || {}).projectId);
               },
               hover: () => { t.pane.title = `Clic: abrir ${label} en ${editorName()} — ${f.path}${c.line ? ':' + c.line : ''}`; },
               leave: () => { t.pane.title = ''; },
@@ -818,16 +848,24 @@
   }
 
   // gancho de depuración (solo con localStorage frap.debug = true)
-  if (storeGet('frap.debug', false)) window.__frap = { terms, logicalLine, pathCandidates, resolvePaths };
+  if (storeGet('frap.debug', false)) window.__frap = { terms, logicalLine, pathCandidates, resolvePaths, openInEditor, get state() { return state; } };
 
-  const editorName = () => {
-    const e = basename((state.settings.editor || 'code').split(/\s+/)[0]);
-    return { code: 'VS Code', 'code-insiders': 'VS Code Insiders', codium: 'VSCodium', cursor: 'Cursor', windsurf: 'Windsurf' }[e] || e;
+  const cmdName = (cmd) => {
+    const e = basename((cmd || 'code').split(/\s+/)[0]);
+    return { code: 'VS Code', 'code-insiders': 'VS Code Insiders', codium: 'VSCodium', cursor: 'Cursor', windsurf: 'Windsurf', frap: 'el editor de FRAP' }[e] || e;
   };
-  async function openInEditor(p, line, col) {
+  const editorName = () => cmdName(state.settings.editor || 'frap');
+  const extEditorCmd = () => state.settings.extEditor || (state.settings.editor !== 'frap' && state.settings.editor) || 'code';
+  const extEditorName = () => cmdName(extEditorCmd());
+  /** Ruta clicada en la terminal: al editor de FRAP (por defecto) o al comando configurado en Ajustes. */
+  async function openInEditor(p, line, col, isDir, pid) {
+    if ((state.settings.editor || 'frap') === 'frap') { await openInFrap(p, line, col, isDir, pid); return; }
+    await openExternal(p, line, col, state.settings.editor);
+  }
+  async function openExternal(p, line, col, cmd = extEditorCmd()) {
     try {
-      await Bridge.call('open.editor', { path: p, line, col, editor: state.settings.editor || 'code' });
-      toast(`Abriendo ${basename(p)}${line ? ':' + line : ''} en ${editorName()}`, 'ok');
+      await Bridge.call('open.editor', { path: p, line, col, editor: cmd });
+      toast(`Abriendo ${basename(p)}${line ? ':' + line : ''} en ${cmdName(cmd)}`, 'ok');
     } catch (e) { toast(e.message, 'err'); }
   }
 
@@ -1244,7 +1282,7 @@
         onauxclick: (e) => { if (e.button === 1) closeView(v); },
       },
       v.kind === 'sftp' ? null : kindIcon(v.kind),
-      h('span.tname', { git: 'Git', db: 'DB', sftp: '⇅ Archivos', notes: 'Notas' }[v.kind]),
+      h('span.tname', { git: 'Git', db: 'DB', sftp: '⇅ Archivos', notes: 'Notas', code: 'Código' }[v.kind]),
       h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeView(v); } }, '✕')));
     }
   }
@@ -1391,12 +1429,18 @@
     if (sftpActive) ensureSftpPane();
     const notesActive = !!av && av.kind === 'notes';
     if (notesActive) ensureNotesPane();
-    for (const [sid, pane] of viewPanes) pane.root.classList.toggle('hidden', sid !== state.activeSid);
+    const codeActive = !!av && av.kind === 'code';
+    if (codeActive) ensureCodePane();
+    for (const [sid, pane] of viewPanes) {
+      const was = pane.root.classList.contains('hidden');
+      pane.root.classList.toggle('hidden', sid !== state.activeSid);
+      if (was && sid === state.activeSid && pane.kind === 'code') requestAnimationFrame(() => { codeRefreshEditors(); codeRenderStatus(); });
+    }
     const p = project();
     $('#empty').classList.toggle('hidden', !!activeTerm() || !!pg || !!av);
     $('#st-project').textContent = p ? p.name : '—';
     const t = activeTerm();
-    $('#st-cwd').textContent = notesActive ? tilde(notesFile() || '') : sftpActive ? sftpStatusLine() : gitActive ? (state.git.repo ? tilde(state.git.repo) : 'Git') : dbActive ? dbStatusLine() : pg ? pg.url : t ? tilde((t.info.meta || {}).cwd || '') : p ? p.folders.map(tilde).join('  +  ') : '';
+    $('#st-cwd').textContent = codeActive ? tilde(codeActiveFile() || codeRoots()[0] || '') : notesActive ? tilde(notesFile() || '') : sftpActive ? sftpStatusLine() : gitActive ? (state.git.repo ? tilde(state.git.repo) : 'Git') : dbActive ? dbStatusLine() : pg ? pg.url : t ? tilde((t.info.meta || {}).cwd || '') : p ? p.folders.map(tilde).join('  +  ') : '';
     renderStatusActions();
   }
 
@@ -2831,6 +2875,1063 @@
         h('button.icon.mini', { title: 'Quitar', onclick: () => { voice.last = ''; renderVoice(); } }, '✕')) : null,
     ].filter(Boolean)); // replaceChildren(null) insertaría el texto "null"
   }
+
+  // ---------- editor de código: vista por proyecto (CodeMirror 5 en src/vendor/codemirror) ----------
+  // Árbol de las carpetas del proyecto + hasta 4 grupos (paneles) con pestañas. Un mismo archivo abierto en
+  // varios grupos comparte el documento (linkedDoc). Los archivos se leen/escriben con fs.read / fs.write y se
+  // vigilan con fs.stat: si una IA cambia un archivo abierto sin cambios locales, se recarga solo.
+  // state.code (= views[i].data): {groups: [{tabs: [ruta], active}], focus, expanded: [dirs], side: 'tree'|'search'|null,
+  //   hidden, wrap, cursors: {ruta: [línea, col]}}
+  let codePane = null; // panel de la vista Código enlazada
+  const CODE_MAX_GROUPS = 4;
+  const CODE_IMG = /\.(png|jpe?g|gif|webp|svg|ico|bmp|avif)$/i;
+  const CM_PHRASES = {
+    'Search:': 'Buscar:', 'With:': 'Con:', 'Replace?': '¿Reemplazar?', Yes: 'Sí', No: 'No', All: 'Todas', Stop: 'Parar',
+    'Replace all:': 'Reemplazar todas:', 'Replace:': 'Reemplazar:', 'Replace with:': 'Reemplazar con:',
+    '(Use /re/ syntax for regexp search)': '(usa /re/ para expresiones regulares)', 'Jump to line:': 'Ir a la línea:',
+    '(Use line:column or scroll% syntax)': '(línea:columna o porcentaje%)',
+  };
+  const hasCM = () => typeof window.CodeMirror === 'function';
+
+  /** Abre (o enfoca) el editor del proyecto activo. */
+  function openCodeView() {
+    if (!needProject()) return;
+    const { fresh } = showView('code');
+    if (!fresh) codeRenderAll();
+    requestAnimationFrame(() => codeFocusEditor());
+  }
+  /** Carpetas raíz del proyecto (sin barra final). */
+  const codeRoots = (pid = state.activeProject) => { const p = project(pid); return p ? p.folders.map((f) => f.replace(/\/+$/, '') || '/') : []; };
+  /** Ruta para mostrar/copiar: relativa a la carpeta del proyecto que la contiene (o con ~). */
+  function codeRel(file) {
+    for (const r of codeRoots()) if (file.startsWith(`${r}/`)) return codeRoots().length > 1 ? `${basename(r)}/${file.slice(r.length + 1)}` : file.slice(r.length + 1);
+    return tilde(file);
+  }
+  /** Para la IA: relativa a la carpeta de su terminal si está dentro; si no, absoluta. */
+  function codeRelTo(file, cwd) {
+    const c = (cwd || '').replace(/\/+$/, '');
+    return c && file.startsWith(`${c}/`) ? file.slice(c.length + 1) : file;
+  }
+  function codeModeFor(file) {
+    const name = basename(file);
+    if (/^\.env(\..*)?$|\.(env|ini|conf|cfg)$/i.test(name)) return 'text/x-properties';
+    if (/^(\.gitignore|\.dockerignore|\.npmrc|\.editorconfig)$/.test(name)) return 'text/x-properties';
+    if (/\.(sh|bash|zsh)$|^\.(bashrc|zshrc|profile)$/.test(name)) return 'text/x-sh';
+    if (/\.(ts|mts|cts)$/i.test(name)) return 'application/typescript';
+    if (/\.tsx$/i.test(name)) return 'text/typescript-jsx';
+    if (/\.(jsx)$/i.test(name)) return 'text/jsx';
+    if (/\.(json|jsonc)$|^\.?(babelrc|eslintrc|prettierrc)$/i.test(name)) return 'application/json';
+    if (/\.(md|markdown)$/i.test(name)) return 'text/x-gfm';
+    const m = hasCM() && CodeMirror.findModeByFileName ? CodeMirror.findModeByFileName(name) : null;
+    return m ? (m.mime || (m.mimes && m.mimes[0]) || m.mode) : 'text/plain';
+  }
+  function codeModeName(mime) {
+    if (!hasCM() || !CodeMirror.findModeByMIME) return mime;
+    const m = CodeMirror.findModeByMIME(mime);
+    return m ? m.name : mime === 'text/plain' ? 'Texto' : mime;
+  }
+
+  function ensureCodePane() {
+    if (codePane) return codePane;
+    const treeEl = h('div.code-tree.scroll');
+    const searchEl = h('div.code-search');
+    const side = h('div.code-side', h('div.code-side-head'), treeEl, searchEl);
+    const groupsEl = h('div.code-groups');
+    const statusEl = h('div.code-status');
+    const root = h('div.code-pane.hidden',
+      h('div.code-main', side, h('div.code-right', groupsEl, statusEl)));
+    $('#term-host').append(root);
+    codePane = {
+      kind: 'code', root, side, treeEl, searchEl, groupsEl, statusEl,
+      groups: [], // {el, tabsEl, bodyEl, banner, cm, preview, docs: Map(ruta -> Doc enlazado)}
+      files: new Map(), // ruta -> {master, saved, gen, mtime, exists, error, binary, image, mode, conflict, loading}
+      dirs: new Map(), // carpeta -> {entries, at}
+      quick: null, // {at, list: [{abs, rel}]}
+      search: { query: '', regex: false, caseSensitive: false, results: null, busy: false, truncated: false },
+      dragTab: null,
+    };
+    if (!state.code.groups || !state.code.groups.length) state.code.groups = [{ tabs: [], active: null }];
+    viewPanes.set(bound.code, codePane);
+    codeRenderAll();
+    return codePane;
+  }
+
+  /** Grupos válidos (1-4) y foco dentro de rango. */
+  function codeNormalize() {
+    const c = state.code;
+    c.groups = (c.groups || []).filter((g) => g && Array.isArray(g.tabs)).slice(0, CODE_MAX_GROUPS);
+    if (!c.groups.length) c.groups = [{ tabs: [], active: null }];
+    for (const g of c.groups) { g.tabs = [...new Set(g.tabs.filter((x) => typeof x === 'string'))]; if (!g.tabs.includes(g.active)) g.active = g.tabs[g.tabs.length - 1] || null; }
+    c.focus = Math.min(Math.max(0, Number(c.focus) || 0), c.groups.length - 1);
+    if (!Array.isArray(c.expanded)) c.expanded = [];
+    if (!c.cursors || typeof c.cursors !== 'object') c.cursors = {};
+    if (c.side === undefined) c.side = 'tree';
+  }
+
+  function codeRenderAll() {
+    const P = codePane;
+    if (!P) return;
+    codeNormalize();
+    P.root.classList.toggle('no-side', !state.code.side);
+    codeRenderSide();
+    codeRenderGroups();
+    codeRenderStatus();
+  }
+
+  // ----- árbol de archivos -----
+  function codeRenderSide() {
+    const P = codePane;
+    const c = state.code;
+    const head = P.side.firstChild;
+    head.replaceChildren(...[
+      h(`button.code-side-tab${c.side === 'tree' ? '.active' : ''}`, { title: 'Archivos', onclick: () => codeSetSide('tree') }, 'Archivos'),
+      h(`button.code-side-tab${c.side === 'search' ? '.active' : ''}`, { title: 'Buscar en archivos (Ctrl+Shift+F)', onclick: () => codeSetSide('search') }, 'Buscar'),
+      h('span.grow'),
+      c.side === 'tree' ? [
+        h('button.icon.mini', { title: 'Nuevo archivo', onclick: () => codeNewFile(codeTargetDir()) }, '＋'),
+        h('button.icon.mini', { title: 'Nueva carpeta', onclick: () => codeNewDir(codeTargetDir()) }, '▣'),
+        h('button.icon.mini', { title: 'Revelar el archivo activo', onclick: () => codeReveal(codeActiveFile()) }, '◎'),
+        h('button.icon.mini', { title: c.hidden ? 'Ocultar archivos ocultos' : 'Mostrar archivos ocultos', class: `icon mini${c.hidden ? ' on' : ''}`, onclick: () => { c.hidden = !c.hidden; P.dirs.clear(); save(); codeRenderTree(); codeRenderSide(); } }, '•'),
+        h('button.icon.mini', { title: 'Contraer todo', onclick: () => { c.expanded = []; save(); codeRenderTree(); } }, '⊟'),
+        h('button.icon.mini', { title: 'Recargar', onclick: () => { P.dirs.clear(); P.quick = null; codeRenderTree(); } }, '⟳'),
+      ] : null,
+      h('button.icon.mini', { title: 'Ocultar panel lateral', onclick: () => codeSetSide(null) }, '⟨')].flat().filter(Boolean)); // replaceChildren no aplana ni ignora null
+    P.treeEl.classList.toggle('hidden', c.side !== 'tree');
+    P.searchEl.classList.toggle('hidden', c.side !== 'search');
+    if (c.side === 'tree') codeRenderTree();
+    else if (c.side === 'search') codeRenderSearch();
+  }
+  function codeSetSide(side) {
+    state.code.side = side;
+    save();
+    codeRenderAll();
+    if (side === 'search') requestAnimationFrame(() => { const i = codePane && codePane.searchEl.querySelector('input'); if (i) { i.focus(); i.select(); } });
+    codeRefreshEditors();
+  }
+  /** Carpeta donde crear: la del archivo activo si está en el proyecto; si no, la primera carpeta. */
+  function codeTargetDir() {
+    const f = codeActiveFile();
+    const roots = codeRoots();
+    if (f && roots.some((r) => f.startsWith(`${r}/`))) return f.slice(0, f.lastIndexOf('/'));
+    return roots[0];
+  }
+  async function codeListDir(dir, force) {
+    const P = codePane;
+    const c = P.dirs.get(dir);
+    if (c && !force) return c.entries;
+    const r = await Bridge.call('fs.list', { path: dir, dirsOnly: false, hidden: !!state.code.hidden });
+    const entries = r.entries.filter((e) => !(e.dir && e.name === '.git'));
+    P.dirs.set(dir, { entries, at: Date.now() });
+    return entries;
+  }
+  let codeTreeSeq = 0;
+  async function codeRenderTree() {
+    const P = codePane;
+    if (!P || !Bridge.ready) { if (P) P.treeEl.replaceChildren(h('p.muted.code-hint', 'Bridge desconectado')); return; }
+    const seq = ++codeTreeSeq;
+    const expanded = new Set(state.code.expanded);
+    const active = codeActiveFile();
+    const build = async (dir, depth) => {
+      let entries;
+      try { entries = await codeListDir(dir); } catch (e) { return [h('div.code-node.err', { style: `padding-left:${8 + depth * 12}px` }, e.message)]; }
+      const out = [];
+      for (const e of entries) {
+        const abs = `${dir}/${e.name}`;
+        const open = e.dir && expanded.has(abs);
+        out.push(h(`div.code-node${e.dir ? '.dir' : ''}${abs === active ? '.active' : ''}`, {
+          style: `padding-left:${8 + depth * 12}px`, title: tilde(abs), dataset: { path: abs },
+          onclick: () => (e.dir ? codeToggleDir(abs) : codeOpenFile(abs)),
+          oncontextmenu: (ev) => codeTreeMenu(ev, abs, e.dir),
+        }, h('span.code-twisty', e.dir ? (open ? '▾' : '▸') : ''), h('span.code-fname', e.name)));
+        if (open) out.push(...await build(abs, depth + 1));
+      }
+      if (!entries.length) out.push(h('div.code-node.muted', { style: `padding-left:${20 + depth * 12}px` }, '(vacía)'));
+      return out;
+    };
+    const roots = codeRoots();
+    const parts = [];
+    for (const r of roots) {
+      const open = !expanded.has(`!${r}`); // las raíces empiezan abiertas ("!ruta" = contraída)
+      parts.push(h('div.code-node.dir.code-root', {
+        title: tilde(r), dataset: { path: r },
+        onclick: () => codeToggleDir(`!${r}`),
+        oncontextmenu: (ev) => codeTreeMenu(ev, r, true, true),
+      }, h('span.code-twisty', open ? '▾' : '▸'), h('span.code-fname', basename(r) || r)));
+      if (open) parts.push(...await build(r, 1));
+    }
+    if (seq !== codeTreeSeq || codePane !== P) return;
+    const top = P.treeEl.scrollTop;
+    P.treeEl.replaceChildren(...parts);
+    P.treeEl.scrollTop = top;
+  }
+  function codeToggleDir(abs) {
+    const c = state.code;
+    c.expanded = c.expanded.includes(abs) ? c.expanded.filter((x) => x !== abs) : [...c.expanded, abs];
+    save();
+    codeRenderTree();
+  }
+  /** Expande el árbol hasta el archivo y lo deja visible. */
+  async function codeReveal(file) {
+    if (!file || !codePane) return;
+    const r = codeRoots().find((x) => file.startsWith(`${x}/`));
+    if (!r) { toast('El archivo no está dentro de las carpetas del proyecto', 'err'); return; }
+    const c = state.code;
+    const add = new Set(c.expanded);
+    add.delete(`!${r}`);
+    let d = file.slice(0, file.lastIndexOf('/'));
+    while (d.length > r.length) { add.add(d); d = d.slice(0, d.lastIndexOf('/')); }
+    c.expanded = [...add];
+    if (c.side !== 'tree') c.side = 'tree';
+    save();
+    codeRenderSide();
+    await codeRenderTree();
+    const el = [...codePane.treeEl.querySelectorAll('.code-node')].find((n) => n.dataset.path === file);
+    if (el) el.scrollIntoView({ block: 'center' });
+  }
+  function codeTreeMenu(ev, abs, isDir, isRoot) {
+    const dir = isDir ? abs : abs.slice(0, abs.lastIndexOf('/'));
+    popMenu(ev, [
+      !isDir && { label: 'Abrir', action: () => codeOpenFile(abs) },
+      !isDir && state.code.groups.length < CODE_MAX_GROUPS && { label: 'Abrir a la derecha', action: () => codeOpenFile(abs, { group: state.code.groups.length }) },
+      { label: 'Nuevo archivo…', action: () => codeNewFile(dir) },
+      { label: 'Nueva carpeta…', action: () => codeNewDir(dir) },
+      '-',
+      { label: 'Copiar ruta', action: () => codeCopy(abs) },
+      { label: 'Copiar ruta relativa', action: () => codeCopy(codeRel(abs)) },
+      !isDir && { label: 'Enviar ruta a la IA', action: () => codeSendToAi(abs) },
+      '-',
+      !isRoot && { label: 'Renombrar…', action: () => codeRename(abs) },
+      !isRoot && { label: 'Mover a la papelera', danger: true, action: () => codeTrash(abs, isDir) },
+      isDir && { label: 'Abrir terminal aquí', action: () => launch('shell', { cwd: abs, title: basename(abs) }) },
+      { label: `Abrir en ${extEditorName()}`, action: () => openExternal(abs) },
+    ]);
+  }
+  async function codeNewFile(dir) {
+    if (!dir) return;
+    const name = await askText('Nuevo archivo', `En ${tilde(dir)}/ (puede incluir subcarpetas: a/b.js)`);
+    if (!name) return;
+    const abs = `${dir}/${name.replace(/^\/+/, '')}`;
+    try {
+      if (await Bridge.call('fs.exists', { path: abs })) { toast(`Ya existe: ${tilde(abs)}`, 'err'); codeOpenFile(abs); return; }
+      await Bridge.call('fs.write', { path: abs, content: '' });
+      codeInvalidateDirs(abs);
+      await codeOpenFile(abs);
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  async function codeNewDir(dir) {
+    if (!dir) return;
+    const name = await askText('Nueva carpeta', `En ${tilde(dir)}/`);
+    if (!name) return;
+    const abs = `${dir}/${name.replace(/^\/+|\/+$/g, '')}`;
+    try {
+      await Bridge.call('fs.mkdir', { path: abs });
+      codeInvalidateDirs(abs);
+      state.code.expanded = [...new Set([...state.code.expanded, dir, abs])];
+      save();
+      codeRenderTree();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  function codeInvalidateDirs(abs) {
+    if (!codePane) return;
+    for (const d of [...codePane.dirs.keys()]) if (abs.startsWith(`${d}/`) || abs === d) codePane.dirs.delete(d);
+    codePane.quick = null;
+  }
+  async function codeRename(abs) {
+    const name = await askText('Renombrar', `Nuevo nombre (o ruta relativa a ${tilde(abs.slice(0, abs.lastIndexOf('/')))}/)`, basename(abs));
+    if (!name || name === basename(abs)) return;
+    const to = name.startsWith('/') ? name : `${abs.slice(0, abs.lastIndexOf('/'))}/${name}`;
+    try {
+      await Bridge.call('fs.rename', { from: abs, to });
+      codeInvalidateDirs(abs);
+      codeInvalidateDirs(to);
+      codeMovePaths(abs, to);
+      codeRenderAll();
+      toast(`Renombrado a ${tilde(to)}`, 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  /** Tras renombrar/mover: las pestañas y documentos abiertos siguen al archivo. */
+  function codeMovePaths(from, to) {
+    const P = codePane;
+    const map = (x) => (x === from ? to : x.startsWith(`${from}/`) ? to + x.slice(from.length) : x);
+    for (const g of state.code.groups) { g.tabs = g.tabs.map(map); g.active = g.active && map(g.active); }
+    if (P) {
+      for (const [k, f] of [...P.files]) { const n = map(k); if (n !== k) { P.files.delete(k); P.files.set(n, f); } }
+      for (const g of P.groups) for (const [k, d] of [...g.docs]) { const n = map(k); if (n !== k) { g.docs.delete(k); g.docs.set(n, d); } }
+    }
+    save();
+  }
+  async function codeTrash(abs, isDir) {
+    const open = codeOpenPaths().filter((x) => x === abs || x.startsWith(`${abs}/`));
+    const dirty = open.filter(codeIsDirty);
+    const ok = await confirmBox('Mover a la papelera', `${isDir ? 'La carpeta' : 'El archivo'} ${tilde(abs)} se moverá a la papelera (se puede recuperar desde el gestor de archivos).${dirty.length ? ` Hay ${dirty.length} archivo(s) con cambios sin guardar que se perderán.` : ''}`);
+    if (!ok) return;
+    try {
+      await Bridge.call('fs.trash', { path: abs });
+      for (const f of open) codeCloseEverywhere(f);
+      codeInvalidateDirs(abs);
+      codeRenderAll();
+      toast(`${basename(abs)} movido a la papelera`, 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  // ----- búsqueda en archivos -----
+  function codeRenderSearch() {
+    const P = codePane;
+    const S = P.search;
+    let input = P.searchEl.querySelector('input.code-q');
+    if (!input) {
+      input = h('input.code-q', { placeholder: 'Buscar en el proyecto… (Enter)', spellcheck: 'false' });
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { S.query = input.value; codeRunSearch(); } else if (e.key === 'Escape') codeFocusEditor(); });
+      const flag = (key, label, title) => h(`button.mini.code-flag${S[key] ? '.on' : ''}`, { title, onclick: (e) => { S[key] = !S[key]; e.currentTarget.classList.toggle('on', S[key]); if (S.query) codeRunSearch(); } }, label);
+      P.searchEl.append(h('div.code-search-bar', input, flag('caseSensitive', 'Aa', 'Distinguir mayúsculas'), flag('regex', '.*', 'Expresión regular')), h('div.code-results.scroll'));
+    }
+    const box = P.searchEl.querySelector('.code-results');
+    if (S.busy) { box.replaceChildren(h('p.muted.code-hint', 'Buscando…')); return; }
+    if (!S.results) { box.replaceChildren(h('p.muted.code-hint', 'Busca texto en todas las carpetas del proyecto (respeta .gitignore en repos git).')); return; }
+    if (!S.results.length) { box.replaceChildren(h('p.muted.code-hint', 'Sin resultados')); return; }
+    const byFile = new Map();
+    for (const r of S.results) { if (!byFile.has(r.abs)) byFile.set(r.abs, []); byFile.get(r.abs).push(r); }
+    box.replaceChildren(
+      h('p.muted.code-hint', `${S.results.length}${S.truncated ? '+' : ''} resultado${S.results.length === 1 ? '' : 's'} en ${byFile.size} archivo${byFile.size === 1 ? '' : 's'}`),
+      ...[...byFile].map(([abs, list]) => h('div.code-rfile',
+        h('div.code-rname', { title: tilde(abs), onclick: () => codeOpenFile(abs) }, h('span', basename(abs)), h('span.muted', ` ${codeRel(abs).replace(/[^/]*$/, '')}`), h('span.pcount', String(list.length))),
+        list.map((r) => h('div.code-rline', { title: `${codeRel(abs)}:${r.line}`, onclick: () => codeOpenFile(abs, { line: r.line, col: r.col, len: r.len }) },
+          h('span.muted', `${r.line}`), h('span.mono', r.text.trim()))))));
+  }
+  async function codeRunSearch() {
+    const P = codePane;
+    const S = P.search;
+    if (!S.query) { S.results = null; codeRenderSearch(); return; }
+    S.busy = true;
+    codeRenderSearch();
+    const all = [];
+    let trunc = false;
+    try {
+      for (const r of codeRoots()) {
+        const res = await Bridge.call('code.search', { root: r, query: S.query, regex: S.regex, caseSensitive: S.caseSensitive });
+        trunc = trunc || res.truncated;
+        for (const x of res.results) all.push({ ...x, abs: `${res.root}/${x.file}`, len: S.regex ? 0 : S.query.length });
+      }
+    } catch (e) { toast(e.message, 'err'); }
+    if (codePane !== P) return;
+    S.busy = false;
+    S.results = all;
+    S.truncated = trunc;
+    codeRenderSearch();
+  }
+
+  // ----- Ctrl+P: abrir archivo por nombre -----
+  async function codeQuickOpen() {
+    const P = codePane;
+    if (!P || !Bridge.ready) return;
+    const input = h('input.mono', { placeholder: 'Nombre del archivo (admite ruta:línea)', spellcheck: 'false' });
+    const list = h('div.code-quick.scroll');
+    let items = [];
+    let sel = 0;
+    const close = openModal({ title: 'Abrir archivo', body: [input, list], wide: true });
+    const render = () => {
+      const raw = input.value.trim();
+      const m = /^(.*?)(?::(\d+))?$/.exec(raw);
+      const q = (m[1] || '').toLowerCase();
+      const all = (P.quick && P.quick.list) || [];
+      const scored = [];
+      for (const f of all) {
+        const s = fuzzyScore(f.rel.toLowerCase(), q);
+        if (s > -1) scored.push([s, f]);
+        if (scored.length > 4000) break;
+      }
+      scored.sort((a, b) => b[0] - a[0] || a[1].rel.length - b[1].rel.length);
+      items = scored.slice(0, 80).map((x) => ({ ...x[1], line: m[2] ? Number(m[2]) : 0 }));
+      sel = Math.min(sel, Math.max(0, items.length - 1));
+      list.replaceChildren(...(P.quick ? items.map((it, i) => h(`div.code-qitem${i === sel ? '.active' : ''}`, { onclick: () => pick(it) },
+        h('span', basename(it.rel)), h('span.muted', ` ${it.rel.replace(/[^/]*$/, '')}`))) : [h('p.muted', 'Cargando lista de archivos…')]));
+      const a = list.querySelector('.active');
+      if (a) a.scrollIntoView({ block: 'nearest' });
+    };
+    const pick = (it) => { close(true); codeOpenFile(it.abs, { line: it.line }); };
+    input.addEventListener('input', () => { sel = 0; render(); });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, items.length - 1); render(); } else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(0, sel - 1); render(); } else if (e.key === 'Enter' && items[sel]) { e.preventDefault(); pick(items[sel]); }
+    });
+    render();
+    if (!P.quick || Date.now() - P.quick.at > 30000) {
+      try {
+        const roots = codeRoots();
+        const lists = [];
+        for (const r of roots) {
+          const res = await Bridge.call('code.files', { root: r });
+          for (const f of res.files) lists.push({ abs: `${res.root}/${f}`, rel: roots.length > 1 ? `${basename(r)}/${f}` : f });
+        }
+        P.quick = { at: Date.now(), list: lists };
+      } catch (e) { toast(e.message, 'err'); P.quick = { at: Date.now(), list: [] }; }
+      render();
+    }
+  }
+  /** Coincidencia difusa: -1 = no; más alto = mejor (consecutivas y en el nombre del archivo valen más). */
+  function fuzzyScore(text, q) {
+    if (!q) return 0;
+    let ti = 0;
+    let score = 0;
+    let streak = 0;
+    const nameStart = text.lastIndexOf('/') + 1;
+    for (const ch of q) {
+      const i = text.indexOf(ch, ti);
+      if (i < 0) return -1;
+      streak = i === ti ? streak + 1 : 0;
+      score += 1 + streak * 2 + (i >= nameStart ? 2 : 0) + (i === nameStart || text[i - 1] === '/' || text[i - 1] === '.' || text[i - 1] === '-' || text[i - 1] === '_' ? 3 : 0);
+      ti = i + 1;
+    }
+    if (text.slice(nameStart).includes(q)) score += 20;
+    return score;
+  }
+
+  // ----- documentos -----
+  const codeOpenPaths = () => [...new Set(state.code.groups.flatMap((g) => g.tabs))];
+  const codeActiveFile = () => { const g = state.code.groups && state.code.groups[state.code.focus]; return g ? g.active : null; };
+  function codeIsDirty(file) {
+    const f = codePane && codePane.files.get(file);
+    return !!(f && f.master && !f.master.isClean(f.gen));
+  }
+  /** Carga (una vez) el documento maestro de un archivo. */
+  function codeLoad(file, force) {
+    const P = codePane;
+    let f = P.files.get(file);
+    if (f && f.loading) return f.promise; // ya se está cargando: se espera esa misma carga
+    if (f && !force && (f.master || f.error || f.binary || f.image)) return Promise.resolve(f);
+    if (!f) { f = {}; P.files.set(file, f); }
+    f.loading = true;
+    f.promise = codeLoadNow(P, file, f);
+    return f.promise;
+  }
+  async function codeLoadNow(P, file, f) {
+    if (!Bridge.ready) { P.files.delete(file); f.loading = false; return f; } // al conectar se vuelve a pintar (ver Bridge.on('open'))
+    f.image = CODE_IMG.test(file) && !/\.svg$/i.test(file);
+    if (f.image) { f.loading = false; f.exists = true; return f; }
+    try {
+      const r = await Bridge.call('fs.read', { path: file });
+      const text = r.content;
+      if (text.slice(0, 8000).includes('\0')) { Object.assign(f, { binary: true, loading: false, error: null }); return f; }
+      f.mode = codeModeFor(file);
+      if (f.master) {
+        codeReplaceText(file, f, text);
+      } else {
+        f.master = new CodeMirror.Doc(text, f.mode);
+      }
+      Object.assign(f, { saved: text, gen: f.master.changeGeneration(true), mtime: r.mtime, exists: true, error: null, binary: false, loading: false, conflict: null });
+    } catch (e) {
+      Object.assign(f, { loading: false, error: /ENOENT|no such file/i.test(e.message) ? 'El archivo no existe (¿lo borraron o renombraron?)' : e.message });
+    }
+    return f;
+  }
+  /** Reemplaza el texto de un documento conservando cursor y scroll de cada grupo. */
+  function codeReplaceText(file, f, text) {
+    const keep = codePane.groups.filter((G) => G.cm && G.shown === file).map((G) => ({ G, cur: G.cm.getCursor(), scroll: G.cm.getScrollInfo() }));
+    f.master.setValue(text);
+    for (const k of keep) { k.G.cm.setCursor(k.cur); k.G.cm.scrollTo(k.scroll.left, k.scroll.top); }
+  }
+  /** Documento enlazado del archivo para un grupo (los grupos comparten contenido e historial). */
+  function codeDocFor(g, file, f) {
+    let d = g.docs.get(file);
+    if (!d) { d = f.master.linkedDoc({ sharedHist: true }); g.docs.set(file, d); }
+    return d;
+  }
+
+  /** Abre un archivo en el grupo con foco (o `opts.group`) y, si viene, va a la línea/columna. */
+  async function codeOpenFile(file, opts = {}) {
+    if (!codePane) return;
+    const c = state.code;
+    codeNormalize();
+    let gi = opts.group != null ? opts.group : c.focus;
+    if (gi >= c.groups.length) { if (c.groups.length >= CODE_MAX_GROUPS) gi = c.groups.length - 1; else { c.groups.push({ tabs: [], active: null }); gi = c.groups.length - 1; } }
+    const g = c.groups[gi];
+    if (!g.tabs.includes(file)) {
+      const i = g.active ? g.tabs.indexOf(g.active) : -1;
+      g.tabs.splice(i + 1, 0, file);
+    }
+    g.active = file;
+    c.focus = gi;
+    save();
+    codeRenderGroups();
+    await codeLoad(file);
+    if (!codePane) return;
+    codeShowActive(gi);
+    if (opts.line) codeGoTo(gi, opts.line, opts.col, opts.len);
+    codeRenderStatus();
+    if (state.code.side === 'tree') codeMarkTreeActive();
+    requestAnimationFrame(() => codeFocusEditor(gi));
+  }
+  function codeGoTo(gi, line, col, len) {
+    const G = codePane.groups[gi];
+    if (!G || !G.cm) return;
+    const ln = Math.max(0, Math.min(G.cm.lineCount() - 1, (Number(line) || 1) - 1));
+    const ch = Math.max(0, (Number(col) || 1) - 1);
+    if (len) G.cm.setSelection({ line: ln, ch: ch + len }, { line: ln, ch });
+    else G.cm.setCursor({ line: ln, ch });
+    const h2 = G.cm.getScrollInfo().clientHeight;
+    G.cm.scrollIntoView({ line: ln, ch }, h2 / 3);
+    const mark = G.cm.addLineClass(ln, 'background', 'code-flash');
+    setTimeout(() => G.cm.removeLineClass(mark, 'background', 'code-flash'), 1400);
+  }
+  function codeMarkTreeActive() {
+    const a = codeActiveFile();
+    for (const n of codePane.treeEl.querySelectorAll('.code-node')) n.classList.toggle('active', n.dataset.path === a);
+  }
+
+  // ----- grupos (hasta 4 paneles) -----
+  function codeMakeGroup(gi) {
+    const tabsEl = h('div.code-tabs');
+    const banner = h('div.code-banner.hidden');
+    const bodyEl = h('div.code-body');
+    const el = h('div.code-group', {
+      onmousedown: () => { if (state.code.focus !== G.index) { state.code.focus = G.index; save(); codeRenderFocus(); codeRenderStatus(); } },
+      ondragover: (e) => { if (codePane.dragTab) { e.preventDefault(); el.classList.add('drop'); } },
+      ondragleave: () => el.classList.remove('drop'),
+      ondrop: (e) => { el.classList.remove('drop'); const d = codePane.dragTab; if (d) { e.preventDefault(); codeMoveTab(d.gi, d.file, G.index); } },
+    }, tabsEl, banner, bodyEl);
+    const G = { index: gi, el, tabsEl, banner, bodyEl, cm: null, preview: null, docs: new Map(), shown: null };
+    return G;
+  }
+  function codeEnsureCm(G) {
+    if (G.cm || !hasCM()) return G.cm;
+    G.cm = CodeMirror(G.bodyEl, {
+      value: '',
+      lineNumbers: true,
+      theme: 'frap',
+      indentUnit: 2,
+      tabSize: 2,
+      keyMap: 'sublime',
+      lineWrapping: !!state.code.wrap,
+      matchBrackets: true,
+      autoCloseBrackets: true,
+      matchTags: { bothTags: true },
+      autoCloseTags: true,
+      styleActiveLine: true,
+      showTrailingSpace: true,
+      foldGutter: true,
+      gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
+      highlightSelectionMatches: { showToken: /\w/, annotateScrollbar: true },
+      scrollPastEnd: true,
+      dragDrop: false,
+      phrases: CM_PHRASES,
+      extraKeys: {
+        'Ctrl-S': () => codeSave(G.index), 'Cmd-S': () => codeSave(G.index),
+        'Ctrl-Alt-S': () => codeSaveAll(),
+        'Ctrl-P': () => codeQuickOpen(), 'Cmd-P': () => codeQuickOpen(),
+        'Shift-Ctrl-F': () => codeSearchSelection(G), 'Shift-Cmd-F': () => codeSearchSelection(G),
+        'Ctrl-H': 'replace', 'Ctrl-G': 'jumpToLine', 'Cmd-G': 'jumpToLine',
+        'Ctrl-/': 'toggleComment', 'Cmd-/': 'toggleComment',
+        'Ctrl-\\': () => codeSplit(G.index), // Ctrl+W no: el navegador cierra la pestaña sin dejar interceptarlo
+        'Alt-Z': () => codeToggleWrap(),
+        'Ctrl-Alt-C': () => codeCopyRef(G, false), 'Shift-Ctrl-Alt-C': () => codeCopyRef(G, true),
+        'Ctrl-Alt-I': () => codeSendSel(G),
+        'Ctrl-Space': 'autocomplete',
+        'Ctrl-Q': (cm) => cm.foldCode(cm.getCursor()),
+        Esc: (cm) => { if (cm.state.completionActive) return CodeMirror.Pass; cm.execCommand('clearSearch'); return CodeMirror.Pass; },
+      },
+    });
+    G.cm.getWrapperElement().style.fontSize = `${state.settings.fontSize}px`;
+    G.cm.on('cursorActivity', () => { if (G.index === state.code.focus) codeRenderStatusSoon(); codeRememberCursor(G); });
+    G.cm.on('changes', () => codeRenderDirtySoon());
+    G.cm.on('focus', () => { if (state.code.focus !== G.index) { state.code.focus = G.index; save(); codeRenderFocus(); codeRenderStatus(); } });
+    G.cm.getWrapperElement().addEventListener('contextmenu', (e) => codeEditorMenu(e, G));
+    return G.cm;
+  }
+  const codeRememberCursor = debounce((G) => {
+    const g = state.code.groups[G.index];
+    if (!G.cm || !g || !g.active || G.shown !== g.active) return;
+    const cur = G.cm.getCursor();
+    state.code.cursors[g.active] = [cur.line, cur.ch];
+    const keys = Object.keys(state.code.cursors);
+    if (keys.length > 200) for (const k of keys.slice(0, keys.length - 200)) delete state.code.cursors[k];
+    save();
+  }, 600);
+  const codeRenderStatusSoon = debounce(() => codeRenderStatus(), 50);
+  const codeRenderDirtySoon = debounce(() => { codeRenderTabsOnly(); codeRenderStatus(); }, 120);
+
+  function codeRenderGroups() {
+    const P = codePane;
+    if (!P) return;
+    const gs = state.code.groups;
+    while (P.groups.length < gs.length) { const G = codeMakeGroup(P.groups.length); P.groups.push(G); P.groupsEl.append(G.el); }
+    while (P.groups.length > gs.length) { const G = P.groups.pop(); for (const [k, d] of G.docs) { const f = P.files.get(k); if (f && f.master) f.master.unlinkDoc(d); } G.el.remove(); }
+    P.groups.forEach((G, i) => { G.index = i; });
+    P.groupsEl.dataset.n = String(gs.length);
+    codeRenderTabsOnly();
+    codeRenderFocus();
+    gs.forEach((g, i) => { if (P.groups[i].shown !== g.active || !g.active) codeShowActive(i); });
+    codeGcDocs();
+  }
+  function codeRenderFocus() {
+    const P = codePane;
+    P.groups.forEach((G, i) => G.el.classList.toggle('focused', i === state.code.focus && P.groups.length > 1));
+  }
+  function codeRenderTabsOnly() {
+    const P = codePane;
+    if (!P) return;
+    state.code.groups.forEach((g, gi) => {
+      const G = P.groups[gi];
+      if (!G) return;
+      const names = new Map();
+      for (const t of g.tabs) names.set(basename(t), (names.get(basename(t)) || 0) + 1);
+      G.tabsEl.replaceChildren(
+        ...g.tabs.map((file) => {
+          const dirty = codeIsDirty(file);
+          const f = P.files.get(file);
+          const dup = names.get(basename(file)) > 1;
+          return h(`div.ed-tab${file === g.active ? '.active' : ''}${dirty ? '.dirty' : ''}${f && f.conflict ? '.conflict' : ''}`, {
+            title: `${tilde(file)}${dirty ? ' (sin guardar)' : ''}`,
+            draggable: 'true',
+            onclick: () => { g.active = file; state.code.focus = gi; save(); codeShowActive(gi); codeRenderTabsOnly(); codeRenderFocus(); codeRenderStatus(); codeMarkTreeActive(); codeFocusEditor(gi); },
+            onauxclick: (e) => { if (e.button === 1) codeCloseTab(gi, file); },
+            oncontextmenu: (e) => codeTabMenu(e, gi, file),
+            ondragstart: (e) => { P.dragTab = { gi, file }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', file); },
+            ondragend: () => { P.dragTab = null; },
+          },
+          h('span.code-tname', basename(file)),
+          dup ? h('span.muted.code-tdir', basename(file.slice(0, file.lastIndexOf('/')))) : null,
+          h('span.x', { title: dirty ? 'Sin guardar · cerrar' : 'Cerrar (clic central también)', onclick: (e) => { e.stopPropagation(); codeCloseTab(gi, file); } }, dirty ? '●' : '✕'));
+        }),
+        h('span.grow'),
+        h('div.code-gbtns',
+          gs_len() < CODE_MAX_GROUPS ? h('button.icon.mini', { title: 'Dividir: abrir en un panel nuevo (Ctrl+\\, máx. 4)', onclick: () => codeSplit(gi) }, '◫') : null,
+          gs_len() > 1 ? h('button.icon.mini', { title: 'Cerrar este panel', onclick: () => codeCloseGroup(gi) }, '✕') : null));
+      const a = G.tabsEl.querySelector('.ed-tab.active');
+      if (a) a.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }
+  const gs_len = () => state.code.groups.length;
+
+  /** Muestra en el grupo su pestaña activa (editor, imagen, binario, error o bienvenida). */
+  function codeShowActive(gi) {
+    const P = codePane;
+    const g = state.code.groups[gi];
+    const G = P.groups[gi];
+    if (!g || !G) return;
+    const file = g.active;
+    G.shown = file;
+    const f = file ? P.files.get(file) : null;
+    if (G.preview) { G.preview.remove(); G.preview = null; }
+    const showMsg = (...kids) => { G.preview = h('div.code-msg', ...kids); G.bodyEl.append(G.preview); if (G.cm) G.cm.getWrapperElement().classList.add('hidden'); };
+    codeRenderBanner(gi);
+    if (!file) {
+      showMsg(h('div.code-welcome',
+        h('h3', 'Editor'),
+        h('p.muted', 'Abre un archivo desde el árbol, o:'),
+        h('p', h('kbd', 'Ctrl+P'), ' abrir por nombre · ', h('kbd', 'Ctrl+Shift+F'), ' buscar en archivos'),
+        h('p', h('kbd', 'Ctrl+S'), ' guardar · ', h('kbd', 'Ctrl+F'), ' buscar · ', h('kbd', 'Ctrl+H'), ' reemplazar · ', h('kbd', 'Ctrl+G'), ' ir a línea'),
+        h('p', h('kbd', 'Ctrl+\\'), ' dividir (hasta 4) · ', h('kbd', 'Ctrl+D'), ' siguiente coincidencia · ', h('kbd', 'Ctrl+/'), ' comentar'),
+        h('p', h('kbd', 'Ctrl+Alt+C'), ' copiar ruta:línea · ', h('kbd', 'Ctrl+Alt+I'), ' enviar a la IA · clic derecho: más'),
+        h('p.muted', 'Las rutas que muestran claude/codex/opencode en la terminal se abren aquí con un clic.')));
+      return;
+    }
+    if (!Bridge.ready && (!f || f.loading)) { showMsg(h('p.muted', 'Esperando al bridge…')); return; }
+    if (!f || f.loading) {
+      showMsg(h('p.muted', 'Cargando…'));
+      codeLoad(file).then(() => { const gg = state.code.groups[gi]; if (codePane === P && gg && gg.active === file) codeShowActive(gi); });
+      return;
+    }
+    if (f.error) { showMsg(h('p', f.error), h('p.muted.mono', tilde(file)), h('button', { onclick: async () => { f.error = null; await codeLoad(file, true); codeShowActive(gi); } }, 'Reintentar')); return; }
+    if (f.image) {
+      const img = h('img', { src: `file://${encodeURI(file)}`, alt: basename(file) });
+      img.onerror = () => { img.replaceWith(h('p.muted', 'No se pudo previsualizar (abre FRAP como file:// para ver imágenes).')); };
+      showMsg(h('div.code-img', img), h('p.muted.mono', tilde(file)));
+      return;
+    }
+    if (f.binary) { showMsg(h('p', 'Archivo binario: no se puede editar aquí.'), h('p.muted.mono', tilde(file)), h('button', { onclick: () => openExternal(file) }, `Abrir en ${extEditorName()}`)); return; }
+    const cm = codeEnsureCm(G);
+    if (!cm) { showMsg(h('p', 'No se cargó CodeMirror (src/vendor/codemirror).')); return; }
+    cm.getWrapperElement().classList.remove('hidden');
+    const d = codeDocFor(G, file, f);
+    if (cm.getDoc() !== d) {
+      cm.swapDoc(d);
+      const fresh = !d.frapSeen;
+      d.frapSeen = true;
+      const cur = state.code.cursors[file];
+      if (fresh && cur) { cm.setCursor({ line: cur[0], ch: cur[1] }); requestAnimationFrame(() => cm.scrollIntoView(null, cm.getScrollInfo().clientHeight / 3)); }
+    }
+    cm.setOption('readOnly', false);
+    requestAnimationFrame(() => cm.refresh());
+  }
+  function codeRenderBanner(gi) {
+    const G = codePane.groups[gi];
+    const g = state.code.groups[gi];
+    const f = g && g.active ? codePane.files.get(g.active) : null;
+    if (!f || !f.conflict) { G.banner.classList.add('hidden'); return; }
+    G.banner.classList.remove('hidden');
+    G.banner.replaceChildren(...[
+      h('span', f.conflict.gone ? '⚠ El archivo ya no existe en disco.' : '⚠ El archivo cambió en disco (¿una IA?) y aquí tienes cambios sin guardar.'),
+      h('span.grow'),
+      f.conflict.gone ? null : h('button.mini', { onclick: () => codeResolve(g.active, 'disk') }, 'Usar la del disco'),
+      h('button.mini', { onclick: () => codeResolve(g.active, 'mine') }, f.conflict.gone ? 'Guardar de nuevo' : 'Guardar la mía'),
+      h('button.mini', { onclick: () => codeResolve(g.active, 'later') }, 'Decidir luego')].filter(Boolean));
+  }
+  async function codeResolve(file, how) {
+    const f = codePane.files.get(file);
+    if (!f || !f.conflict) return;
+    const disk = f.conflict;
+    f.conflict = null;
+    if (how === 'disk') {
+      codeReplaceText(file, f, disk.content);
+      Object.assign(f, { saved: disk.content, gen: f.master.changeGeneration(true), mtime: disk.mtime });
+    } else if (how === 'mine') {
+      f.mtime = disk.mtime || 0;
+      await codeSaveFile(file, true);
+    } else f.ignoreMtime = disk.mtime;
+    codeRenderGroupsFor(file);
+  }
+  function codeRenderGroupsFor(file) {
+    state.code.groups.forEach((g, i) => { if (g.active === file) codeRenderBanner(i); });
+    codeRenderTabsOnly();
+    codeRenderStatus();
+  }
+
+  function codeSplit(gi) {
+    const c = state.code;
+    if (c.groups.length >= CODE_MAX_GROUPS) { toast('Máximo 4 paneles', 'err'); return; }
+    const cur = c.groups[gi] && c.groups[gi].active;
+    c.groups.splice(gi + 1, 0, { tabs: cur ? [cur] : [], active: cur });
+    c.focus = gi + 1;
+    save();
+    codeRebuildGroups();
+    requestAnimationFrame(() => codeFocusEditor(gi + 1));
+  }
+  /** Tras insertar/quitar grupos en medio: se rehacen los paneles (los documentos maestros se conservan). */
+  function codeRebuildGroups() {
+    const P = codePane;
+    for (const G of P.groups) { for (const [k, d] of G.docs) { const f = P.files.get(k); if (f && f.master) f.master.unlinkDoc(d); } G.el.remove(); }
+    P.groups = [];
+    codeRenderGroups();
+    codeRenderStatus();
+  }
+  async function codeCloseGroup(gi) {
+    const c = state.code;
+    const g = c.groups[gi];
+    if (!g) return;
+    const lost = g.tabs.filter((f) => codeIsDirty(f) && !c.groups.some((o, j) => j !== gi && o.tabs.includes(f)));
+    if (lost.length && !(await confirmBox('Cerrar panel', `Hay cambios sin guardar en ${lost.map(basename).join(', ')}. ¿Cerrar y descartarlos?`))) return;
+    c.groups.splice(gi, 1);
+    if (!c.groups.length) c.groups.push({ tabs: [], active: null });
+    c.focus = Math.min(c.focus, c.groups.length - 1);
+    save();
+    codeRebuildGroups();
+  }
+  function codeMoveTab(from, file, to) {
+    const c = state.code;
+    if (from === to || !c.groups[from] || !c.groups[to]) return;
+    const a = c.groups[from];
+    a.tabs = a.tabs.filter((x) => x !== file);
+    if (a.active === file) a.active = a.tabs[a.tabs.length - 1] || null;
+    const b = c.groups[to];
+    if (!b.tabs.includes(file)) b.tabs.push(file);
+    b.active = file;
+    c.focus = to;
+    if (!a.tabs.length && c.groups.length > 1) c.groups.splice(from, 1);
+    c.focus = Math.min(c.focus, c.groups.length - 1);
+    save();
+    codeRebuildGroups();
+  }
+  async function codeCloseTab(gi, file) {
+    const c = state.code;
+    const g = c.groups[gi];
+    if (!g || !file) return;
+    const elsewhere = c.groups.some((o, j) => j !== gi && o.tabs.includes(file));
+    if (!elsewhere && codeIsDirty(file)) {
+      const ok = await confirmBox('Cerrar sin guardar', `${basename(file)} tiene cambios sin guardar. ¿Cerrar y descartarlos?`);
+      if (!ok) return;
+    }
+    const i = g.tabs.indexOf(file);
+    g.tabs = g.tabs.filter((x) => x !== file);
+    if (g.active === file) g.active = g.tabs[Math.min(i, g.tabs.length - 1)] || null;
+    const G = codePane.groups[gi];
+    const d = G && G.docs.get(file);
+    if (d) { const f = codePane.files.get(file); if (f && f.master) f.master.unlinkDoc(d); G.docs.delete(file); if (G.cm && G.cm.getDoc() === d) { G.cm.swapDoc(new CodeMirror.Doc('')); G.shown = null; } }
+    if (!g.tabs.length && c.groups.length > 1) { c.groups.splice(gi, 1); c.focus = Math.min(c.focus, c.groups.length - 1); save(); codeRebuildGroups(); return; }
+    save();
+    codeRenderGroups();
+    codeRenderStatus();
+  }
+  function codeCloseEverywhere(file) {
+    for (const g of state.code.groups) { g.tabs = g.tabs.filter((x) => x !== file); if (g.active === file) g.active = g.tabs[g.tabs.length - 1] || null; }
+    const P = codePane;
+    for (const G of P.groups) { const d = G.docs.get(file); if (d) { if (G.cm && G.cm.getDoc() === d) { G.cm.swapDoc(new CodeMirror.Doc('')); G.shown = null; } G.docs.delete(file); } }
+    P.files.delete(file);
+    save();
+  }
+  /** Suelta los documentos que ya no están abiertos en ninguna pestaña. */
+  function codeGcDocs() {
+    const P = codePane;
+    const open = new Set(codeOpenPaths());
+    for (const G of P.groups) for (const [k, d] of [...G.docs]) if (!state.code.groups[G.index] || !state.code.groups[G.index].tabs.includes(k)) { const f = P.files.get(k); if (f && f.master) f.master.unlinkDoc(d); G.docs.delete(k); }
+    for (const k of [...P.files.keys()]) if (!open.has(k)) P.files.delete(k);
+  }
+  function codeTabMenu(ev, gi, file) {
+    const c = state.code;
+    popMenu(ev, [
+      { label: 'Guardar', hint: 'Ctrl+S', disabled: !codeIsDirty(file), action: () => codeSaveFile(file, true) },
+      '-',
+      { label: 'Copiar ruta', action: () => codeCopy(file) },
+      { label: 'Copiar ruta relativa', action: () => codeCopy(codeRel(file)) },
+      { label: 'Enviar ruta a la IA', hint: 'Ctrl+Alt+I', action: () => codeSendToAi(file) },
+      { label: 'Revelar en el árbol', action: () => codeReveal(file) },
+      '-',
+      c.groups.length < CODE_MAX_GROUPS && { label: 'Dividir: abrir en panel nuevo', hint: 'Ctrl+\\', action: () => { c.groups[gi].active = file; codeSplit(gi); } },
+      ...c.groups.map((_, j) => j !== gi && { label: `Mover al panel ${j + 1}`, action: () => codeMoveTab(gi, file, j) }),
+      { label: `Abrir en ${extEditorName()}`, action: () => openExternal(file) },
+      '-',
+      { label: 'Cerrar', action: () => codeCloseTab(gi, file) },
+      { label: 'Cerrar las demás', action: async () => { for (const t of c.groups[gi].tabs.filter((x) => x !== file)) await codeCloseTab(gi, t); } },
+    ]);
+  }
+
+  // ----- copiar rutas / pasar a la IA -----
+  function codeCopy(text) { copyText(text); toast(`Copiado: ${text.length > 80 ? `${text.slice(0, 77)}…` : text}`, 'ok'); }
+  /** "ruta:12" o "ruta:12-20" según la selección del grupo. */
+  function codeLineRef(G, file, rel) {
+    const p = rel ? codeRel(file) : file;
+    if (!G || !G.cm) return p;
+    const a = G.cm.getCursor('from');
+    const b = G.cm.getCursor('to');
+    const endLine = b.ch === 0 && b.line > a.line ? b.line : b.line + 1; // selección hasta el inicio de la línea siguiente
+    return a.line + 1 === endLine ? `${p}:${a.line + 1}` : `${p}:${a.line + 1}-${endLine}`;
+  }
+  /** Ctrl+Alt+C: ruta:línea(s) · Ctrl+Shift+Alt+C: ruta:líneas + el código seleccionado en un bloque ``` . */
+  function codeCopyRef(G, withCode) {
+    const file = state.code.groups[G.index] && state.code.groups[G.index].active;
+    if (!file) return;
+    const ref = codeLineRef(G, file, true);
+    if (!withCode) { codeCopy(ref); return; }
+    const sel = G.cm.getSelection() || G.cm.getLine(G.cm.getCursor().line);
+    const lang = (codeModeName(codeModeFor(file)) || '').toLowerCase().replace(/[^a-z0-9+#-]/g, '');
+    codeCopy(`${ref}\n\`\`\`${lang}\n${sel.replace(/\n$/, '')}\n\`\`\``);
+  }
+  /** Terminal de IA a la que mandar referencias: la última IA usada del proyecto (o cualquiera viva). */
+  function codeAiTarget() {
+    const list = sessionsOf(state.activeProject).filter((t) => VOICE_KINDS.includes(termKind(t)) && t.info.alive !== false);
+    return list.find((t) => t.sid === lastAiSid) || list[list.length - 1] || null;
+  }
+  function codeSendToAi(file, ref) {
+    const t = codeAiTarget();
+    if (!t) { toast('No hay ninguna terminal de claude, codex u opencode abierta en este proyecto', 'err'); return; }
+    const cwd = (t.info.meta || {}).cwd || '';
+    const text = ref ? ref.replace(file, codeRelTo(file, cwd)) : codeRelTo(file, cwd);
+    activate(t.sid);
+    Bridge.send('session.input', { sid: t.sid, data: `${text} ` });
+    toast(`Enviado a ${termTitle(t)}: ${text}`, 'ok');
+  }
+  /** Ctrl+Alt+I: manda "ruta:líneas" a la IA (ella lee el archivo). */
+  function codeSendSel(G) {
+    const file = state.code.groups[G.index] && state.code.groups[G.index].active;
+    if (file) codeSendToAi(file, codeLineRef(G, file, false));
+  }
+  function codeEditorMenu(ev, G) {
+    const file = state.code.groups[G.index] && state.code.groups[G.index].active;
+    if (!file || !G.cm) return;
+    const cm = G.cm;
+    const has = cm.somethingSelected();
+    popMenu(ev, [
+      { label: 'Copiar', hint: 'Ctrl+C', disabled: !has, action: () => { copyText(cm.getSelection()); cm.focus(); } },
+      { label: 'Cortar', hint: 'Ctrl+X', disabled: !has, action: () => { copyText(cm.getSelection()); cm.replaceSelection(''); cm.focus(); } },
+      { label: 'Pegar', hint: 'Ctrl+V', action: async () => { try { cm.replaceSelection(await navigator.clipboard.readText()); } catch (_) { toast('El navegador no permite pegar desde el menú: usa Ctrl+V', 'err'); } cm.focus(); } },
+      '-',
+      { label: `Copiar ${codeLineRef(G, file, true)}`, hint: 'Ctrl+Alt+C', action: () => codeCopyRef(G, false) },
+      { label: 'Copiar referencia + código', hint: 'Ctrl+Shift+Alt+C', action: () => codeCopyRef(G, true) },
+      { label: 'Copiar ruta absoluta', action: () => codeCopy(file) },
+      { label: 'Enviar a la IA (ruta:líneas)', hint: 'Ctrl+Alt+I', action: () => codeSendSel(G) },
+      '-',
+      { label: 'Buscar', hint: 'Ctrl+F', action: () => cm.execCommand('find') },
+      { label: 'Reemplazar', hint: 'Ctrl+H', action: () => cm.execCommand('replace') },
+      { label: 'Buscar en archivos', hint: 'Ctrl+Shift+F', action: () => codeSearchSelection(G) },
+      { label: 'Ir a la línea', hint: 'Ctrl+G', action: () => cm.execCommand('jumpToLine') },
+      { label: 'Comentar / descomentar', hint: 'Ctrl+/', action: () => cm.execCommand('toggleComment') },
+      { label: state.code.wrap ? 'Sin ajuste de línea' : 'Ajustar líneas', hint: 'Alt+Z', action: () => codeToggleWrap() },
+    ]);
+  }
+  function codeSearchSelection(G) {
+    const sel = G && G.cm ? G.cm.getSelection() : '';
+    if (sel && !sel.includes('\n')) { codePane.search.query = sel; const i = codePane.searchEl.querySelector('input.code-q'); if (i) i.value = sel; }
+    codeSetSide('search');
+    if (sel && !sel.includes('\n')) codeRunSearch();
+  }
+  function codeToggleWrap() {
+    state.code.wrap = !state.code.wrap;
+    save();
+    for (const G of codePane.groups) if (G.cm) G.cm.setOption('lineWrapping', state.code.wrap);
+    codeRenderStatus();
+  }
+
+  // ----- guardar y vigilar cambios en disco -----
+  async function codeSave(gi) {
+    const g = state.code.groups[gi];
+    if (g && g.active) await codeSaveFile(g.active, true);
+  }
+  async function codeSaveAll() {
+    const dirty = codeOpenPaths().filter(codeIsDirty);
+    for (const f of dirty) await codeSaveFile(f, true);
+    if (!dirty.length) toast('No hay cambios sin guardar', 'ok');
+  }
+  async function codeSaveFile(file, explicit) {
+    const P = codePane;
+    const f = P && P.files.get(file);
+    if (!f || !f.master) return false;
+    const text = f.master.getValue();
+    try {
+      if (f.mtime) {
+        const st = (await Bridge.call('fs.stat', { paths: [file] }))[0];
+        if (st && st.exists && st.mtime !== f.mtime && st.mtime !== f.ignoreMtime && !f.conflict) {
+          const disk = await Bridge.call('fs.read', { path: file });
+          if (disk.content !== f.saved) { f.conflict = disk; codeRenderGroupsFor(file); toast(`${basename(file)} cambió en disco: elige qué versión quedarse`, 'err'); return false; }
+        }
+      }
+      const gen = f.master.changeGeneration(true);
+      const r = await Bridge.call('fs.write', { path: file, content: text });
+      Object.assign(f, { saved: text, gen, mtime: r.mtime, exists: true, conflict: null, ignoreMtime: null });
+      if (explicit) toast(`Guardado ${basename(file)}`, 'ok');
+      codeRenderGroupsFor(file);
+      return true;
+    } catch (e) { toast(e.message, 'err'); return false; }
+  }
+  async function codePoll() {
+    const P = codePane;
+    if (!P || viewKind(state.activeSid) !== 'code' || document.hidden || !Bridge.ready || modalClose) return;
+    const files = [...P.files.entries()].filter(([, f]) => f.master && f.mtime && !f.loading).map(([k]) => k);
+    if (!files.length) return;
+    let stats;
+    try { stats = await Bridge.call('fs.stat', { paths: files }); } catch (_) { return; }
+    if (codePane !== P) return;
+    for (const st of stats) {
+      const f = P.files.get(st.path);
+      if (!f || !f.master || f.conflict) continue;
+      if (!st.exists) {
+        if (!f.gone) { f.gone = true; if (codeIsDirty(st.path)) { f.conflict = { gone: true }; codeRenderGroupsFor(st.path); } else toast(`${basename(st.path)} ya no existe en disco`, 'err'); }
+        continue;
+      }
+      f.gone = false;
+      if (st.mtime === f.mtime || st.mtime === f.ignoreMtime) continue;
+      let disk;
+      try { disk = await Bridge.call('fs.read', { path: st.path }); } catch (_) { continue; }
+      if (codePane !== P || !P.files.has(st.path)) return;
+      if (disk.content === f.saved) { f.mtime = disk.mtime; continue; }
+      if (codeIsDirty(st.path)) { f.conflict = disk; codeRenderGroupsFor(st.path); continue; }
+      codeReplaceText(st.path, f, disk.content);
+      Object.assign(f, { saved: disk.content, gen: f.master.changeGeneration(true), mtime: disk.mtime });
+      codeRenderGroupsFor(st.path);
+    }
+  }
+  setInterval(codePoll, 2500);
+  // al (re)conectar el bridge: árbol y pestañas que no pudieron cargarse
+  Bridge.on('open', () => {
+    for (const p of viewPanes.values()) {
+      if (!p || p.kind !== 'code') continue;
+      for (const [k, f] of [...p.files]) if (f.error && /Bridge desconectado/.test(f.error)) p.files.delete(k);
+      p.dirs.clear();
+      for (const G of p.groups) G.shown = undefined;
+    }
+    if (codePane) codeRenderAll();
+  });
+  window.addEventListener('focus', codePoll);
+  window.addEventListener('beforeunload', (e) => {
+    if (!codePane) return;
+    const anyDirty = [...viewPanes.values()].some((p) => p && p.kind === 'code' && [...p.files.values()].some((f) => f.master && !f.master.isClean(f.gen)));
+    if (anyDirty) { e.preventDefault(); e.returnValue = ''; }
+  });
+
+  // ----- barra de estado y foco -----
+  function codeRenderStatus() {
+    const P = codePane;
+    if (!P) return;
+    const gi = state.code.focus;
+    const g = state.code.groups[gi];
+    const G = P.groups[gi];
+    const file = g && g.active;
+    const f = file ? P.files.get(file) : null;
+    const dirtyN = codeOpenPaths().filter(codeIsDirty).length;
+    const parts = [];
+    if (file) {
+      parts.push(h('span.mono.code-spath', { title: `${file}\nClic: copiar ruta:línea`, onclick: () => G && codeCopyRef(G, false) }, codeRel(file)));
+      if (G && G.cm && f && f.master) {
+        const cur = G.cm.getCursor();
+        const sel = G.cm.getSelection();
+        parts.push(h('span', `Ln ${cur.line + 1}, Col ${cur.ch + 1}${sel ? ` (${sel.length} sel.)` : ''}`));
+        parts.push(h('span', codeModeName(f.mode)));
+        parts.push(h('span', { title: 'Ajuste de línea (Alt+Z)', class: `code-sbtn${state.code.wrap ? ' on' : ''}`, onclick: () => codeToggleWrap() }, 'Ajustar'));
+      }
+    }
+    parts.push(h('span.grow'));
+    if (dirtyN) parts.push(h('span.code-sbtn.dirty', { title: 'Guardar todo (Ctrl+Alt+S)', onclick: () => codeSaveAll() }, `● ${dirtyN} sin guardar`));
+    const ai = codeAiTarget();
+    parts.push(h('span.muted', { title: 'Ctrl+Alt+I envía ruta:líneas a esta terminal' }, ai ? `IA: ${termTitle(ai)}` : 'sin IA abierta'));
+    if (!state.code.side) parts.push(h('span.code-sbtn', { title: 'Mostrar el árbol de archivos', onclick: () => codeSetSide('tree') }, 'Archivos'));
+    P.statusEl.replaceChildren(...parts);
+    if (viewKind(state.activeSid) === 'code') $('#st-cwd').textContent = file ? tilde(file) : codeRoots().map(tilde).join('  +  ');
+  }
+  function codeFocusEditor(gi = state.code && state.code.focus) {
+    const P = codePane;
+    if (!P || viewKind(state.activeSid) !== 'code') return;
+    const G = P.groups[gi];
+    if (!G) return;
+    if (state.code.focus !== gi) { state.code.focus = gi; save(); codeRenderFocus(); codeRenderStatus(); }
+    if (G.cm && !G.cm.getWrapperElement().classList.contains('hidden')) G.cm.focus();
+  }
+  /** Tras cambiar de tamaño o volver a mostrarse (CodeMirror mide al dibujar). */
+  function codeRefreshEditors() {
+    for (const p of viewPanes.values()) if (p && p.kind === 'code' && p.root && !p.root.classList.contains('hidden')) for (const G of p.groups) if (G.cm) G.cm.refresh();
+  }
+
+  /** Abre un archivo en el editor de FRAP (clic en una ruta de la terminal). pid: proyecto de la terminal. */
+  async function openInFrap(file, line, col, isDir, pid) {
+    const owner = state.projects.find((p) => p.folders.some((f) => file === f.replace(/\/+$/, '') || file.startsWith(`${f.replace(/\/+$/, '')}/`)));
+    const target = (pid && project(pid)) || owner || project();
+    if (!target) { toast('Primero crea o selecciona un proyecto', 'err'); return; }
+    state.activeProject = target.id;
+    openCodeView();
+    ensureCodePane();
+    if (isDir) { await codeRevealDir(file); return; }
+    await codeOpenFile(file, { line, col });
+  }
+  async function codeRevealDir(dir) {
+    const r = codeRoots().find((x) => dir === x || dir.startsWith(`${x}/`));
+    if (!r) { toast('La carpeta no está dentro del proyecto', 'err'); return; }
+    const add = new Set(state.code.expanded);
+    add.delete(`!${r}`);
+    let d = dir;
+    while (d.length > r.length) { add.add(d); d = d.slice(0, d.lastIndexOf('/')); }
+    state.code.expanded = [...add];
+    state.code.side = 'tree';
+    save();
+    codeRenderSide();
+    await codeRenderTree();
+    const el = [...codePane.treeEl.querySelectorAll('.code-node')].find((n) => n.dataset.path === dir);
+    if (el) el.scrollIntoView({ block: 'center' });
+  }
+
+  /** ¿Hay cambios sin guardar en el editor de una vista? (para avisar al cerrarla). */
+  function codeViewDirty(v) {
+    const p = viewPanes.get(vSid(v));
+    return !!(p && p.kind === 'code' && [...p.files.values()].some((f) => f.master && !f.master.isClean(f.gen)));
+  }
+
+  // ----- menú contextual genérico -----
+  let popMenuEl = null;
+  function closePopMenu() { if (popMenuEl) { popMenuEl.remove(); popMenuEl = null; } }
+  /** items: [{label, hint, action, disabled, danger} | '-' | falsy]. */
+  function popMenu(ev, items) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    closePopMenu();
+    const list = items.filter(Boolean).filter((it, i, a) => it !== '-' || (i > 0 && a[i - 1] !== '-' && i < a.length - 1));
+    const m = h('div.popmenu', { oncontextmenu: (e) => e.preventDefault() }, list.map((it) => (it === '-' ? h('div.popmenu-sep') : h(`button${it.danger ? '.danger' : ''}`, {
+      disabled: it.disabled || null,
+      onclick: () => { closePopMenu(); it.action(); },
+    }, h('span', it.label), it.hint ? h('span.muted', it.hint) : null))));
+    document.body.append(m);
+    const r = m.getBoundingClientRect();
+    m.style.left = `${Math.max(4, Math.min(ev.clientX, innerWidth - r.width - 4))}px`;
+    m.style.top = `${Math.max(4, Math.min(ev.clientY, innerHeight - r.height - 4))}px`;
+    popMenuEl = m;
+  }
+  document.addEventListener('mousedown', (e) => { if (popMenuEl && !popMenuEl.contains(e.target)) closePopMenu(); }, true);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && popMenuEl) { closePopMenu(); e.stopPropagation(); } }, true);
+  window.addEventListener('blur', closePopMenu);
 
   // ---------- notas: NOTES.md de la carpeta del proyecto (vista por proyecto) ----------
   // Se edita a mano (autoguardado) o desde una IA con la skill frap-notes ("guarda esto en notas" / "lee las notas").
@@ -5096,7 +6197,8 @@
   function openSettings() {
     const s = state.settings;
     const font = h('input', { type: 'number', min: 9, max: 24, value: s.fontSize });
-    const editor = h('input.mono', { value: s.editor || 'code', placeholder: 'code' });
+    const editor = h('input.mono', { value: s.editor || 'frap', placeholder: 'frap' });
+    const extEditor = h('input.mono', { value: s.extEditor || 'code', placeholder: 'code' });
     const pmode = h('select', h('option', { value: 'tab' }, 'Pestaña del navegador'), h('option', { value: 'iframe' }, 'Pestaña interna (iframe)'));
     pmode.value = s.pageMode || 'tab';
     const port = h('input', { type: 'number', min: 1, max: 65535, value: conn.port });
@@ -5108,9 +6210,11 @@
     const doSave = () => {
       s.fontSize = Math.max(9, Math.min(24, Number(font.value) || 13));
       s.pageMode = pmode.value;
-      s.editor = editor.value.trim() || 'code';
+      s.editor = editor.value.trim() || 'frap';
+      s.extEditor = extEditor.value.trim() || 'code';
       for (const l of launchers) s.launchers[l.k] = { cmd: l.cmd.value.trim() || l.k, addDir: l.add.value.trim() };
       for (const t of terms.values()) { t.term.options.fontSize = s.fontSize; fitTerm(t); }
+      for (const p of viewPanes.values()) if (p && p.kind === 'code') for (const G of p.groups) if (G.cm) { G.cm.getWrapperElement().style.fontSize = `${s.fontSize}px`; G.cm.refresh(); }
       const reconnect = Number(port.value) !== conn.port || token.value !== conn.token;
       conn.port = Number(port.value) || 7681;
       conn.token = token.value.trim();
@@ -5127,7 +6231,8 @@
         h('div.field', h('label', 'Token del bridge'), token),
         h('div.field', h('label', 'Abrir páginas por defecto en'), pmode),
         h('div.field', h('label', 'Editor para rutas clicadas en la terminal'), editor,
-          h('span.muted', { style: 'font-size:11px' }, 'code (VS Code), cursor, codium, windsurf… o cualquier comando que reciba la ruta.')),
+          h('span.muted', { style: 'font-size:11px' }, 'frap = el editor de código de FRAP (pestaña "Código"). O un comando: code (VS Code), cursor, codium, windsurf…')),
+        h('div.field', h('label', 'Editor externo ("Abrir en…" desde el editor de FRAP)'), extEditor),
         h('h4', { style: 'margin:8px 0 0' }, 'Lanzadores'),
         h('p.muted', { style: 'margin:0' }, 'Comando que se escribe en una shell nueva. La primera carpeta del proyecto es el cwd; las demás se pasan con el flag de "carpeta extra".'),
         ...launchers.map((l) => h('div.field-row',
@@ -5148,7 +6253,7 @@
   function isAppShortcut(e) {
     if (!e.altKey || e.ctrlKey || e.metaKey) return false;
     if (!e.shiftKey && /^Digit[1-9]$/.test(e.code)) return true;
-    return e.shiftKey && ['KeyT', 'KeyW', 'KeyB', 'KeyP', 'KeyC', 'KeyX', 'KeyO', 'KeyD', 'KeyM', 'KeyG', 'KeyF', 'KeyN', 'KeyV'].includes(e.code);
+    return e.shiftKey && ['KeyT', 'KeyW', 'KeyB', 'KeyP', 'KeyC', 'KeyX', 'KeyO', 'KeyD', 'KeyM', 'KeyG', 'KeyF', 'KeyN', 'KeyV', 'KeyE'].includes(e.code);
   }
   document.addEventListener('keydown', (e) => {
     if (!$('#alarm').classList.contains('hidden')) return; // el aviso bloqueante tiene prioridad
@@ -5169,6 +6274,7 @@
       case 'KeyG': openGitView(); break;
       case 'KeyF': openSftpView(); break;
       case 'KeyN': openNotesView(); break;
+      case 'KeyE': openCodeView(); break;
       case 'KeyV': voiceToggle(); break;
       case 'KeyM': togglePlay(); break;
       case 'KeyW':
@@ -5495,7 +6601,7 @@
   $('#btn-split').onclick = cycleSplit;
   $('#toggle-left').onclick = () => togglePanel('left');
   $('#toggle-right').onclick = () => togglePanel('right');
-  for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : b.dataset.launch === 'git' ? openGitView() : b.dataset.launch === 'ssh' ? pickSsh() : b.dataset.launch === 'sftp' ? openSftpView() : b.dataset.launch === 'notes' ? openNotesView() : launch(b.dataset.launch));
+  for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : b.dataset.launch === 'git' ? openGitView() : b.dataset.launch === 'ssh' ? pickSsh() : b.dataset.launch === 'sftp' ? openSftpView() : b.dataset.launch === 'notes' ? openNotesView() : b.dataset.launch === 'code' ? openCodeView() : launch(b.dataset.launch));
   for (const b of $$('#rtabs button')) b.onclick = () => setRtab(b.dataset.rtab);
   $('#token-input').value = conn.token;
   $('#port-input').value = conn.port;

@@ -34,9 +34,9 @@ navegador (file://src/index.html)                     máquina local
 - En cada conexión al bridge, `checkRestore()` busca los sids de la foto que ya no están en `sessions.list`. Si falta alguno, ofrece reabrirlos con `reopenTerminals` (lo mismo que el import), retomando la última conversación de cada IA (`claude --continue`, `codex resume --last`, `opencode --continue`).
 - Hasta que el usuario decide, la foto no se pisa, porque si no, el arranque vacío la borraría. "Ahora no" las sigue ofreciendo; "Descartar" las olvida.
 
-## Vistas por proyecto (git, DB, Archivos, Notas)
+## Vistas por proyecto (git, DB, Archivos, Notas, Código)
 
-- Como las terminales, cada proyecto tiene sus propias pestañas de Git, DB, Archivos (SFTP) y Notas, listadas en el panel izquierdo junto a sus terminales. Sid: `git:<projectId>`, `db:<projectId>`, `sftp:<projectId>`, `notes:<projectId>`. Una por tipo y proyecto: los launchers y Alt+Shift+G/D/F/N abren o enfocan la del proyecto activo. Requieren un proyecto.
+- Como las terminales, cada proyecto tiene sus propias pestañas de Git, DB, Archivos (SFTP), Notas y Código, listadas en el panel izquierdo junto a sus terminales. Sid: `git:<projectId>`, `db:<projectId>`, `sftp:<projectId>`, `notes:<projectId>`, `code:<projectId>`. Una por tipo y proyecto: los launchers y Alt+Shift+G/D/F/N/E abren o enfocan la del proyecto activo. Requieren un proyecto.
 - Persisten en `state.views = [{kind, projectId, open, data}]`. `data` es lo de cada vista (repo, conexión, SQL e historial, servidor y rutas). Cerrar la pestaña deja `open: false` y conserva `data`. Borrar el proyecto borra sus vistas.
 - Hay un panel DOM por vista (`viewPanes`). `bindView(v)` hace que `state.git/db/sftp` apunten a `v.data` y `gitPane`/`dbPane`/`sftpPane`/`Git` a su panel y memoria, así el código de cada vista opera sobre "la enlazada". Lo asíncrono captura su panel (o `rt`) antes de esperar y no pinta si se cambió de vista. `gitAction` fija repo y memoria (`fn(g, pane)`), así una acción no salta de repo a mitad. La cola de transferencias SFTP es común a todas las vistas.
 - Estados viejos (`git:main`, `state.git.open`…) se migran a la vista del proyecto activo (`migrateViews`).
@@ -53,6 +53,17 @@ navegador (file://src/index.html)                     máquina local
   - Se instala sola al crear el primer `NOTES.md`; el botón "🤖 IA" la reinstala.
   - Los prompts "Guardar en notas" y "Leer notas" se agregan una sola vez también a los estados existentes (`state.seeded`).
 
+## Editor de código (vista "Código")
+
+- Vista por proyecto (Alt+Shift+E o el lanzador `</>`): árbol de las carpetas del proyecto a la izquierda y hasta 4 paneles con pestañas (1, 2 o 3 columnas, o 2×2). Usa CodeMirror 5.65.18 empaquetado en `src/vendor/codemirror/` (script clásico, funciona en `file://`; lista de modos y addons en su README). Tema `cm-s-frap` en `index.css`.
+- **Documentos:** un documento maestro por archivo (`CodeMirror.Doc`). Cada panel que lo muestra usa un `linkedDoc({sharedHist: true})`, así el mismo archivo en dos paneles comparte texto, historial y estado "sin guardar" (`isClean(gen)` sobre el maestro). Los archivos se leen y escriben con `fs.read` / `fs.write` (máx. 2 MB, dentro de `FRAP_FS_ROOT`). Binarios: solo aviso; imágenes: vista previa con `file://`.
+- **Cambios en disco (IA):** mientras la vista está visible, cada 2,5 s y al volver el foco, `fs.stat` de los archivos abiertos. Si cambió el `mtime` y no hay cambios locales, recarga conservando cursor y scroll. Si hay cambios locales, aviso con "Usar la del disco" / "Guardar la mía" / "Decidir luego". Guardar también compara el `mtime` antes de escribir, para no pisar lo que escribió otro.
+- **Persistencia:** `views[].data` = `{groups: [{tabs, active}], focus, expanded, side, hidden, wrap, cursors}`. Tras recargar vuelven las pestañas y la posición del cursor; el contenido se relee del disco. Cerrar la vista con cambios sin guardar pide confirmación y suelta su panel. Recargar la página con cambios sin guardar muestra el aviso del navegador.
+- **Funciones:** Ctrl+S guardar (Ctrl+Alt+S todo), Ctrl+P abrir por nombre (difuso, admite `ruta:línea`; lista de `code.files`), Ctrl+Shift+F buscar en archivos (`code.search`), Ctrl+F / Ctrl+H buscar y reemplazar, Ctrl+G ir a línea, Ctrl+/ comentar, Ctrl+\\ dividir, Alt+Z ajuste de línea, Ctrl+Espacio autocompletar palabras, keymap de Sublime (Ctrl+D siguiente coincidencia, multicursor, mover/duplicar líneas), plegado, cierre de paréntesis y etiquetas. Arrastrar una pestaña a otro panel la mueve. Ctrl+W no se usa: el navegador cierra la pestaña sin dejar interceptarlo.
+- **Árbol:** carga perezosa con `fs.list`; clic derecho: nuevo archivo/carpeta (`fs.write` / `fs.mkdir`), renombrar (`fs.rename`, las pestañas abiertas siguen al archivo), mover a la papelera (`fs.trash`: papelera de freedesktop, recuperable), copiar ruta, abrir terminal ahí, abrir en el editor externo.
+- **Pasar contexto a la IA:** Ctrl+Alt+C copia `ruta:línea` o `ruta:inicio-fin` según la selección (Ctrl+Shift+Alt+C agrega el código en un bloque ```); Ctrl+Alt+I (o "Enviar a la IA") escribe `ruta:líneas ` sin Enter en la última terminal de claude/codex/opencode usada del proyecto, con la ruta relativa a su carpeta, y la enfoca.
+- **Rutas clicadas en la terminal:** con `settings.editor = 'frap'` (por defecto) se abren en esta vista, en la línea y columna, en el proyecto de la terminal; una carpeta se revela en el árbol. Con otro valor (`code`, `cursor`…) van a `open.editor` como antes. `settings.extEditor` es el editor de "Abrir en…". Los estados existentes se migran una vez (`seeded: 'frap-editor'`).
+
 ## Voz (dictado a las IA)
 
 - Es un módulo del panel derecho (`#voice-dock`), justo encima del reproductor; si el reproductor no está, queda abajo del todo. Solo funciona si la ventana activa es una terminal de claude, codex u opencode. Si no, avisa "Ventana no compatible con el sistema de voz" y no graba.
@@ -67,7 +78,7 @@ navegador (file://src/index.html)                     máquina local
 ## Rutas clicables
 
 - Cada xterm registra un *link provider* (`pathLinkProvider`). Por cada fila, `logicalLine()` une las filas partidas (`isWrapped`) y arma un mapa índice → celda que respeta los caracteres anchos (emoji, CJK). `pathCandidates()` busca rutas con un `:línea:col` opcional, y `paths.check` filtra las que existen, con una caché de 15 s.
-- El clic llama a `open.editor`. Funciona aunque la app tenga el modo ratón activo, como Claude Code (`?1000h`…).
+- El clic abre la ruta en el editor de FRAP (vista Código) o, si en Ajustes hay otro comando, llama a `open.editor`. Funciona aunque la app tenga el modo ratón activo, como Claude Code (`?1000h`…).
 
 ## Git
 
@@ -146,6 +157,12 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `fs.read` | `{path}` | `{path, content, mtime}` (≤ 2 MB) |
 | `fs.write` | `{path, content}` | escritura atómica, crea los directorios |
 | `fs.exists` | `{path}` | `bool` |
+| `fs.stat` | `{paths}` (máx. 500) | `[{path, exists, mtime?, size?, dir?}]` |
+| `fs.mkdir` | `{path}` | `{path}`; falla si ya existe |
+| `fs.rename` | `{from, to}` | `{path}`; no pisa un destino existente ni mueve la raíz |
+| `fs.trash` | `{path}` | `{path, trashed}`: lo mueve a la papelera de freedesktop (`~/.local/share/Trash`, con `.trashinfo`); no borra |
+| `code.files` | `{root}` | `{root, files: [relativas], truncated, git}`: en un repo, `git ls-files` (con no versionados, respeta `.gitignore`); si no, recorre carpetas saltando `node_modules`, `.git`… Máx. 20000 |
+| `code.search` | `{root, query, regex?, caseSensitive?}` | `{root, results: [{file, line, col, text}], truncated}`: `git grep -F/-E … -e <query> --` en repos; si no, búsqueda en Node (sin binarios ni archivos > 1 MB). Máx. 500 |
 | `config.scan` | `{folders}` | `{agents, skills, commands, hooks, memory}` |
 | `state.get` / `state.set` | `{state}` | estado de la UI en `FRAP_HOME/state.json` |
 | `db.list` | — | `{envFile, cli, clients, skills, conns}`; las conexiones van **sin contraseña** (`hasPassword`) |
