@@ -7051,6 +7051,7 @@
     if (t.status === 'online' && (!prev || prev.status !== 'online')) {
       toast(`🚇 ${t.name}: ${t.url}`, 'ok');
     } else if (t.status === 'error' && (!prev || prev.status !== 'error')) toast(`Túnel ${t.name}: ${t.error}`, 'err');
+    if (t.warning && (!prev || prev.warning !== t.warning)) toast(`Túnel ${t.name}: ${t.warning}`, 'err');
     if (state.ui.rtab === 'tunnels') renderRight();
     renderStatusTunnels();
   });
@@ -7183,6 +7184,7 @@
           c.password ? h('button.mini', { title: 'Copiar solo la URL (pedirá la contraseña)', onclick: () => { copyText(live.url); toast('URL copiada (sin clave)', 'ok'); } }, 'sin clave') : null) : null,
         live && live.status === 'starting' ? h('div.tun-url.muted', 'Conectando con el proveedor…') : null,
         live && live.status === 'error' ? h('div.tun-err', live.error) : null,
+        live && live.status === 'online' && live.warning ? h('div.tun-warn', '⚠ ', live.warning, av.cloudflared && !av.cloudflared.path ? [' ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); tunInstallHelp(); } }, 'Instalar cloudflared')] : null) : null,
         h('div.tun-acts',
           !live || live.status === 'error' ? h('button.primary.mini', { onclick: () => startTunnel(c) }, '▶ Compartir') : h('button.mini', { onclick: () => stopTunnel(c) }, '■ Detener'),
           live && live.log && live.log.length ? h('button.mini', { title: 'Últimas líneas del proveedor', onclick: () => openModal({ title: `Registro · ${c.name}`, body: h('pre.mono', { style: 'white-space:pre-wrap;font-size:11px;max-height:60vh;overflow:auto' }, live.log.join('\n')), foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cerrar')] }) }, 'Registro') : null));

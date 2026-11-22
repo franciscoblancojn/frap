@@ -953,6 +953,11 @@ test('tunnel.*: proveedor, puerta local (contraseña, Host, redirecciones, URLs,
   const tun = require('../bridge/tunnels');
   assert.equal(tun.findUrl('localhostrun', 'To set up go to https://admin.localhost.run/\n'), null);
   assert.equal(tun.findUrl('localhostrun', 'banner https://admin.localhost.run/\n{"type":"run.localhost.tunnel.registered","data":{"address":"abc123.app.lhr.life"}}\n'), 'https://abc123.app.lhr.life');
+  const thr = tun.providerEvent('{"type":"run.localhost.tunnel.throttled","data":{"message":"\\u001b[1mthrottled\\u001b[0m: bandwidth limit\\r\\nmore"}}');
+  assert.equal(thr.text, '[throttled] throttled: bandwidth limit');
+  assert.match(thr.warning, /limitando/);
+  assert.equal(tun.providerEvent('{"type":"run.localhost.tunnel.notice","data":{"message":"hola"}}').warning, undefined);
+  assert.equal(tun.providerEvent('texto normal'), null);
   assert.equal(tun.findUrl('cloudflared', 'INF |  https://a-b-c.trycloudflare.com  |'), 'https://a-b-c.trycloudflare.com');
   assert.equal(tun.findUrl('ngrok', '{"msg":"started tunnel","url":"https://x.ngrok-free.app"}'), 'https://x.ngrok-free.app');
   // el proveedor muere: estado error con su salida

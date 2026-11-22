@@ -302,10 +302,22 @@ function findUrl(kind, text) {
   return (text.match(/https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.lhr\.life/i) || [])[0] || null;
 }
 
+/** Línea JSON de localhost.run ({type, data: {message}}) → {text legible, warning?}; null si no es un evento. */
+function providerEvent(line) {
+  if (!line.trim().startsWith('{')) return null;
+  let j;
+  try { j = JSON.parse(line); } catch (_) { return null; }
+  if (!j || typeof j.type !== 'string') return null;
+  const kind = j.type.split('.').pop();
+  const msg = String((j.data && (j.data.message || j.data.address)) || '').replace(/\x1b\[[0-9;]*m/g, '').split(/\r?\n/)[0].trim();
+  const out = { text: `[${kind}] ${msg}`.trim() };
+  if (/throttl/i.test(kind)) out.warning = 'localhost.run está limitando la velocidad de este túnel (plan gratis): las páginas pesadas pueden no terminar de cargar. Instala cloudflared para quitar el límite.';
+  return out;
+}
 function info(T) {
   return {
     id: T.id, name: T.name, provider: T.provider, providerName: PROVIDERS[T.provider].name, target: T.target.label, kind: T.target.type,
-    status: T.status, url: T.url, error: T.error, startedAt: T.startedAt, hits: T.hits, visitors: T.visitors.size, lastHit: T.lastHit,
+    status: T.status, url: T.url, error: T.error, warning: T.warning || null, startedAt: T.startedAt, hits: T.hits, visitors: T.visitors.size, lastHit: T.lastHit,
     localUrl: T.port ? `http://127.0.0.1:${T.port}` : null, password: !!T.password, log: T.log.slice(-15),
   };
 }
@@ -342,8 +354,17 @@ async function start(opts) {
   const onData = (d) => {
     const s = d.toString();
     buf = (buf + s).slice(-20000);
-    for (const l of s.split(/\r?\n/)) {
-      // ni el QR de localhost.run ni el JSON entero: una línea legible por evento
+    T.lineBuf = (T.lineBuf || '') + s;
+    const lines = T.lineBuf.split(/\r?\n/);
+    T.lineBuf = lines.pop().slice(-20000); // la última puede estar a medias (JSON partido entre trozos)
+    for (const l of lines) {
+      const ev = providerEvent(l);
+      if (ev) {
+        if (ev.warning && T.warning !== ev.warning) { T.warning = ev.warning; emit(T); }
+        if (ev.text) T.log.push(ev.text);
+        continue;
+      }
+      // ni el QR de localhost.run ni líneas enormes: texto legible
       const clean = l.replace(/\x1b\[[0-9;]*m/g, '').trim();
       if (clean && !/^[\s█▀▄]+$/.test(clean)) T.log.push(clean.length > 300 ? `${clean.slice(0, 300)}…` : clean);
     }
@@ -426,6 +447,6 @@ function listening(exclude = []) {
 }
 
 module.exports = {
-  isPrivateHost, PROVIDERS, BIN_DIR, providers, pickProvider, parseTarget, start, stop, stopAll, list, listening, findUrl, localOrigins, rewriteOrigins,
+  isPrivateHost, providerEvent, PROVIDERS, BIN_DIR, providers, pickProvider, parseTarget, start, stop, stopAll, list, listening, findUrl, localOrigins, rewriteOrigins,
   setOnChange: (fn) => { onChange = fn; },
 };
