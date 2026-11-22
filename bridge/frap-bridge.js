@@ -21,6 +21,7 @@ const db = require('./db');
 const ssh = require('./ssh');
 const sftp = require('./sftp');
 const issues = require('./issues');
+const tunnels = require('./tunnels');
 
 const VERSION = '1.3.0';
 const STARTED_AT = Date.now();
@@ -1198,6 +1199,21 @@ const ops = {
       });
     });
   },
+  // ----- túneles: compartir por URL pública un puerto, una IP local o un archivo/carpeta -----
+  /** {providers: {cloudflared|localhostrun|ngrok: {name, path}}, tunnels: [...], binDir, install} */
+  'tunnel.status': () => ({ providers: tunnels.providers(), tunnels: tunnels.list(), binDir: tunnels.BIN_DIR, install: `bash ${path.join(__dirname, '..', 'scripts', 'install-cloudflared.sh')}` }),
+  /** Servidores escuchando en el equipo (sin el bridge ni sus puertas): [{port, host, pid, name, cmd, cwd}] */
+  'tunnel.ports': () => tunnels.listening([server.address() && server.address().port]),
+  /**
+   * {id, name, target: {type:'url', url|port} | {type:'path', path}, provider: auto|cloudflared|localhostrun|ngrok,
+   *  password?, hostRewrite?, rewriteUrls?}: arranca el túnel; la URL pública llega luego en el evento `tunnel`.
+   */
+  'tunnel.start': (o = {}) => {
+    const t = o.target || {};
+    const target = t.type === 'path' ? { type: 'path', path: safePath(t.path) } : { type: 'url', url: t.url, port: t.port };
+    return tunnels.start({ ...o, target });
+  },
+  'tunnel.stop': ({ id }) => tunnels.stop(String(id || '')),
   // ----- módulo interno "Gestión de issues": local/issues/<ID>/ de FRAP (fuera de git) -----
   /** {dir, local, issues: [{id, title, estado, url, updated, closed, pending, files}]} */
   'issues.list': () => issues.listIssues(),
@@ -1474,6 +1490,7 @@ server.on('upgrade', (req, socket, head) => {
 // Cerrar el bridge NO cierra las terminales (siguen vivas para el próximo bridge),
 // salvo con --kill-sessions.
 function shutdown() {
+  tunnels.stopAll(); // los túneles no sobreviven al bridge (sus URLs públicas son de un solo uso)
   if (argv.includes('--kill-sessions')) for (const s of sessions.values()) killSession(s);
   for (const s of sessions.values()) if (s.sock) s.sock.end();
   setTimeout(() => {
@@ -1481,6 +1498,8 @@ function shutdown() {
     process.exit(0);
   }, 50);
 }
+tunnels.setOnChange((t) => broadcast({ ev: 'tunnel', tunnel: t }));
+process.on('exit', () => tunnels.stopAll());
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 

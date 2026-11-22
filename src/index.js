@@ -126,6 +126,8 @@
     voice: { lang: 'es' }, // módulo de voz (panel derecho): idioma para whisper.cpp ("auto" = detectar)
     // temporizadores: [{id, icon, title, desc, kind: 'repeat'|'once', every (seg), mode: 'toast'|'modal', sound, enabled, nextAt, startedAt}]
     timers: [],
+    // túneles: [{id, name, kind: 'port'|'url'|'path', port, url, path, provider, password, hostRewrite, rewriteUrls}]
+    tunnels: [],
     // secciones del panel izquierdo: la primera es siempre "Todas" (ver ensureSections)
     sections: [{ id: 'all', icon: '🗂️', title: 'Todas', desc: 'Todas las carpetas', display: 'both' }],
     modules: { off: [] }, // módulos de la UI apagados (Ajustes → Módulos); vacío = todo activado
@@ -420,7 +422,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'issues.list', 'issues.create', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'issues.list', 'issues.create', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -1940,6 +1942,7 @@
     hooks: renderHooks,
     memory: renderMemory,
     issues: renderIssues,
+    tunnels: renderTunnels,
   };
   function setRtab(name) {
     state.ui.rtab = name;
@@ -1948,6 +1951,7 @@
     renderRight();
     if (name === 'procs') pollProcs();
     else if (name === 'issues') loadIssues();
+    else if (name === 'tunnels') loadTunnels(true);
     else if (name !== 'prompts' && name !== 'actions' && name !== 'pages' && name !== 'dbs' && name !== 'ssh' && name !== 'music' && name !== 'timers') loadConfig();
     if (name === 'dbs') loadDbs();
     if (name === 'ssh') loadSsh();
@@ -3646,6 +3650,7 @@
       !isRoot && { label: 'Renombrar…', action: () => codeRename(abs) },
       !isRoot && { label: 'Mover a la papelera', danger: true, action: () => codeTrash(abs, isDir) },
       isDir && { label: 'Abrir terminal aquí', action: () => launch('shell', { cwd: abs, title: basename(abs) }) },
+      (isDir || /\.(html?|svg|pdf|png|jpe?g|gif|webp|mp4|webm)$/i.test(abs)) && rtabOn('tunnels') && { label: 'Compartir por túnel…', action: () => { setRtab('tunnels'); editTunnel(null, { kind: 'path', path: abs, name: basename(abs) }); } },
       { label: `Abrir en ${extEditorName()}`, action: () => openExternal(abs) },
     ]);
   }
@@ -7021,6 +7026,196 @@
     input.click();
   }
 
+  // ---------- túneles (pestaña del panel derecho): compartir por URL pública lo que corre en local ----------
+  // state.tunnels = [{id, name, kind: 'port'|'url'|'path', port, url, path, provider, password, hostRewrite, rewriteUrls}]
+  // El bridge los corre (tunnel.start) y avisa con el evento `tunnel`; no sobreviven a reiniciar el bridge.
+  let tunInfo = null; // {providers, binDir, install}
+  const tunLive = new Map(); // id -> info del bridge
+  let tunPorts = null; // servidores detectados
+  let tunError = null;
+  async function loadTunnels(withPorts) {
+    if (!Bridge.ready) return;
+    try {
+      const st = await Bridge.call('tunnel.status');
+      tunInfo = st;
+      tunLive.clear();
+      for (const t of st.tunnels) tunLive.set(t.id, t);
+      tunError = null;
+      if (withPorts) tunPorts = await Bridge.call('tunnel.ports');
+    } catch (e) { tunError = e.message; }
+    if (state.ui.rtab === 'tunnels') renderRight();
+  }
+  Bridge.on('tunnel', ({ tunnel: t }) => {
+    const prev = tunLive.get(t.id);
+    if (t.status === 'stopped') tunLive.delete(t.id); else tunLive.set(t.id, t);
+    if (t.status === 'online' && (!prev || prev.status !== 'online')) {
+      toast(`🚇 ${t.name}: ${t.url}`, 'ok');
+    } else if (t.status === 'error' && (!prev || prev.status !== 'error')) toast(`Túnel ${t.name}: ${t.error}`, 'err');
+    if (state.ui.rtab === 'tunnels') renderRight();
+    renderStatusTunnels();
+  });
+  const tunTarget = (c) => (c.kind === 'path' ? { type: 'path', path: c.path } : { type: 'url', url: c.kind === 'port' ? String(c.port) : c.url });
+  const tunTargetLabel = (c) => (c.kind === 'path' ? tilde(c.path || '') : c.kind === 'port' ? `localhost:${c.port}` : c.url);
+  const tunShareUrl = (c, live) => (live && live.url ? (c.password ? `${live.url}/?frap_key=${encodeURIComponent(c.password)}` : live.url) : '');
+  async function startTunnel(c) {
+    try {
+      const t = await Bridge.call('tunnel.start', { id: c.id, name: c.name, target: tunTarget(c), provider: c.provider || 'auto', password: c.password || '', hostRewrite: c.hostRewrite !== false, rewriteUrls: !!c.rewriteUrls });
+      tunLive.set(t.id, t);
+      renderRight();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  async function stopTunnel(c) {
+    try { await Bridge.call('tunnel.stop', { id: c.id }); } catch (e) { toast(e.message, 'err'); }
+    tunLive.delete(c.id);
+    renderRight();
+    renderStatusTunnels();
+  }
+  async function deleteTunnel(c) {
+    if (!(await confirmBox(`¿Eliminar el túnel "${c.name}"?`, tunLive.has(c.id) ? 'Se detiene y la URL deja de funcionar.' : ''))) return;
+    if (tunLive.has(c.id)) await stopTunnel(c);
+    state.tunnels = state.tunnels.filter((x) => x.id !== c.id);
+    save();
+    renderRight();
+  }
+  function tunInstallHelp() {
+    const cmd = (tunInfo && tunInfo.install) || 'bash scripts/install-cloudflared.sh';
+    openModal({
+      title: 'Instalar cloudflared (recomendado)',
+      body: [
+        h('p', { style: 'margin-top:0' }, 'Con cloudflared los túneles usan Cloudflare: URL https://….trycloudflare.com, sin cuenta, sin límite de tiempo y más estables que localhost.run. Es un solo binario oficial (~40 MB). Corre en una terminal:'),
+        h('pre.mono', { style: 'white-space:pre-wrap;user-select:all;background:var(--bg);padding:8px;border-radius:4px' }, cmd),
+        h('p.muted', `Queda en ${tilde((tunInfo && tunInfo.binDir) || '~/.config/frap/bin')}. Sin cloudflared se usa localhost.run por ssh (no hay que instalar nada).`),
+      ],
+      foot: [h('span.grow'), h('button', { onclick: () => { copyText(cmd); toast('Comando copiado', 'ok'); } }, 'Copiar comando'), h('button.primary', { onclick: () => { modalClose(true); loadTunnels(); } }, 'Listo')],
+    });
+  }
+  /** Crear/editar un túnel. preset: {kind, port, url, path, name} (desde "detectados" o el árbol del editor). */
+  function editTunnel(c, preset) {
+    const isNew = !c;
+    const src = c || { id: uid(), kind: 'port', port: '', url: '', path: '', provider: 'auto', password: '', hostRewrite: true, rewriteUrls: false, ...(preset || {}) };
+    const name = h('input', { value: src.name || '', placeholder: 'Mi app (opcional)' });
+    const kind = h('select',
+      h('option', { value: 'port' }, 'Un puerto de este equipo (npm, bun, pnpm, php -S, WordPress…)'),
+      h('option', { value: 'url' }, 'Una URL o IP de la red (192.168.1.20:8080, https://localhost:8443…)'),
+      h('option', { value: 'path' }, 'Un archivo o carpeta (HTML estático)'));
+    kind.value = src.kind;
+    const port = h('input.mono', { type: 'number', min: 1, max: 65535, value: src.port || '', placeholder: '3000' });
+    const url = h('input.mono', { value: src.url || '', placeholder: 'http://192.168.1.20:8080' });
+    const pth = h('input.mono', { value: src.path || '', placeholder: '/ruta/a/index.html o /ruta/a/carpeta' });
+    const pick = h('button', { onclick: async () => { const d = await pickFolderInline(pth.value || (project() && project().folders[0])); if (d) pth.value = d; } }, 'Elegir carpeta…');
+    const fPort = h('div.field', h('label', 'Puerto'), port);
+    const fUrl = h('div.field', h('label', 'URL o IP:puerto'), url);
+    const fPath = h('div.field', h('label', 'Archivo o carpeta'), h('div.field-row', h('span.grow', pth), pick),
+      h('span.muted', { style: 'font-size:11px' }, 'Una carpeta muestra su index.html (o la lista de archivos); un archivo abre ese archivo. Los archivos ocultos (.env, .git) no se sirven.'));
+    const syncKind = () => { fPort.classList.toggle('hidden', kind.value !== 'port'); fUrl.classList.toggle('hidden', kind.value !== 'url'); fPath.classList.toggle('hidden', kind.value !== 'path'); };
+    kind.addEventListener('change', syncKind);
+    syncKind();
+    const av = (tunInfo && tunInfo.providers) || {};
+    const prov = h('select',
+      h('option', { value: 'auto' }, `Automático${av.cloudflared && av.cloudflared.path ? ' (Cloudflare)' : ' (localhost.run)'}`),
+      ...Object.entries(av).map(([k, p]) => h('option', { value: k, disabled: !p.path }, `${p.name}${p.path ? '' : ' — no instalado'}`)));
+    prov.value = src.provider || 'auto';
+    const pass = h('input', { value: src.password || '', placeholder: 'sin contraseña: cualquiera con la URL entra', autocomplete: 'off' });
+    const hostRw = h('input', { type: 'checkbox' });
+    hostRw.checked = src.hostRewrite !== false;
+    const urlRw = h('input', { type: 'checkbox' });
+    urlRw.checked = !!src.rewriteUrls;
+    const doSave = (andStart) => {
+      const d = { name: name.value.trim(), kind: kind.value, port: Number(port.value) || '', url: url.value.trim(), path: pth.value.trim(), provider: prov.value, password: pass.value, hostRewrite: hostRw.checked, rewriteUrls: urlRw.checked };
+      if (d.kind === 'port' && !(d.port > 0 && d.port < 65536)) { toast('Puerto inválido', 'err'); return; }
+      if (d.kind === 'url' && !d.url) { toast('Escribe la URL o IP:puerto', 'err'); return; }
+      if (d.kind === 'path' && !d.path.startsWith('/')) { toast('Escribe una ruta absoluta', 'err'); return; }
+      d.name = d.name || (d.kind === 'path' ? basename(d.path) : tunTargetLabel(d));
+      if (isNew) { c = { id: src.id, ...d }; state.tunnels.push(c); } else Object.assign(c, d);
+      save();
+      modalClose(true);
+      if (andStart || tunLive.has(c.id)) startTunnel(c); else renderRight();
+    };
+    openModal({
+      title: isNew ? 'Nuevo túnel' : `Editar túnel · ${c.name}`,
+      body: [
+        h('div.field', h('label', 'Qué compartir'), kind),
+        fPort, fUrl, fPath,
+        h('div.field', h('label', 'Nombre'), name),
+        h('div.field-row',
+          h('div.field.grow', h('label', 'Proveedor'), prov),
+          h('div.field.grow', h('label', 'Contraseña (opcional)'), pass)),
+        av.cloudflared && !av.cloudflared.path ? h('p.muted', { style: 'margin:0;font-size:11px' }, 'Recomendado: ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); tunInstallHelp(); } }, 'instalar cloudflared'), ' (más estable y sin límite de tiempo).') : null,
+        h('label.muted', hostRw, ' Reescribir el Host a localhost (Vite, Next, Angular… rechazan hosts desconocidos)'),
+        h('label.muted', urlRw, ' Reemplazar las URLs localhost del contenido por la pública (WordPress y apps que generan enlaces absolutos)'),
+        h('p.muted', { style: 'margin:4px 0 0;font-size:11px' }, 'La URL es pública: quien la tenga puede entrar (salvo que pongas contraseña). Detén el túnel cuando termines.'),
+      ],
+      foot: [
+        h('span.grow'),
+        h('button', { onclick: () => modalClose(true) }, 'Cancelar'),
+        h('button', { onclick: () => doSave(false) }, 'Guardar'),
+        h('button.primary', { onclick: () => doSave(true) }, tunLive.has(src.id) ? 'Guardar y reiniciar' : 'Guardar y compartir'),
+      ],
+    });
+  }
+  /** Proceso de un puerto detectado → ¿de qué proyecto es? (por su carpeta de trabajo). */
+  function tunPortProject(p) {
+    if (!p.cwd) return null;
+    return state.projects.find((pr) => pr.folders.some((f) => p.cwd === f.replace(/\/+$/, '') || p.cwd.startsWith(`${f.replace(/\/+$/, '')}/`))) || null;
+  }
+  function renderTunnels() {
+    if (!Bridge.ready) return [section('Túneles'), h('div.empty-list', 'Bridge desconectado.')];
+    if (tunError) return [section('Túneles'), h('div.empty-list', tunError)];
+    if (!tunInfo) { loadTunnels(true); return [section('Túneles'), h('div.empty-list', 'Cargando…')]; }
+    const av = tunInfo.providers;
+    const cards = state.tunnels.map((c) => {
+      const live = tunLive.get(c.id);
+      const st = live ? live.status : 'off';
+      const share = tunShareUrl(c, live);
+      return h(`div.tun-card.${st}`,
+        h('div.tun-head',
+          h(`span.tun-dot.${st}`, { title: { off: 'Detenido', starting: 'Conectando…', online: 'En línea', error: 'Error' }[st] }),
+          h('span.tun-name', c.name),
+          c.password ? h('span.badge', { title: 'Con contraseña' }, '🔒') : null,
+          h('span.grow'),
+          live && live.status === 'online' ? h('span.muted.tun-hits', { title: `${live.hits} peticiones · ${live.visitors} visitante(s)${live.lastHit ? ` · última ${new Date(live.lastHit).toLocaleTimeString()}` : ''}` }, `👁 ${live.visitors}`) : null,
+          h('button.icon', { title: 'Editar', onclick: () => editTunnel(c) }, '✎'),
+          h('button.icon', { title: 'Eliminar', onclick: () => deleteTunnel(c) }, '✕')),
+        h('div.tun-target.muted.mono', `${c.kind === 'path' ? '📄' : '🔌'} ${tunTargetLabel(c)}${live ? ` · ${live.providerName}` : ''}`),
+        live && live.status === 'online' ? h('div.tun-url',
+          h('a.mono', { href: live.url, target: '_blank', rel: 'noopener', title: 'Abrir en otra pestaña' }, live.url.replace(/^https:\/\//, '')),
+          h('button.mini', { title: c.password ? 'Copiar la URL con la clave incluida (entra sin pedirla)' : 'Copiar la URL', onclick: () => { copyText(share); toast(`Copiado: ${share}`, 'ok'); } }, '⧉ Copiar'),
+          c.password ? h('button.mini', { title: 'Copiar solo la URL (pedirá la contraseña)', onclick: () => { copyText(live.url); toast('URL copiada (sin clave)', 'ok'); } }, 'sin clave') : null) : null,
+        live && live.status === 'starting' ? h('div.tun-url.muted', 'Conectando con el proveedor…') : null,
+        live && live.status === 'error' ? h('div.tun-err', live.error) : null,
+        h('div.tun-acts',
+          !live || live.status === 'error' ? h('button.primary.mini', { onclick: () => startTunnel(c) }, '▶ Compartir') : h('button.mini', { onclick: () => stopTunnel(c) }, '■ Detener'),
+          live && live.log && live.log.length ? h('button.mini', { title: 'Últimas líneas del proveedor', onclick: () => openModal({ title: `Registro · ${c.name}`, body: h('pre.mono', { style: 'white-space:pre-wrap;font-size:11px;max-height:60vh;overflow:auto' }, live.log.join('\n')), foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cerrar')] }) }, 'Registro') : null));
+    });
+    const ports = (tunPorts || []).filter((p) => !state.tunnels.some((c) => c.kind === 'port' && Number(c.port) === p.port && tunLive.has(c.id)));
+    return [
+      section('Túneles',
+        h('button.icon', { title: 'Recargar (y buscar servidores)', onclick: () => loadTunnels(true) }, '⟳'),
+        h('button.primary.mini', { onclick: () => editTunnel(null) }, '+ Nuevo')),
+      h('p.muted.tun-hint', 'Comparte por una URL pública lo que corre en local: un puerto (npm, bun, pnpm, php, WordPress), una IP de la red o un archivo HTML.'),
+      h('div.tun-prov.muted',
+        'Proveedor: ', av.cloudflared.path ? h('b', 'Cloudflare ✓') : h('span', 'localhost.run (ssh)', ' · ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); tunInstallHelp(); } }, 'instalar cloudflared'))),
+      cards.length ? h('div.tun-list', cards) : h('div.empty-list', 'Sin túneles. Crea uno o comparte un servidor detectado.'),
+      h('div.section-head', h('h4.grow', 'Servidores detectados'), h('button.icon', { title: 'Buscar otra vez', onclick: () => loadTunnels(true) }, '⟳')),
+      tunPorts == null ? h('div.empty-list', 'Buscando…')
+        : ports.length ? h('div.tun-ports', ports.map((p) => {
+          const pr = tunPortProject(p);
+          return h('div.tun-port',
+            h('span.mono.tun-pnum', `:${p.port}`),
+            h('span.tun-pdesc', { title: [p.cmd, p.cwd && `en ${p.cwd}`].filter(Boolean).join('\n') }, p.name || '—', pr ? h('span.badge.project', pr.name) : null),
+            h('span.grow'),
+            h('button.mini', { onclick: () => editTunnel(null, { kind: 'port', port: p.port, name: pr ? `${pr.name} :${p.port}` : `${p.name || 'localhost'} :${p.port}` }) }, 'Compartir'));
+        })) : h('div.empty-list', 'No se ve ningún servidor web escuchando. Arranca tu app (npm run dev, php -S…) y pulsa ⟳.'),
+    ];
+  }
+  /** Barra de estado: cuántos túneles están en línea (clic: ir a la pestaña). */
+  function renderStatusTunnels() {
+    const el = $('#st-tunnels');
+    if (!el) return;
+    const n = [...tunLive.values()].filter((t) => t.status === 'online').length;
+    el.replaceChildren(...(n && rtabOn('tunnels') ? [h('span.st-tun', { title: 'Túneles en línea (clic: ver)', onclick: () => setRtab('tunnels') }, `🚇 ${n}`)] : []));
+  }
+
   // ======================================================================
   // Módulos: qué partes de la UI se muestran (Ajustes → Módulos)
   // ======================================================================
@@ -7057,6 +7252,7 @@
       { key: 'right.commands', rtab: 'commands', icon: '⌘', name: 'Comandos', desc: 'Comandos / de las IA' },
       { key: 'right.hooks', rtab: 'hooks', icon: '🪝', name: 'Hooks', desc: 'Hooks de claude' },
       { key: 'right.memory', rtab: 'memory', icon: '🧠', name: 'Memoria', desc: 'CLAUDE.md / AGENTS.md' },
+      { key: 'right.tunnels', rtab: 'tunnels', icon: '🚇', name: 'Túneles', desc: 'Compartir por URL pública un puerto, una IP o un archivo' },
       { key: 'right.voice', icon: '🎤', name: 'Voz (Hablar)', desc: 'Dictado a la IA, abajo del panel (Alt+Shift+V)' },
     ],
     // funciones propias de FRAP que agregan comportamiento (no solo un botón)
@@ -7256,6 +7452,7 @@
     { key: 'actions', label: 'Acciones', count: (c) => (c.actions || []).length },
     { key: 'pages', label: 'Páginas', count: (c) => (c.pages || []).length },
     { key: 'timers', label: 'Temporizadores', count: (c) => (c.timers || []).length },
+    { key: 'tunnels', label: 'Túneles', count: (c) => (c.tunnels || []).length, sub: 'incluye sus contraseñas' },
     { key: 'modules', label: 'Módulos', count: (c) => MODULE_LIST.length - (((c.modules || {}).off) || []).length, sub: 'qué se muestra en cada panel' },
     { key: 'sections', label: 'Secciones del panel izquierdo', count: (c) => (c.sections || []).filter((s) => s.id !== 'all').length },
     { key: 'music', label: 'Música', count: (c) => ((c.music || {}).tracks || []).filter((t) => t.type === 'youtube').length, sub: 'solo enlaces de YouTube' },
@@ -7539,9 +7736,10 @@
     pollProcs();
     syncIssuesSkill(true);
     loadIssues();
+    loadTunnels(state.ui.rtab === 'tunnels');
     renderRight();
   });
-  Bridge.on('close', () => renderAll());
+  Bridge.on('close', () => { tunLive.clear(); renderStatusTunnels(); renderAll(); }); // sin bridge no hay túneles
   document.addEventListener('visibilitychange', () => { if (!document.hidden) pollProcs(); });
 
   applyPanels();

@@ -35,6 +35,7 @@ bridge/ssh.js          servidores SSH (.env), argumentos de ssh, askpass, ejecuc
 bridge/frap-ssh.js     CLI para agentes: comandos en servidores con "Uso por IA" (skill frap-ssh)
 bridge/frap-askpass.js SSH_ASKPASS: entrega la contraseña del .env a ssh
 bridge/sftp.js         SFTP (pestaña Archivos): argumentos de sftp, escape de rutas, parseo de ls, ejecución batch
+bridge/tunnels.js      túneles: puerta local (contraseña, Host, estáticos, WebSocket) + cloudflared / localhost.run (ssh) / ngrok
 bridge/issues.js       módulo interno "Gestión de issues": local/issues/<ID>/, plantillas, skill frap-issues, zip de local/
 bridge/frap-issues.js  CLI para agentes (skill frap-issues): new / list / path de las issues locales
 local/                 datos locales de FRAP (issues…): ignorada en git, nunca se sube
@@ -42,6 +43,7 @@ tests/bridge.test.js   tests de integración del bridge (node:test)
 tests/db.test.js       clasificador, parsers, .env, motores y CLI
 tests/ssh.test.js      .env, argumentos, askpass, CLI frap-ssh y sftp (con un ssh falso; sftp contra el sftp-server local si existe)
 scripts/check.js       chequeos estáticos + reglas de arriba
+scripts/install-cloudflared.sh  instala cloudflared en FRAP_HOME/bin (proveedor recomendado de los túneles)
 scripts/install-whisper.sh  instala whisper.cpp + modelo en FRAP_HOME/whisper (módulo de voz, transcripción local)
 docs/                  arquitectura, protocolo y roadmap
 ```

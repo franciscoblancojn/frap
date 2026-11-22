@@ -104,6 +104,7 @@ test.before(async () => {
   const fakeBin = path.join(root, 'fakebin');
   fs.mkdirSync(fakeBin);
   fs.writeFileSync(path.join(fakeBin, 'ssh'), FAKE_SSH, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBin, 'cloudflared'), '#!/bin/sh\necho "INF Requesting new quick Tunnel on trycloudflare.com..." >&2\necho "INF |  https://falso-tunel-123.trycloudflare.com  |" >&2\necho "args: $*" >&2\nexec sleep 60\n', { mode: 0o755 });
   bridge = fork(path.join(__dirname, '..', 'bridge', 'frap-bridge.js'), [], {
     env: {
       ...process.env,
@@ -840,4 +841,125 @@ test('issues.* y local.*: carpeta local/issues, skill frap-issues, importar carp
   assert.ok(!fs.existsSync(path.join(root, 'escape.txt')));
   assert.equal(fs.readFileSync(path.join(local, 'ok.txt'), 'utf8'), 'ok');
   await assert.rejects(client.call('local.import', { data: Buffer.from('no es zip').toString('base64') }), /zip/);
+});
+
+test('tunnel.*: proveedor, puerta local (contraseña, Host, redirecciones, URLs, estáticos, WebSocket) y parar', async (t) => {
+  const http = require('http');
+  const net = require('net');
+  // servidor "local" a compartir
+  let port;
+  const srv = http.createServer((req, res) => {
+    if (req.url === '/redir') { res.writeHead(302, { location: `http://localhost:${port}/destino` }); res.end(); return; }
+    if (req.url === '/wp') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(`<a href="http://localhost:${port}/a">a</a> {"u":"http:\\/\\/localhost:${port}\\/b"}`); return; }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ host: req.headers.host, url: req.url, auth: req.headers.authorization || null, xfh: req.headers['x-forwarded-host'] }));
+  });
+  srv.on('upgrade', (req, socket) => {
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n');
+    socket.on('data', (d) => socket.write(`eco:${d}`));
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  port = srv.address().port;
+  t.after(async () => { // aunque falle: nada de servidores ni túneles colgados
+    srv.close();
+    if (srv.closeAllConnections) srv.closeAllConnections();
+    for (const id of ['t1', 't2', 't3']) await client.call('tunnel.stop', { id }).catch(() => {});
+  });
+  const get = (url, headers = {}) => new Promise((resolve, reject) => {
+    http.get(url, { headers }, (res) => { let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: b })); }).on('error', reject);
+  });
+
+  const st = await client.call('tunnel.status');
+  assert.ok(st.providers.cloudflared.path.endsWith('cloudflared'));
+  assert.match(st.install, /install-cloudflared\.sh/);
+  await assert.rejects(client.call('tunnel.start', { target: { type: 'url', url: String(port) }, provider: 'nada' }), /desconocido/);
+  await assert.rejects(client.call('tunnel.start', { target: { type: 'path', path: '/etc' } }), /fuera/);
+
+  // puerto local con contraseña y reescritura de URLs
+  const t1 = await client.call('tunnel.start', { id: 't1', name: 'Mi app', target: { type: 'url', url: String(port) }, provider: 'cloudflared', password: 'clave', rewriteUrls: true });
+  assert.equal(t1.status, 'starting');
+  assert.equal(t1.target, `http://localhost:${port}`);
+  const on = await client.waitFor((e) => e.ev === 'tunnel' && e.tunnel.id === 't1' && e.tunnel.status === 'online');
+  assert.equal(on.tunnel.url, 'https://falso-tunel-123.trycloudflare.com');
+  assert.ok(on.tunnel.log.some((l) => l.includes(`--url ${on.tunnel.localUrl}`)));
+  const gw = on.tunnel.localUrl;
+  const pub = { host: 'falso-tunel-123.trycloudflare.com' };
+  assert.equal((await get(`${gw}/x`, pub)).status, 401);
+  const basic = { ...pub, authorization: `Basic ${Buffer.from('cualquiera:clave').toString('base64')}` };
+  const ok = JSON.parse((await get(`${gw}/x?y=1`, basic)).body);
+  assert.equal(ok.host, `localhost:${port}`); // Host reescrito (Vite y similares)
+  assert.equal(ok.url, '/x?y=1');
+  assert.equal(ok.auth, null); // la contraseña del túnel no llega al servidor
+  assert.equal(ok.xfh, 'falso-tunel-123.trycloudflare.com');
+  assert.equal((await get(`${gw}/x`, { ...pub, authorization: `Basic ${Buffer.from('u:mala').toString('base64')}` })).status, 401);
+  // enlace con clave: cookie y redirección sin la clave
+  const k = await get(`${gw}/panel?frap_key=clave&a=1`, pub);
+  assert.equal(k.status, 302);
+  assert.equal(k.headers.location, '/panel?a=1');
+  const cookie = k.headers['set-cookie'][0].split(';')[0];
+  assert.equal((await get(`${gw}/x`, { ...pub, cookie })).status, 200);
+  // redirecciones y contenido con localhost → URL pública
+  assert.equal((await get(`${gw}/redir`, basic)).headers.location, 'https://falso-tunel-123.trycloudflare.com/destino');
+  const wp = (await get(`${gw}/wp`, basic)).body;
+  assert.ok(wp.includes('href="https://falso-tunel-123.trycloudflare.com/a"') && wp.includes('https:\\/\\/falso-tunel-123.trycloudflare.com\\/b'), wp);
+  // WebSocket (HMR) pasa por la puerta
+  const echo = await new Promise((resolve, reject) => {
+    const u = new URL(gw);
+    const so = net.connect(Number(u.port), '127.0.0.1', () => so.write(`GET /hmr HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nAuthorization: ${basic.authorization}\r\n\r\n`));
+    let b = '';
+    so.on('data', (d) => { b += d; if (b.includes('101') && !b.includes('eco:')) so.write('hola'); if (b.includes('eco:hola')) { so.destroy(); resolve(b); } });
+    so.on('error', reject);
+    setTimeout(() => reject(new Error('sin eco ws')), 3000);
+  });
+  assert.match(echo, /101 Switching/);
+  const list = (await client.call('tunnel.status')).tunnels;
+  assert.ok(list.find((x) => x.id === 't1').hits === 4);
+  // servidor caído: 502 legible
+  srv.close();
+  const down = await get(`${gw}/x`, basic);
+  assert.equal(down.status, 502);
+  assert.match(down.body, /no contesta/);
+  // parar: la puerta se cierra
+  const stopped = await client.call('tunnel.stop', { id: 't1' });
+  assert.equal(stopped.status, 'stopped');
+  await assert.rejects(get(`${gw}/x`, basic));
+  assert.ok(!(await client.call('tunnel.status')).tunnels.some((x) => x.id === 't1'));
+
+  // archivo suelto: redirige a él, sirve su carpeta, nada de dotfiles ni salir de la raíz
+  const site = path.join(root, 'sitio');
+  fs.mkdirSync(path.join(site, 'img'), { recursive: true });
+  fs.writeFileSync(path.join(site, 'demo.html'), '<h1>demo</h1>');
+  fs.writeFileSync(path.join(site, 'img', 'a.svg'), '<svg/>');
+  fs.writeFileSync(path.join(site, '.env'), 'SECRETO=1');
+  await client.call('tunnel.start', { id: 't2', target: { type: 'path', path: path.join(site, 'demo.html') }, provider: 'cloudflared' });
+  const on2 = await client.waitFor((e) => e.ev === 'tunnel' && e.tunnel.id === 't2' && e.tunnel.status === 'online');
+  const g2 = on2.tunnel.localUrl;
+  assert.equal((await get(`${g2}/`)).headers.location, '/demo.html');
+  const page = await get(`${g2}/demo.html`);
+  assert.equal(page.body, '<h1>demo</h1>');
+  assert.match(page.headers['content-type'], /text\/html/);
+  assert.equal((await get(`${g2}/img/a.svg`)).headers['content-type'], 'image/svg+xml');
+  assert.equal((await get(`${g2}/.env`)).status, 404);
+  assert.notEqual((await get(`${g2}/../../etc/passwd`)).body.includes('root:'), true);
+  for (const evil of ['/%2e%2e/%2e%2e/etc/passwd', '/img/..%2f..%2f..%2fetc%2fpasswd', '/..%5c..%5cetc/passwd']) {
+    const r = await get(`${g2}${evil}`);
+    assert.ok([403, 404].includes(r.status) && !r.body.includes('root:'), `${evil} → ${r.status}`);
+  }
+  const listing = await get(`${g2}/img/`);
+  assert.match(listing.body, /a\.svg/);
+  await client.call('tunnel.stop', { id: 't2' });
+
+  // localhost.run: la URL sale del JSON, no del banner (que menciona admin.localhost.run)
+  const tun = require('../bridge/tunnels');
+  assert.equal(tun.findUrl('localhostrun', 'To set up go to https://admin.localhost.run/\n'), null);
+  assert.equal(tun.findUrl('localhostrun', 'banner https://admin.localhost.run/\n{"type":"run.localhost.tunnel.registered","data":{"address":"abc123.app.lhr.life"}}\n'), 'https://abc123.app.lhr.life');
+  assert.equal(tun.findUrl('cloudflared', 'INF |  https://a-b-c.trycloudflare.com  |'), 'https://a-b-c.trycloudflare.com');
+  assert.equal(tun.findUrl('ngrok', '{"msg":"started tunnel","url":"https://x.ngrok-free.app"}'), 'https://x.ngrok-free.app');
+  // el proveedor muere: estado error con su salida
+  fs.writeFileSync(path.join(root, 'fakebin', 'ngrok'), '#!/bin/sh\necho "ERR_NGROK_4018 authentication failed" >&2\nexit 1\n', { mode: 0o755 });
+  await client.call('tunnel.start', { id: 't3', target: { type: 'url', url: 'http://192.168.1.50:8080' }, provider: 'ngrok' });
+  const err = await client.waitFor((e) => e.ev === 'tunnel' && e.tunnel.id === 't3' && e.tunnel.status === 'error');
+  assert.match(err.tunnel.error, /ERR_NGROK_4018/);
+  assert.equal(err.tunnel.target, 'http://192.168.1.50:8080');
+  await client.call('tunnel.stop', { id: 't3' });
 });

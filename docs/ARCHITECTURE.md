@@ -46,6 +46,26 @@ navegador (file://src/index.html)                     máquina local
   - Temporizador apagado: no avisa.
   - Si se apaga la pestaña derecha activa, pasa a la primera visible. Sin ninguna, el panel muestra un aviso.
 
+## Túneles (pestaña del panel derecho)
+
+- Comparten por una URL pública algo que corre en local, como el port forwarding de VS Code: un puerto (npm, bun, pnpm, `php -S`, WordPress…), una URL o IP de la red, o un archivo o carpeta. Están en `bridge/tunnels.js`, solo con la librería estándar.
+- **Puerta local:** cada túnel abre un servidor http en `127.0.0.1:<puerto al azar>` del bridge, y el proveedor publica esa puerta, no el servidor directamente. La puerta:
+  - **Contraseña** opcional: Basic, con cualquier usuario. También acepta un enlace `?frap_key=<clave>`, que deja una cookie y redirige sin la clave. La contraseña no llega al servidor.
+  - **Host:** lo reescribe a `localhost:<puerto>`, porque Vite, Next y similares rechazan hosts desconocidos. Los `Location` que apuntan a localhost pasan a la URL pública.
+  - **URLs del contenido** (opcional, pensado para WordPress): reemplaza las URLs localhost en HTML, CSS, JS y JSON, incluido el JSON escapado.
+  - **WebSocket:** los pasa, así funciona el HMR.
+  - **Errores:** responde 502 legible si el servidor no contesta.
+  - **Visitas:** cuenta peticiones y visitantes.
+  - **Archivos estáticos:** el tipo `path` se sirve desde la misma puerta. Un archivo suelto abre ese archivo y sirve su carpeta; una carpeta muestra su `index.html` o un listado. Nunca sale de la raíz y no sirve dotfiles (`.env`, `.git`). Soporta `Range` para video.
+- **Proveedores:**
+  - `cloudflared` (quick tunnel `*.trycloudflare.com`), recomendado. Se instala con `scripts/install-cloudflared.sh` en `FRAP_HOME/bin`.
+  - **localhost.run** por `ssh`, sin instalar nada. La URL sale de su salida JSON. Usa su propio `known_hosts` en `FRAP_HOME`.
+  - `ngrok`, si está instalado.
+  - "Automático" elige en ese orden.
+- **TLS:** solo se omite la verificación para destinos locales o de red privada, que suelen tener certificado propio. Los destinos remotos se verifican.
+- **Vida útil:** los túneles no sobreviven al bridge. `shutdown` y `exit` los detienen, y las URLs gratuitas cambian en cada arranque. La configuración vive en `state.tunnels` y se exporta como parte de la configuración, con sus contraseñas. El bridge avisa cada cambio con el evento `tunnel`.
+- **UI:** muestra las tarjetas de túneles (estado, URL, copiar con o sin clave, visitantes, registro del proveedor) y los "Servidores detectados", asociados al proyecto por la carpeta del proceso. El árbol del editor tiene "Compartir por túnel…" para HTML, medios y carpetas, y la barra de estado muestra 🚇 N.
+
 ## Gestión de issues (módulo interno)
 
 - Replica dentro de FRAP el harness de tareas `_linear`. Cada issue vive en `local/issues/<ID>/` de la carpeta de FRAP, con `issue.md` (copia fiel del tracker), `changelog.md`, `status.md` y `final.md` al cerrar.
@@ -239,6 +259,10 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `voice.transcribe` | `{audio, lang?}` | `{text, ms}`; `audio` = WAV en base64 (máx. ~10 min), `lang` = `es`, `en`… o `auto` |
 | `notes.skill` | — | `{claude, codex}`: si la skill `frap-notes` está instalada |
 | `notes.installSkill` | `{tools}` | escribe la skill `frap-notes` (guardar/leer `NOTES.md`) en `~/.claude/skills` y `~/.codex/skills` |
+| `tunnel.status` | — | `{providers: {cloudflared, localhostrun, ngrok: {name, path}}, tunnels, binDir, install}` |
+| `tunnel.ports` | — | servidores escuchando en el equipo (`ss -ltnp`), sin puertos no web, de las IA ni de FRAP: `[{port, host, pid, name, cmd, cwd}]` |
+| `tunnel.start` | `{id, name, target: {type:'url', url\|port} \| {type:'path', path}, provider, password?, hostRewrite?, rewriteUrls?}` | arranca la puerta local y el proveedor; la URL pública llega en el evento `tunnel` |
+| `tunnel.stop` | `{id}` | detiene el proveedor y cierra la puerta (también sus WebSocket) |
 | `issues.list` | — | `{dir, local, issues: [{id, title, estado, url, updated, closed, pending, files}]}` de `local/issues/` |
 | `issues.create` | `{id, title?}` | crea `local/issues/<ID>/` desde las plantillas; si existe no toca nada. `{id, dir, created}` |
 | `issues.importDir` | `{path}` | copia carpetas `<ID>/` de otra carpeta (o de su `issues/`) sin pisar las existentes. `{from, copied, skipped}` |

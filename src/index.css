@@ -1091,3 +1091,31 @@ li.CodeMirror-hint-active { background: var(--accent); color: var(--bg); }
 .iss-acts { margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 5px; }
 .iss-files { display: flex; flex-wrap: wrap; gap: 4px; }
 .mod-head h4, .mod-head button { white-space: nowrap; }
+
+/* ---------- túneles (panel derecho) ---------- */
+.tun-hint { font-size: 11px; margin: 0 0 6px; }
+.tun-prov { font-size: 11px; margin: 0 0 8px; }
+.tun-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.tun-card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2); padding: 7px 9px; display: flex; flex-direction: column; gap: 4px; }
+.tun-card.online { border-color: color-mix(in srgb, var(--ok) 55%, var(--line)); }
+.tun-card.error { border-color: color-mix(in srgb, var(--err) 55%, var(--line)); }
+.tun-head { display: flex; align-items: center; gap: 6px; }
+.tun-name { font-weight: 600; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tun-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-3); flex: none; }
+.tun-dot.online { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.tun-dot.starting { background: var(--warn); animation: blink 1s infinite; }
+.tun-dot.error { background: var(--err); }
+@keyframes blink { 50% { opacity: .3; } }
+.tun-hits { font-size: 11px; }
+.tun-target { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tun-url { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; font-size: 11.5px; }
+.tun-url a { color: var(--ok); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.tun-url a:hover { text-decoration: underline; }
+.tun-err { font-size: 11px; color: var(--err); overflow-wrap: anywhere; }
+.tun-acts { display: flex; gap: 4px; margin-top: 2px; }
+.tun-ports { display: flex; flex-direction: column; gap: 2px; }
+.tun-port { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px; }
+.tun-port:hover { background: var(--bg-hover); }
+.tun-pnum { color: var(--accent); min-width: 52px; }
+.tun-pdesc { font-size: 12px; display: flex; gap: 6px; align-items: center; overflow: hidden; white-space: nowrap; }
+.st-tun { cursor: pointer; color: var(--ok); }
