@@ -34,6 +34,14 @@ navegador (file://src/index.html)                     máquina local
 - En cada conexión al bridge, `checkRestore()` busca los sids de la foto que ya no están en `sessions.list`. Si falta alguno, ofrece reabrirlos con `reopenTerminals` (lo mismo que el import), retomando la última conversación de cada IA (`claude --continue`, `codex resume --last`, `opencode --continue`).
 - Hasta que el usuario decide, la foto no se pisa, porque si no, el arranque vacío la borraría. "Ahora no" las sigue ofreciendo; "Descartar" las olvida.
 
+## Secciones del panel izquierdo
+
+- Barra de chips arriba de las carpetas, como las listas de WhatsApp. `state.sections = [{id, icon, title, desc, display: 'both'|'icon'|'title', projects: [pid]}]` y `state.ui.section` guarda la elegida.
+- La primera es siempre "Todas" (`id: 'all'`). Muestra todas las carpetas (y las terminales "Sin proyecto"), no guarda `projects` y no se puede eliminar, pero sí editar su ícono, título y cómo se ve.
+- Una carpeta puede estar en varias secciones. Se asigna al editar la sección, al editar la carpeta (casillas "Secciones"), arrastrándola desde su asa ⠿ sobre el chip o creándola mientras la sección está elegida. El orden es el de `state.projects`.
+- `ensureSections()` (en cada `renderProjects`) deja "Todas" primero y quita ids repetidos y carpetas que ya no existen. Al eliminar una carpeta también sale de las secciones.
+- Cada chip muestra cuántas carpetas de la sección tienen avisos (amarillo: espera tu respuesta; verde: terminó). Clic derecho: editar, mover y eliminar. Se exportan como parte de la configuración ("Secciones del panel izquierdo").
+
 ## Vistas por proyecto (git, DB, Archivos, Notas, Código)
 
 - Como las terminales, cada proyecto tiene sus propias pestañas de Git, DB, Archivos (SFTP), Notas y Código, listadas en el panel izquierdo junto a sus terminales. Sid: `git:<projectId>`, `db:<projectId>`, `sftp:<projectId>`, `notes:<projectId>`, `code:<projectId>`. Una por tipo y proyecto: los launchers y Alt+Shift+G/D/F/N/E abren o enfocan la del proyecto activo. Requieren un proyecto.

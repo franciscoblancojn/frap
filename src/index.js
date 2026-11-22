@@ -126,6 +126,8 @@
     voice: { lang: 'es' }, // módulo de voz (panel derecho): idioma para whisper.cpp ("auto" = detectar)
     // temporizadores: [{id, icon, title, desc, kind: 'repeat'|'once', every (seg), mode: 'toast'|'modal', sound, enabled, nextAt, startedAt}]
     timers: [],
+    // secciones del panel izquierdo: la primera es siempre "Todas" (ver ensureSections)
+    sections: [{ id: 'all', icon: '🗂️', title: 'Todas', desc: 'Todas las carpetas', display: 'both' }],
     settings: {
       fontSize: 13,
       editor: 'frap', // rutas clicadas en la terminal: 'frap' = editor de código de FRAP; si no, un comando (code, cursor…)
@@ -138,7 +140,7 @@
       },
     },
     // split: 1-4 terminales a la vez; splitSizes (%): y = alto de la fila de arriba, xTop/xBot = ancho de la columna izquierda de cada fila
-    ui: { rtab: 'procs', hideLeft: false, hideRight: false, procsAll: false, split: 1, splitSizes: { y: 50, xTop: 50, xBot: 50 } },
+    ui: { section: 'all', rtab: 'procs', hideLeft: false, hideRight: false, procsAll: false, split: 1, splitSizes: { y: 50, xTop: 50, xBot: 50 } },
   });
 
   function mergeState(base, saved) {
@@ -877,6 +879,8 @@
     if (!folder) return;
     const p = { id: uid(), name: basename(folder), folders: [folder] };
     state.projects.push(p);
+    const sec = (state.sections || []).find((s) => s.id === state.ui.section);
+    if (sec && sec.id !== 'all') addToSection(sec, p.id); // creada estando en una sección: queda en ella
     state.activeProject = p.id;
     state.activeSid = null;
     save();
@@ -907,6 +911,11 @@
     const url = h('input.mono', { value: p.url || '', placeholder: 'https://mi-sitio.com o localhost:3000 (opcional)' });
     const info = h('input', { type: 'checkbox' });
     info.checked = p.showInfo !== false;
+    const secChecks = state.sections.filter((s) => s.id !== 'all').map((s) => {
+      const cb = h('input', { type: 'checkbox' });
+      cb.checked = s.projects.includes(p.id);
+      return { s, cb, el: h('label.sec-proj', cb, h('span', `${s.icon ? s.icon + ' ' : ''}${s.title}`)) };
+    });
     const doSave = () => {
       const n = name.value.trim();
       const u = normalizeUrl(url.value);
@@ -916,6 +925,7 @@
       p.desc = desc.value.trim();
       p.url = u;
       p.showInfo = info.checked;
+      for (const { s, cb } of secChecks) s.projects = cb.checked ? [...new Set([...s.projects, p.id])] : s.projects.filter((id) => id !== p.id);
       save();
       modalClose(true);
       renderAll();
@@ -928,6 +938,7 @@
         h('div.field', h('label', 'Descripción'), desc),
         h('div.field', h('label', 'URL (botón 🌐: la abre en otra pestaña)'), url),
         h('label.muted', info, ' Mostrar el ojo 👁 con el nombre y la descripción al pasar el mouse'),
+        secChecks.length ? h('div.field', h('label', 'Secciones'), h('div.sec-projs', secChecks.map((x) => x.el))) : null,
       ],
       foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
     });
@@ -963,6 +974,7 @@
     for (const t of live) await closeTerm(t.sid);
     dropProjectViews(p.id);
     state.projects = state.projects.filter((x) => x.id !== p.id);
+    for (const s of state.sections || []) if (Array.isArray(s.projects)) s.projects = s.projects.filter((id) => id !== p.id);
     if (state.activeProject === p.id) {
       state.activeProject = state.projects[0] ? state.projects[0].id : null;
       state.activeSid = null;
@@ -1057,6 +1069,171 @@
     return [...sessionsOf(pid).map((t) => ({ key: t.sid, t })), ...openViewsOf(pid).map((v) => ({ key: vSid(v), v }))]
       .map((it, i) => ({ ...it, i }))
       .sort((a, b) => (rank(a.key) - rank(b.key)) || (a.i - b.i));
+  }
+
+  // ---------- secciones del panel izquierdo (como las listas de WhatsApp) ----------
+  // state.sections = [{id, icon, title, desc, display: 'both'|'icon'|'title', projects: [pid]}]; la primera es
+  // siempre "Todas" (id 'all', no se borra ni guarda proyectos). state.ui.section = id de la sección elegida.
+  const SECTION_ICONS = ['🗂️', '💼', '🏠', '⭐', '🔥', '🧪', '🚀', '📦', '🛠️', '🎨', '📚', '🌐', '🤖', '💡', '🐞', '🔒', '💰', '🎮', '📱', '☁️'];
+  const ALL_SECTION = () => ({ id: 'all', icon: '🗂️', title: 'Todas', desc: 'Todas las carpetas', display: 'both' });
+  /** Deja state.sections consistente: "Todas" primero, sin ids repetidos ni proyectos que ya no existen. */
+  function ensureSections() {
+    const pids = new Set(state.projects.map((p) => p.id));
+    const list = Array.isArray(state.sections) ? state.sections.filter((s) => s && s.id) : [];
+    const all = list.find((s) => s.id === 'all') || ALL_SECTION();
+    delete all.projects;
+    const seen = new Set(['all']);
+    const rest = list.filter((s) => s.id !== 'all' && !seen.has(s.id) && seen.add(s.id));
+    for (const s of rest) s.projects = [...new Set((Array.isArray(s.projects) ? s.projects : []).filter((id) => pids.has(id)))];
+    for (const s of [all, ...rest]) if (!['both', 'icon', 'title'].includes(s.display)) s.display = 'both';
+    state.sections = [all, ...rest];
+    if (!state.sections.some((s) => s.id === state.ui.section)) state.ui.section = 'all';
+  }
+  const activeSection = () => state.sections.find((s) => s.id === state.ui.section) || state.sections[0];
+  /** Proyectos visibles en una sección (en el orden de state.projects). */
+  const sectionProjects = (s) => (s.id === 'all' ? state.projects : state.projects.filter((p) => s.projects.includes(p.id)));
+  function selectSection(id) {
+    if (state.ui.section === id) return;
+    state.ui.section = id;
+    save();
+    renderProjects();
+  }
+  function addToSection(s, pid) {
+    if (s.id === 'all' || s.projects.includes(pid)) return false;
+    s.projects.push(pid);
+    return true;
+  }
+  function moveSection(s, dir) {
+    const i = state.sections.indexOf(s);
+    const j = i + dir;
+    if (i < 1 || j < 1 || j >= state.sections.length) return; // "Todas" no se mueve
+    state.sections.splice(i, 1);
+    state.sections.splice(j, 0, s);
+    save();
+    renderProjects();
+  }
+  async function deleteSection(s) {
+    if (s.id === 'all') return;
+    if (!(await confirmBox(`¿Eliminar la sección "${s.title}"?`, 'Las carpetas no se borran: siguen en "Todas" y en sus otras secciones.'))) return;
+    state.sections = state.sections.filter((x) => x !== s);
+    if (state.ui.section === s.id) state.ui.section = 'all';
+    save();
+    renderProjects();
+  }
+  function sectionMenu(ev, s) {
+    const i = state.sections.indexOf(s);
+    popMenu(ev, [
+      { label: 'Editar sección…', action: () => editSection(s) },
+      { label: '◂ Mover a la izquierda', disabled: i <= 1, action: () => moveSection(s, -1) },
+      { label: 'Mover a la derecha ▸', disabled: i < 1 || i >= state.sections.length - 1, action: () => moveSection(s, 1) },
+      s.id !== 'all' && '-',
+      s.id !== 'all' && { label: 'Eliminar sección', danger: true, action: () => deleteSection(s) },
+    ]);
+  }
+  /** Crear (s = null) o editar una sección: ícono, título, descripción, cómo se ve y qué carpetas tiene. */
+  function editSection(s) {
+    const isNew = !s;
+    const isAll = !!s && s.id === 'all';
+    const src = s || { icon: '⭐', title: '', desc: '', display: 'both', projects: [] };
+    let icon = src.icon || '';
+    const iconBtns = h('div.icon-grid', SECTION_ICONS.map((ic) => h('button.icon-pick', {
+      class: `icon-pick${ic === icon ? ' sel' : ''}`,
+      title: ic,
+      onclick: (e) => {
+        icon = ic;
+        customIcon.value = '';
+        $$('.icon-pick', iconBtns).forEach((b) => b.classList.toggle('sel', b === e.currentTarget));
+      },
+    }, ic)));
+    const customIcon = h('input', { placeholder: 'u otro emoji', maxlength: '4', style: 'width:110px', value: SECTION_ICONS.includes(icon) ? '' : icon });
+    customIcon.addEventListener('input', () => {
+      if (customIcon.value.trim()) { icon = customIcon.value.trim(); $$('.icon-pick', iconBtns).forEach((b) => b.classList.remove('sel')); }
+    });
+    const title = h('input', { value: src.title || '', placeholder: 'Trabajo', maxlength: '40' });
+    const desc = h('textarea', { rows: 2, placeholder: 'Para qué es esta sección (se ve al pasar el mouse)', style: 'width:100%;resize:vertical' });
+    desc.value = src.desc || '';
+    const display = h('select',
+      h('option', { value: 'both' }, 'Ícono y título'),
+      h('option', { value: 'icon' }, 'Solo ícono'),
+      h('option', { value: 'title' }, 'Solo título'));
+    display.value = src.display || 'both';
+    const checks = isAll ? [] : state.projects.map((p) => {
+      const cb = h('input', { type: 'checkbox', value: p.id });
+      cb.checked = (src.projects || []).includes(p.id);
+      return h('label.sec-proj', cb, h('span', p.name), h('span.muted', tilde(p.folders[0] || '')));
+    });
+    const doSave = () => {
+      const t = title.value.trim();
+      if (!t) { toast('El título es obligatorio', 'err'); return; }
+      if (display.value !== 'title' && !icon) { toast('Elige un ícono o usa "Solo título"', 'err'); return; }
+      const data = { icon, title: t, desc: desc.value.trim(), display: display.value };
+      if (!isAll) data.projects = checks.map((l) => l.querySelector('input')).filter((cb) => cb.checked).map((cb) => cb.value);
+      if (isNew) { s = { id: uid(), ...data }; state.sections.push(s); state.ui.section = s.id; } else Object.assign(s, data);
+      save();
+      modalClose(true);
+      renderProjects();
+    };
+    title.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSave(); });
+    openModal({
+      title: isNew ? 'Nueva sección' : `Editar sección · ${s.title}`,
+      body: [
+        h('div.field', h('label', 'Ícono'), iconBtns, customIcon),
+        h('div.field', h('label', 'Título'), title),
+        h('div.field', h('label', 'Descripción'), desc),
+        h('div.field', h('label', 'Cómo se ve en la barra'), display),
+        isAll ? h('p.muted', { style: 'margin:0' }, '"Todas" muestra siempre todas las carpetas y no se puede eliminar.')
+          : h('div.field', h('label', 'Carpetas de esta sección (también puedes arrastrar una carpeta sobre la sección)'),
+            checks.length ? h('div.sec-projs', checks) : h('span.muted', 'Aún no hay carpetas.')),
+      ],
+      foot: [
+        !isNew && !isAll ? h('button.danger', { onclick: () => { modalClose(true); deleteSection(s); } }, 'Eliminar') : null,
+        h('span.grow'),
+        h('button', { onclick: () => modalClose(true) }, 'Cancelar'),
+        h('button.primary', { onclick: doSave }, isNew ? 'Crear' : 'Guardar'),
+      ],
+    });
+    requestAnimationFrame(() => title.focus());
+  }
+  function renderSections() {
+    const bar = $('#sections');
+    const cur = activeSection();
+    const chips = state.sections.map((s) => {
+      // avisos (claude terminó / espera tu respuesta) de las carpetas de la sección, como los "no leídos"
+      const notices = sectionProjects(s).map((p) => projectNotice(p.id)).filter(Boolean);
+      const waiting = notices.some((n) => n.kind === 'waiting');
+      const showIcon = s.display !== 'title' && s.icon;
+      const showTitle = s.display !== 'icon' || !s.icon;
+      const n = s.id === 'all' ? state.projects.length : s.projects.length;
+      return h('button.sec-chip', {
+        class: `sec-chip${s === cur ? ' active' : ''}`,
+        title: `${s.title}${s.desc ? `\n${s.desc}` : ''}\n${n} carpeta${n === 1 ? '' : 's'} · clic derecho o doble clic: editar`,
+        onclick: () => selectSection(s.id),
+        ondblclick: () => editSection(s),
+        oncontextmenu: (e) => sectionMenu(e, s),
+        // soltar una carpeta (arrastrada desde su asa ⠿) sobre la sección la agrega
+        ondragover: (e) => {
+          if (!dragging || dragging.type !== 'project' || s.id === 'all') return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'copy';
+          e.currentTarget.classList.add('drop');
+        },
+        ondragleave: (e) => e.currentTarget.classList.remove('drop'),
+        ondrop: (e) => {
+          e.currentTarget.classList.remove('drop');
+          if (!dragging || dragging.type !== 'project' || s.id === 'all') return;
+          e.preventDefault();
+          const p = project(dragging.key);
+          const added = p && addToSection(s, p.id);
+          endDrag();
+          if (added) { save(); toast(`"${p.name}" agregada a ${s.title}`, 'ok'); }
+          renderProjects();
+        },
+      },
+      showIcon ? h('span.sec-icon', s.icon) : null,
+      showTitle ? h('span.sec-title', s.title) : null,
+      notices.length ? h(`span.sec-badge.${waiting ? 'waiting' : 'done'}`, String(notices.length)) : null);
+    });
+    bar.replaceChildren(...chips, h('button.sec-chip.sec-add', { title: 'Nueva sección', onclick: () => editSection(null) }, '＋'));
   }
 
   // ---------- reordenar arrastrando (asa ⠿) ----------
@@ -1176,13 +1353,19 @@
   function renderProjects() {
     if (dragging) { dragging.pendingRender = true; return; } // no romper el arrastre en curso
     hideProjectTip();
+    ensureSections();
+    renderSections();
     const root = $('#projects');
     root.replaceChildren();
+    const sec = activeSection();
+    const shown = sectionProjects(sec);
     if (!state.projects.length) {
       root.append(h('div.empty-list', 'Sin proyectos. Pulsa ＋ para agregar una carpeta.'));
+    } else if (!shown.length) {
+      root.append(h('div.empty-list', `"${sec.title}" no tiene carpetas. Arrastra una carpeta (asa ⠿) sobre la sección, o edítala con doble clic para elegirlas.`));
     }
     const slots = splitSlots();
-    for (const p of state.projects) {
+    for (const p of shown) {
       const active = p.id === state.activeProject;
       const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
       const collapsed = !!p.collapsed;
@@ -1222,7 +1405,7 @@
             h('button.icon.mini', { title: 'Quitar carpeta', onclick: () => removeFolder(p, f) }, '✕')))),
         collapsed ? null : h('div.terms', items.map((it) => (it.t ? termItem(it.t, slots.get(it.t.sid), p.id) : viewItem(it.v))))));
     }
-    const orphans = orphanSessions();
+    const orphans = sec.id === 'all' ? orphanSessions() : [];
     if (orphans.length) {
       root.append(h('div.project',
         h('div.project-head', h('span.pname.muted', 'Sin proyecto')),
@@ -1543,8 +1726,8 @@
   function openModal({ title, body, foot = [], wide = false, onClose }) {
     if (modalClose) modalClose(true);
     $('#modal-title').textContent = title;
-    $('#modal-body').replaceChildren(...[].concat(body));
-    $('#modal-foot').replaceChildren(...foot);
+    $('#modal-body').replaceChildren(...[].concat(body).flat().filter(Boolean)); // como h(): sin null/false
+    $('#modal-foot').replaceChildren(...foot.filter(Boolean));
     $('.modal-card').classList.toggle('wide', wide);
     $('#modal').classList.remove('hidden');
     let closed = false;
@@ -6367,6 +6550,7 @@
     { key: 'actions', label: 'Acciones', count: (c) => (c.actions || []).length },
     { key: 'pages', label: 'Páginas', count: (c) => (c.pages || []).length },
     { key: 'timers', label: 'Temporizadores', count: (c) => (c.timers || []).length },
+    { key: 'sections', label: 'Secciones del panel izquierdo', count: (c) => (c.sections || []).filter((s) => s.id !== 'all').length },
     { key: 'music', label: 'Música', count: (c) => ((c.music || {}).tracks || []).filter((t) => t.type === 'youtube').length, sub: 'solo enlaces de YouTube' },
     { key: 'settings', label: 'Ajustes', sub: 'fuente, editor, lanzadores de claude/codex/opencode' },
   ];
