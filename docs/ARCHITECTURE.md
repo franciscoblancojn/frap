@@ -36,7 +36,7 @@ navegador (file://src/index.html)                     máquina local
 
 ## Módulos (Ajustes → Módulos)
 
-- Modal con tres columnas (panel izquierdo, central y derecho) y un switch por módulo: secciones de carpetas; lanzadores (shell, claude, codex, opencode, git, ssh, sftp, db, notas, código) y pantalla dividida; pestañas del panel derecho y el dock de voz. Lista en `MODULES` (index.js).
+- Modal con cuatro columnas (panel izquierdo, central, derecho y **módulos internos**, como la gestión de issues) y un switch por módulo: secciones de carpetas; lanzadores (shell, claude, codex, opencode, git, ssh, sftp, db, notas, código) y pantalla dividida; pestañas del panel derecho y el dock de voz. Lista en `MODULES` (index.js).
 - `state.modules.off` guarda solo lo apagado, así lo nuevo sale activado. `applyModules()` oculta botones, pestañas y barras (al arrancar, al cambiar algo y al llegar un estado remoto). Se exporta e importa como parte de la configuración ("Módulos").
 - Apagar un módulo oculta su botón o pestaña y su atajo; lo ya abierto sigue hasta cerrarlo. Además:
   - Secciones apagadas: se ve "Todas".
@@ -45,6 +45,21 @@ navegador (file://src/index.html)                     máquina local
   - Música apagada: se oculta su barra.
   - Temporizador apagado: no avisa.
   - Si se apaga la pestaña derecha activa, pasa a la primera visible. Sin ninguna, el panel muestra un aviso.
+
+## Gestión de issues (módulo interno)
+
+- Replica dentro de FRAP el harness de tareas `_linear`. Cada issue vive en `local/issues/<ID>/` de la carpeta de FRAP, con `issue.md` (copia fiel del tracker), `changelog.md`, `status.md` y `final.md` al cerrar.
+- `local/` está en el `.gitignore` de FRAP y además tiene su propio `.gitignore` con `*`. Ahí pueden ir más cosas locales en el futuro.
+- Toda la lógica está en `bridge/issues.js`: plantillas, lista, importación, zip y skill, solo con la librería estándar. `bridge/frap-issues.js` es el CLI para agentes (`new`, `list`, `path`, `dir`). `FRAP_LOCAL` cambia la carpeta (lo usan los tests).
+- **Skill `frap-issues`:** con el módulo activo, FRAP la instala o actualiza al conectar en `~/.claude/skills` y `~/.codex/skills`. Al apagar el módulo la quita, solo si es la suya.
+  - La skill explica el flujo: tomar, trabajar, cerrar y fin de jornada.
+  - Mientras se trabaja no se escribe en el tracker. Lo pendiente se anota en «📤 Por enviar a Linear» de `status.md` y se envía al cerrar o al final de la jornada, siempre mostrándolo antes al usuario.
+- **Pestaña Issues (panel derecho):** lista Activas, Cerradas o Todas con buscador. Una issue cuenta como cerrada si tiene `final.md` o su «Estado general» dice terminada o cancelada. El badge 📤 muestra los pendientes por enviar.
+  - Abre sus archivos en el editor de FRAP.
+  - "Nueva" crea la carpeta y puede pedirle a la IA que la traiga.
+  - "Retomar", "Cerrar" y "Fin de jornada" escriben el pedido en la terminal de IA del proyecto, sin Enter. Si no hay terminal de IA, lo copian al portapapeles.
+  - ⇩ importa carpetas de un harness existente.
+- **Zip:** en Exportar / importar, "Carpeta local (.zip)" descarga o restaura todo `local/` (`local.export` / `local.import`). El zip se escribe y se lee a mano (deflate de zlib y CRC32 propio). Al importar se descartan las rutas con `..`.
 
 ## Secciones del panel izquierdo
 
@@ -224,6 +239,13 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `voice.transcribe` | `{audio, lang?}` | `{text, ms}`; `audio` = WAV en base64 (máx. ~10 min), `lang` = `es`, `en`… o `auto` |
 | `notes.skill` | — | `{claude, codex}`: si la skill `frap-notes` está instalada |
 | `notes.installSkill` | `{tools}` | escribe la skill `frap-notes` (guardar/leer `NOTES.md`) en `~/.claude/skills` y `~/.codex/skills` |
+| `issues.list` | — | `{dir, local, issues: [{id, title, estado, url, updated, closed, pending, files}]}` de `local/issues/` |
+| `issues.create` | `{id, title?}` | crea `local/issues/<ID>/` desde las plantillas; si existe no toca nada. `{id, dir, created}` |
+| `issues.importDir` | `{path}` | copia carpetas `<ID>/` de otra carpeta (o de su `issues/`) sin pisar las existentes. `{from, copied, skipped}` |
+| `issues.skill` | — | `{claude, codex}`: `{installed, current, file}` de la skill `frap-issues` |
+| `issues.setSkill` | `{on}` | instala/actualiza (`on`) o quita la skill `frap-issues` en `~/.claude/skills` y `~/.codex/skills`. `{on, changed}` |
+| `local.export` | — | carpeta `local/` como .zip en base64 (entradas `local/…`, máx. 200 MB). `{data, files, bytes}` |
+| `local.import` | `{data, overwrite?}` | restaura un .zip en `local/` (rutas saneadas; sin `overwrite` no pisa). `{written, skipped, rejected}` |
 | `export.creds` | `{db: ids, ssh: ids, passphrase?}` | `{db, ssh, secrets?}` sin contraseñas; con `passphrase` (≥6) van en `secrets` cifradas (scrypt + AES-256-GCM) |
 | `import.creds` | `{db, ssh, secrets?, passphrase?}` | `{db, ssh, errors}`; mismo id se reemplaza; clave incorrecta → error; sin clave conserva la contraseña existente |
 | `db.installSkill` | `{tools}` | escribe `~/.claude/skills/frap-db/SKILL.md` y `~/.codex/skills/frap-db/SKILL.md` |

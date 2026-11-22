@@ -5,3 +5,5 @@ __pycache__/
 .env
 *.env
 /NOTES.md
+# carpeta local de FRAP (issues y demás datos locales): nunca se sube
+/local/

@@ -20,6 +20,7 @@ const ws = require('./ws');
 const db = require('./db');
 const ssh = require('./ssh');
 const sftp = require('./sftp');
+const issues = require('./issues');
 
 const VERSION = '1.3.0';
 const STARTED_AT = Date.now();
@@ -1197,6 +1198,21 @@ const ops = {
       });
     });
   },
+  // ----- módulo interno "Gestión de issues": local/issues/<ID>/ de FRAP (fuera de git) -----
+  /** {dir, local, issues: [{id, title, estado, url, updated, closed, pending, files}]} */
+  'issues.list': () => issues.listIssues(),
+  /** Crea local/issues/<ID>/ desde las plantillas (si existe no toca nada). {id, dir, created} */
+  'issues.create': ({ id, title }) => issues.createIssue(id, title),
+  /** Copia carpetas de issues (<ID>/) de otra carpeta sin pisar las existentes. {from, copied, skipped} */
+  'issues.importDir': ({ path: p }) => issues.importIssuesDir(safePath(p)),
+  /** Skill frap-issues: {claude: {installed, current, file}, codex: {…}} */
+  'issues.skill': () => issues.skillStatus(),
+  /** on=true la instala/actualiza en claude y codex; on=false la quita. {on, changed: [archivos]} */
+  'issues.setSkill': ({ on }) => issues.setSkill(!!on),
+  /** Carpeta local/ completa como .zip en base64. {data, files, bytes} */
+  'local.export': () => issues.exportLocal(),
+  /** Restaura un .zip (base64) en local/; overwrite=false no pisa lo existente. {written, skipped, rejected} */
+  'local.import': ({ data, overwrite = false }) => issues.importLocal(data, !!overwrite),
   /** ¿Está instalada la skill frap-notes? {claude, codex} */
   'notes.skill': () => Object.fromEntries(Object.entries(NOTES_SKILL_DIRS).map(([k, dir]) => [k, exists(path.join(dir(), 'SKILL.md'))])),
   'notes.installSkill': ({ tools = ['claude', 'codex'] } = {}) => {

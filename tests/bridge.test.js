@@ -10,6 +10,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const ws = require('../bridge/ws');
+const issuesMod = require('../bridge/issues');
 
 const TOKEN = 'test-token-123';
 let bridge;
@@ -108,7 +109,7 @@ test.before(async () => {
       ...process.env,
       FRAP_PORT: '0', FRAP_TOKEN: TOKEN, HOME: root, CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', FRAP_HOME: path.join(root, 'cfg'),
       FRAP_TEST_SFTP_SERVER: SFTP_SERVER || '', FRAP_TEST_SFTP_LOG: path.join(root, 'sftp.log'),
-      FRAP_FS_ROOT: root, FRAP_QUIET: '1', SHELL: '/bin/sh', PATH: `${path.join(root, 'fakebin')}${path.delimiter}${process.env.PATH}`,
+      FRAP_FS_ROOT: root, FRAP_LOCAL: path.join(root, 'local'), FRAP_QUIET: '1', SHELL: '/bin/sh', PATH: `${path.join(root, 'fakebin')}${path.delimiter}${process.env.PATH}`,
       GIT_AUTHOR_NAME: 'FRAP Test', GIT_AUTHOR_EMAIL: 'test@frap.local', GIT_COMMITTER_NAME: 'FRAP Test', GIT_COMMITTER_EMAIL: 'test@frap.local',
     },
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
@@ -454,7 +455,7 @@ test('persistencia: las terminales sobreviven a reiniciar el bridge (historial, 
   const home = path.join(root, 'persist-cfg');
   const start = () => new Promise((resolve, reject) => {
     const b = fork(path.join(__dirname, '..', 'bridge', 'frap-bridge.js'), [], {
-      env: { ...process.env, FRAP_PORT: '0', FRAP_TOKEN: TOKEN, FRAP_HOME: home, FRAP_FS_ROOT: root, FRAP_QUIET: '1', SHELL: '/bin/sh', HOME: root },
+      env: { ...process.env, FRAP_PORT: '0', FRAP_TOKEN: TOKEN, FRAP_HOME: home, FRAP_FS_ROOT: root, FRAP_LOCAL: path.join(root, 'local'), FRAP_QUIET: '1', SHELL: '/bin/sh', HOME: root },
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     });
     b.on('message', async (m) => {
@@ -755,4 +756,88 @@ test('export.creds / import.creds: sin clave no salen contraseñas; con clave va
   assert.match(bad.errors[0], /Host inválido/);
   await client.call('db.delete', { id: 'exp_bd' });
   await client.call('ssh.delete', { id: 'exp_ssh' });
+});
+
+test('issues.* y local.*: carpeta local/issues, skill frap-issues, importar carpeta y zip de local/', async () => {
+  const local = path.join(root, 'local');
+  // crear: plantillas, id en mayúsculas, idempotente, id inválido
+  const c = await client.call('issues.create', { id: 'ave-303', title: 'Visor | seguro\nde logs' });
+  assert.equal(c.id, 'AVE-303');
+  assert.equal(c.created, true);
+  assert.equal(c.dir, path.join(local, 'issues', 'AVE-303'));
+  assert.match(fs.readFileSync(path.join(c.dir, 'issue.md'), 'utf8'), /^# AVE-303 — Visor \| seguro de logs$/m);
+  assert.ok(fs.existsSync(path.join(c.dir, 'changelog.md')) && fs.existsSync(path.join(c.dir, 'status.md')) && !fs.existsSync(path.join(c.dir, 'final.md')));
+  assert.equal((await client.call('issues.create', { id: 'AVE-303' })).created, false);
+  await assert.rejects(client.call('issues.create', { id: '../x-1' }), /inválido/);
+  await assert.rejects(client.call('issues.create', { id: 'AVE-1/../../x' }), /inválido/);
+  assert.match(fs.readFileSync(path.join(local, '.gitignore'), 'utf8'), /^\*$/m);
+  // listar: estado, pendientes por enviar y cerrada
+  fs.appendFileSync(path.join(c.dir, 'status.md'), '- Comentario de avance\n- [x] ya enviado\n- Pasar a In Review\n');
+  await client.call('issues.create', { id: 'AVE-1', title: 'Otra' });
+  fs.writeFileSync(path.join(local, 'issues', 'AVE-1', 'final.md'), '# Cierre');
+  const l = await client.call('issues.list');
+  const a = l.issues.find((i) => i.id === 'AVE-303');
+  assert.equal(a.title, 'Visor | seguro de logs');
+  assert.equal(a.estado, 'En curso');
+  assert.equal(a.pending, 2);
+  assert.equal(a.closed, false);
+  assert.equal(l.issues.find((i) => i.id === 'AVE-1').closed, true);
+  // CLI para agentes
+  const { execFileSync } = require('child_process');
+  const cli = (...args) => execFileSync(process.execPath, [path.join(__dirname, '..', 'bridge', 'frap-issues.js'), ...args], { env: { ...process.env, FRAP_LOCAL: local }, encoding: 'utf8' });
+  assert.match(cli('new', 'ENG-7', 'Desde', 'la', 'CLI'), /Creada/);
+  assert.match(cli('new', 'ENG-7'), /ya existe/);
+  const lst = cli('list');
+  assert.match(lst, /AVE-303\tactiva\tEn curso\t📤 2 por enviar\tVisor/);
+  assert.doesNotMatch(lst, /AVE-1\t/);
+  assert.match(cli('list', '--all'), /AVE-1\tcerrada/);
+  // importar carpeta (acepta la que contiene "issues"), sin pisar existentes
+  const old = path.join(root, 'harness');
+  fs.mkdirSync(path.join(old, 'issues', 'AVE-9'), { recursive: true });
+  fs.writeFileSync(path.join(old, 'issues', 'AVE-9', 'status.md'), '- **Estado general:** ✅ Terminada\n');
+  fs.mkdirSync(path.join(old, 'issues', 'AVE-303'), { recursive: true });
+  fs.mkdirSync(path.join(old, 'issues', '_plantillas'), { recursive: true });
+  const imp = await client.call('issues.importDir', { path: old });
+  assert.deepEqual(imp.copied, ['AVE-9']);
+  assert.deepEqual(imp.skipped, ['AVE-303']);
+  assert.match(fs.readFileSync(path.join(c.dir, 'issue.md'), 'utf8'), /Visor/); // no se pisó
+  await assert.rejects(client.call('issues.importDir', { path: '/etc' }), /fuera/);
+  // skill: se instala en claude y codex, se actualiza solo si cambió y se quita
+  const on = await client.call('issues.setSkill', { on: true });
+  assert.equal(on.changed.length, 2);
+  const sk = await client.call('issues.skill');
+  assert.ok(sk.claude.installed && sk.claude.current && sk.codex.current);
+  const txt = fs.readFileSync(sk.claude.file, 'utf8');
+  assert.match(txt, /^name: frap-issues$/m);
+  assert.ok(txt.includes(path.join(local, 'issues')));
+  assert.equal((await client.call('issues.setSkill', { on: true })).changed.length, 0);
+  assert.equal((await client.call('issues.setSkill', { on: false })).changed.length, 2);
+  assert.ok(!fs.existsSync(sk.claude.file) && !fs.existsSync(path.dirname(sk.claude.file)));
+  // zip: exportar, restaurar sin pisar / pisando, rechazar rutas que salen de local/
+  fs.writeFileSync(path.join(local, 'otra.txt'), Buffer.from([0, 1, 2, 255]));
+  const ex = await client.call('local.export');
+  assert.ok(ex.files >= 7 && ex.bytes > 0);
+  const zbuf = Buffer.from(ex.data, 'base64');
+  assert.equal(zbuf.readUInt32LE(0), 0x04034b50);
+  const ents = issuesMod.unzip(zbuf);
+  assert.ok(ents.some((e) => e.name === 'local/issues/AVE-303/issue.md'));
+  assert.deepEqual([...ents.find((e) => e.name === 'local/otra.txt').data], [0, 1, 2, 255]);
+  if (process.platform !== 'win32') {
+    try { assert.match(require('child_process').execFileSync('unzip', ['-l', '-'], { input: zbuf }).toString(), /AVE-303/); } catch (e) { if (e.code !== 'ENOENT' && !/unzip/.test(String(e.message))) throw e; }
+  }
+  fs.writeFileSync(path.join(c.dir, 'status.md'), 'cambiado');
+  fs.rmSync(path.join(local, 'issues', 'ENG-7'), { recursive: true });
+  const r1 = await client.call('local.import', { data: ex.data });
+  assert.ok(r1.written >= 3 && r1.skipped >= 3);
+  assert.equal(fs.readFileSync(path.join(c.dir, 'status.md'), 'utf8'), 'cambiado');
+  assert.ok(fs.existsSync(path.join(local, 'issues', 'ENG-7', 'issue.md')));
+  await client.call('local.import', { data: ex.data, overwrite: true });
+  assert.match(fs.readFileSync(path.join(c.dir, 'status.md'), 'utf8'), /Por enviar a Linear/);
+  const evil = issuesMod.zip([{ name: '../escape.txt', data: Buffer.from('x') }, { name: '/abs.txt', data: Buffer.from('x') }, { name: 'local/ok.txt', data: Buffer.from('ok') }]);
+  const r2 = await client.call('local.import', { data: evil.toString('base64') });
+  assert.equal(r2.written, 2); // /abs.txt queda como local/abs.txt (sin "/" inicial)
+  assert.deepEqual(r2.rejected, ['../escape.txt']);
+  assert.ok(!fs.existsSync(path.join(root, 'escape.txt')));
+  assert.equal(fs.readFileSync(path.join(local, 'ok.txt'), 'utf8'), 'ok');
+  await assert.rejects(client.call('local.import', { data: Buffer.from('no es zip').toString('base64') }), /zip/);
 });

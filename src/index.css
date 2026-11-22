@@ -1057,7 +1057,7 @@ li.CodeMirror-hint-active { background: var(--accent); color: var(--bg); }
 .md-body del { color: var(--fg-3); }
 
 /* ---------- módulos (Ajustes → Módulos) ---------- */
-.mod-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.mod-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; align-items: start; }
 @media (max-width: 900px) { .mod-cols { grid-template-columns: 1fr; } }
 .mod-col { border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2); padding: 8px; display: flex; flex-direction: column; gap: 2px; }
 .mod-head { display: flex; align-items: center; gap: 6px; padding: 0 2px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
@@ -1071,3 +1071,23 @@ li.CodeMirror-hint-active { background: var(--accent); color: var(--bg); }
 .mod-name { font-size: 12.5px; }
 .mod-desc { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mod-row .switch { flex: none; }
+.mod-note { margin: 0 2px 4px; font-size: 11px; }
+
+/* ---------- issues (módulo interno, pestaña del panel derecho) ---------- */
+.iss-bar { display: flex; align-items: center; gap: 4px; margin: 0 0 6px; flex-wrap: wrap; }
+.iss-hint { font-size: 11px; margin: 4px 0 8px; }
+.iss-list { display: flex; flex-direction: column; gap: 6px; }
+.iss-card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2); padding: 7px 9px; }
+.iss-card.open { border-color: var(--accent); }
+.iss-card.closed { opacity: .7; }
+.iss-head { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.iss-id { font: 600 12px var(--mono); color: var(--accent); }
+.iss-card.closed .iss-id { color: var(--fg-2); }
+.iss-pend { font-size: 10.5px; padding: 0 5px; border-radius: 8px; background: color-mix(in srgb, var(--warn) 20%, var(--bg)); color: var(--warn); }
+.iss-date { font-size: 11px; }
+.iss-title { margin-top: 2px; font-size: 12.5px; line-height: 1.35; }
+.iss-estado { margin-top: 3px; font-size: 11px; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.iss-card.open .iss-estado { display: block; }
+.iss-acts { margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 5px; }
+.iss-files { display: flex; flex-wrap: wrap; gap: 4px; }
+.mod-head h4, .mod-head button { white-space: nowrap; }

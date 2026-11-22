@@ -420,7 +420,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'issues.list', 'issues.create', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -1939,6 +1939,7 @@
     commands: () => renderConfigList('commands'),
     hooks: renderHooks,
     memory: renderMemory,
+    issues: renderIssues,
   };
   function setRtab(name) {
     state.ui.rtab = name;
@@ -1946,6 +1947,7 @@
     for (const b of $$('#rtabs button')) b.classList.toggle('active', b.dataset.rtab === name);
     renderRight();
     if (name === 'procs') pollProcs();
+    else if (name === 'issues') loadIssues();
     else if (name !== 'prompts' && name !== 'actions' && name !== 'pages' && name !== 'dbs' && name !== 'ssh' && name !== 'music' && name !== 'timers') loadConfig();
     if (name === 'dbs') loadDbs();
     if (name === 'ssh') loadSsh();
@@ -6852,6 +6854,173 @@
     });
   }
 
+  // ---------- módulo interno: gestión de issues (pestaña "Issues" del panel derecho) ----------
+  // Las issues viven en local/issues/<ID>/ de FRAP (fuera de git). La skill frap-issues le explica a claude/codex
+  // cómo bajarlas, llevar changelog/status y enviar al tracker solo al cerrar o al final de la jornada.
+  let issuesInfo = null; // respuesta de issues.list
+  let issuesError = null;
+  let issuesOpen = null; // id de la issue desplegada
+  let issuesSkillSynced = null; // último estado aplicado de la skill (true/false)
+  async function loadIssues() {
+    if (!Bridge.ready || !modOn('internal.issues')) return;
+    try { issuesInfo = await Bridge.call('issues.list'); issuesError = null; } catch (e) { issuesError = e.message; }
+    if (state.ui.rtab === 'issues') renderRight();
+  }
+  /** Instala/actualiza la skill frap-issues si el módulo está activo, o la quita si está apagado. */
+  async function syncIssuesSkill(force) {
+    if (!Bridge.ready) return;
+    const on = modOn('internal.issues');
+    if (!force && issuesSkillSynced === on) return;
+    try {
+      const r = await Bridge.call('issues.setSkill', { on });
+      issuesSkillSynced = on;
+      if (r.changed.length) toast(on ? 'Skill frap-issues lista en claude y codex: dile a la IA "toma la issue AVE-…"' : 'Skill frap-issues quitada de claude y codex', 'ok');
+    } catch (e) { toast(`Skill frap-issues: ${e.message}`, 'err'); }
+  }
+  const ISSUE_PROMPTS = {
+    take: (id) => `Toma la issue ${id} (skill frap-issues): tráela de Linear a local y arma el plan en su status.md.`,
+    resume: (id) => `Retoma la issue ${id} (skill frap-issues): lee su status.md y changelog.md y sigue con lo pendiente.`,
+    close: (id) => `Cierra la issue ${id} (skill frap-issues): redacta el comentario final para Linear con lo pendiente de enviar y muéstramelo antes de enviarlo.`,
+    day: () => 'Fin de jornada (skill frap-issues): revisa las issues activas en local, arma los comentarios y cambios de estado pendientes para Linear y muéstramelos antes de enviar nada.',
+  };
+  /** Escribe el pedido en la terminal de IA del proyecto (sin Enter, para revisarlo). Sin IA abierta: lo copia. */
+  function issueAsk(text) {
+    const t = codeAiTarget();
+    if (!t) { copyText(text); toast('No hay claude/codex/opencode abierto en este proyecto: copié el pedido para que lo pegues', 'ok'); return; }
+    activate(t.sid);
+    Bridge.send('session.input', { sid: t.sid, data: text });
+    toast(`Escrito en ${termTitle(t)} (revisa y pulsa Enter)`, 'ok');
+  }
+  function newIssue() {
+    const id = h('input.mono', { placeholder: 'AVE-303', style: 'text-transform:uppercase' });
+    const title = h('input', { placeholder: 'Título (opcional: la IA lo completa desde Linear)' });
+    const ask = h('input', { type: 'checkbox' });
+    ask.checked = true;
+    const doCreate = async () => {
+      const v = id.value.trim().toUpperCase();
+      if (!/^[A-Z][A-Z0-9]*-\d+$/.test(v)) { toast('Identificador inválido (algo como AVE-303)', 'err'); id.focus(); return; }
+      try {
+        const r = await Bridge.call('issues.create', { id: v, title: title.value.trim() });
+        modalClose(true);
+        issuesOpen = r.id;
+        toast(r.created ? `Issue ${r.id} creada en ${tilde(r.dir)}` : `${r.id} ya existía: se retoma`, 'ok');
+        await loadIssues();
+        if (ask.checked) issueAsk(r.created ? ISSUE_PROMPTS.take(r.id) : ISSUE_PROMPTS.resume(r.id));
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    [id, title].forEach((el) => el.addEventListener('keydown', (e) => { if (e.key === 'Enter') doCreate(); }));
+    openModal({
+      title: 'Nueva issue',
+      body: [
+        h('div.field', h('label', 'Identificador'), id),
+        h('div.field', h('label', 'Título'), title),
+        h('label.muted', ask, ' Pedirle a la IA del proyecto que la traiga de Linear y arme el plan'),
+        h('p.muted', { style: 'margin:4px 0 0;font-size:11px' }, `Se crea en ${issuesInfo ? tilde(issuesInfo.dir) : 'local/issues'}/<ID> con issue.md, changelog.md y status.md.`),
+      ],
+      foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doCreate }, 'Crear')],
+    });
+    requestAnimationFrame(() => id.focus());
+  }
+  async function importIssuesFolder() {
+    const dir = await pickFolder();
+    if (!dir) return;
+    try {
+      const r = await Bridge.call('issues.importDir', { path: dir });
+      toast(`Importadas ${r.copied.length} issue(s) de ${tilde(r.from)}${r.skipped.length ? ` · ${r.skipped.length} ya existían (no se tocaron)` : ''}`, 'ok');
+      loadIssues();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  function issueFile(i, f) { return `${i.dir}/${f}`; }
+  function renderIssues() {
+    if (!Bridge.ready) return [section('Issues'), h('div.empty-list', 'Bridge desconectado.')];
+    if (issuesError) return [section('Issues'), h('div.empty-list', issuesError)];
+    if (!issuesInfo) { loadIssues(); return [section('Issues'), h('div.empty-list', 'Cargando…')]; }
+    const f = state.ui.issuesFilter || 'open';
+    const q = (state.ui.issuesQuery || '').toLowerCase();
+    const all = issuesInfo.issues;
+    const counts = { open: all.filter((i) => !i.closed).length, closed: all.filter((i) => i.closed).length, all: all.length };
+    const list = all.filter((i) => (f === 'all' || (f === 'open' ? !i.closed : i.closed)) && (!q || `${i.id} ${i.title} ${i.estado}`.toLowerCase().includes(q)));
+    const pending = all.filter((i) => !i.closed && i.pending).reduce((n, i) => n + i.pending, 0);
+    const search = h('input.filter', { placeholder: 'Buscar por ID, título o estado…', value: state.ui.issuesQuery || '' });
+    search.addEventListener('input', debounce(() => { state.ui.issuesQuery = search.value; save(); renderRight(); requestAnimationFrame(() => { const s = $('#rbody .filter'); if (s) { s.focus(); s.setSelectionRange(s.value.length, s.value.length); } }); }, 200));
+    const seg = (k, label) => h(`button.mini${f === k ? '.primary' : ''}`, { onclick: () => { state.ui.issuesFilter = k; save(); renderRight(); } }, `${label} ${counts[k]}`);
+    return [
+      section('Issues locales',
+        h('button.icon', { title: 'Recargar', onclick: () => loadIssues() }, '⟳'),
+        h('button.icon', { title: 'Importar issues de otra carpeta (p. ej. un harness viejo con carpetas AVE-123/)', onclick: importIssuesFolder }, '⇩'),
+        h('button.primary.mini', { onclick: newIssue }, '+ Nueva')),
+      h('div.iss-bar', seg('open', 'Activas'), seg('closed', 'Cerradas'), seg('all', 'Todas'), h('span.grow'),
+        h('button.mini', { title: ISSUE_PROMPTS.day(), onclick: () => issueAsk(ISSUE_PROMPTS.day()) }, `📤 Fin de jornada${pending ? ` (${pending})` : ''}`)),
+      search,
+      h('p.muted.iss-hint', `En ${tilde(issuesInfo.dir)} (fuera de git). La IA las gestiona con la skill frap-issues: dile "toma la issue AVE-…".`),
+      list.length ? h('div.iss-list', list.map((i) => {
+        const open = issuesOpen === i.id;
+        return h(`div.iss-card${open ? '.open' : ''}${i.closed ? '.closed' : ''}`,
+          h('div.iss-head', { onclick: () => { issuesOpen = open ? null : i.id; renderRight(); } },
+            h('span.iss-id', i.id),
+            i.pending && !i.closed ? h('span.iss-pend', { title: `${i.pending} comentario(s)/cambio(s) por enviar a Linear` }, `📤 ${i.pending}`) : null,
+            h('span.grow'),
+            h('span.muted.iss-date', i.updated ? new Date(i.updated).toLocaleDateString([], { day: '2-digit', month: 'short' }) : '')),
+          h('div.iss-title', i.title || h('span.muted', '(sin título)')),
+          i.estado ? h('div.iss-estado.muted', i.estado) : null,
+          open ? h('div.iss-acts',
+            h('div.iss-files', ['status.md', 'issue.md', 'changelog.md', 'final.md'].filter((x) => i.files.includes(x)).map((x) => h('button.mini', { title: tilde(issueFile(i, x)), onclick: () => openInFrap(issueFile(i, x)) }, x))),
+            h('div.iss-files',
+              i.closed ? null : h('button.mini', { onclick: () => issueAsk(ISSUE_PROMPTS.resume(i.id)) }, '🤖 Retomar con la IA'),
+              i.closed ? null : h('button.mini', { onclick: () => issueAsk(ISSUE_PROMPTS.close(i.id)) }, '✅ Cerrar'),
+              i.url ? h('button.mini', { title: i.url, onclick: () => openPageTab({ url: i.url }) }, '↗ Linear') : null,
+              h('button.mini', { title: 'Copiar la carpeta de la issue', onclick: () => { copyText(i.dir); toast(`Copiado: ${tilde(i.dir)}`, 'ok'); } }, '⧉ Ruta'))) : null);
+      })) : h('div.empty-list', all.length ? 'Nada con ese filtro.' : 'Sin issues todavía. Crea una con "+ Nueva" o dile a la IA "toma la issue AVE-…".'),
+    ];
+  }
+
+  // ----- carpeta local/ como .zip (exportar / importar) -----
+  function b64FromBytes(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+  async function exportLocalZip() {
+    try {
+      const r = await Bridge.call('local.export');
+      const bin = atob(r.data);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const a = h('a', { href: URL.createObjectURL(new Blob([bytes], { type: 'application/zip' })), download: `frap-local-${new Date().toISOString().slice(0, 10)}.zip` });
+      document.body.append(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      toast(`Exportada la carpeta local: ${r.files} archivo(s), ${(r.bytes / 1024).toFixed(0)} KB`, 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  function importLocalZip() {
+    const input = h('input', { type: 'file', accept: '.zip,application/zip' });
+    input.addEventListener('change', async () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const data = b64FromBytes(new Uint8Array(await file.arrayBuffer()));
+      const over = h('input', { type: 'checkbox' });
+      const doImport = async () => {
+        try {
+          const r = await Bridge.call('local.import', { data, overwrite: over.checked });
+          modalClose(true);
+          toast(`Carpeta local restaurada de ${file.name}: ${r.written} escrito(s)${r.skipped ? `, ${r.skipped} ya existían (sin tocar)` : ''}${r.rejected.length ? `, ${r.rejected.length} rechazado(s)` : ''}`, r.rejected.length ? 'err' : 'ok');
+          issuesInfo = null;
+          loadIssues();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+      openModal({
+        title: `Importar carpeta local · ${file.name}`,
+        body: [
+          h('p', 'Los archivos del zip se copian a la carpeta local de FRAP (issues y demás).'),
+          h('label.muted', over, ' Reemplazar los archivos que ya existen (si no, se dejan como están)'),
+        ],
+        foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doImport }, 'Importar')],
+      });
+    });
+    input.click();
+  }
+
   // ======================================================================
   // Módulos: qué partes de la UI se muestran (Ajustes → Módulos)
   // ======================================================================
@@ -6890,13 +7059,18 @@
       { key: 'right.memory', rtab: 'memory', icon: '🧠', name: 'Memoria', desc: 'CLAUDE.md / AGENTS.md' },
       { key: 'right.voice', icon: '🎤', name: 'Voz (Hablar)', desc: 'Dictado a la IA, abajo del panel (Alt+Shift+V)' },
     ],
+    // funciones propias de FRAP que agregan comportamiento (no solo un botón)
+    internal: [
+      { key: 'internal.issues', icon: '🎫', name: 'Gestión de issues', desc: 'Issues en local/issues (fuera de git), pestaña Issues y skill frap-issues para las IA' },
+    ],
   };
-  const MODULE_LIST = [...MODULES.left, ...MODULES.center, ...MODULES.right];
-  const MODULE_PANELS = [['left', 'Panel izquierdo'], ['center', 'Panel central'], ['right', 'Panel derecho']];
+  const MODULE_LIST = [...MODULES.left, ...MODULES.center, ...MODULES.right, ...MODULES.internal];
+  const MODULE_PANELS = [['left', 'Panel izquierdo'], ['center', 'Panel central'], ['right', 'Panel derecho'], ['internal', 'Módulos internos']];
   const modOn = (key) => !((state.modules && state.modules.off) || []).includes(key);
   const launchOn = (kind) => modOn(`center.${kind}`);
-  const rtabOn = (tab) => modOn(`right.${tab}`);
-  const visibleRtabs = () => MODULES.right.filter((m) => m.rtab && modOn(m.key)).map((m) => m.rtab);
+  const RTAB_MODULE = { issues: 'internal.issues' }; // pestañas que pertenecen a un módulo interno
+  const rtabOn = (tab) => modOn(RTAB_MODULE[tab] || `right.${tab}`);
+  const visibleRtabs = () => $$('#rtabs button').map((b) => b.dataset.rtab).filter(rtabOn);
   /** Atajo Alt+Shift+… → módulo que lo da (si está apagado, el atajo no hace nada). */
   const SHORTCUT_MODULE = { KeyT: 'center.shell', KeyC: 'center.claude', KeyX: 'center.codex', KeyO: 'center.opencode', KeyD: 'center.db', KeyG: 'center.git', KeyF: 'center.sftp', KeyN: 'center.notes', KeyE: 'center.code', KeyV: 'right.voice', KeyM: 'right.music' };
 
@@ -6920,6 +7094,7 @@
     if (tabs.length && !tabs.includes(state.ui.rtab)) setRtab(tabs[0]); // la pestaña elegida se apagó
     else { renderRight(); updateDock(); }
     renderAll();
+    syncIssuesSkill();
   }
 
   /** Modal de Módulos: tres columnas (izquierdo, central, derecho) con un switch por módulo. */
@@ -6936,7 +7111,8 @@
         const on = list.filter((m) => modOn(m.key)).length;
         return h('div.mod-col',
           h('div.mod-head', h('h4', title), h('span.muted', `${on}/${list.length}`), h('span.grow'),
-            list.length > 1 ? h('button.mini', { onclick: () => { for (const m of list) setModule(m.key, on < list.length); refresh(); } }, on < list.length ? 'Activar todo' : 'Desactivar todo') : null),
+            list.length > 1 ? h('button.mini', { onclick: () => { for (const m of list) setModule(m.key, on < list.length); refresh(); } }, on < list.length ? 'Activar todo' : 'Apagar todo') : null),
+          panel === 'internal' ? h('p.muted.mod-note', 'Funciones de FRAP que también cambian lo que hacen las IA (instalan o quitan su skill).') : null,
           list.map((m) => h(`label.mod-row${modOn(m.key) ? '' : '.off'}`,
             h('span.mod-ico', m.img ? h('img', { src: `vendor/icons/${m.img}.svg`, alt: '' }) : m.icon),
             h('span.mod-txt', h('span.mod-name', m.name), h('span.mod-desc.muted', m.desc)),
@@ -7103,6 +7279,11 @@
         h('div.xp-choice',
           h('button.xp-big', { onclick: openExport }, h('b', '⇩ Exportar'), h('span.muted', 'Elige qué llevar y descarga un archivo .json')),
           h('button.xp-big', { onclick: pickImportFile }, h('b', '⇧ Importar'), h('span.muted', 'Abre un archivo exportado y elige qué traer'))),
+        h('h4', { style: 'margin:14px 0 0' }, 'Carpeta local (.zip)'),
+        h('p.muted', { style: 'margin:0' }, 'La carpeta local de FRAP (issues y demás datos locales, fuera de git) en un .zip aparte.'),
+        h('div.xp-choice',
+          h('button.xp-big', { onclick: exportLocalZip }, h('b', '🗜 Exportar .zip'), h('span.muted', 'Descarga toda la carpeta local')),
+          h('button.xp-big', { onclick: importLocalZip }, h('b', '📂 Importar .zip'), h('span.muted', 'Restaura un .zip exportado (sin pisar lo existente, salvo que lo elijas)'))),
       ],
       foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cerrar')],
     });
@@ -7356,6 +7537,8 @@
     loadDbs();
     loadSsh();
     pollProcs();
+    syncIssuesSkill(true);
+    loadIssues();
     renderRight();
   });
   Bridge.on('close', () => renderAll());
