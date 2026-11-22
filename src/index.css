@@ -129,6 +129,10 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .sec-chip:hover { background: var(--bg-hover); color: var(--fg); }
 .sec-chip.active { background: color-mix(in srgb, var(--accent) 18%, var(--bg)); border-color: var(--accent); color: var(--accent); font-weight: 600; }
 .sec-chip.drop { border-style: dashed; border-color: var(--accent); background: var(--bg-hover); }
+.sec-chip[draggable="true"] { cursor: grab; }
+.sec-chip.dragging { opacity: .4; }
+.sec-chip.drop-before { box-shadow: -3px 0 0 var(--accent); }
+.sec-chip.drop-after { box-shadow: 3px 0 0 var(--accent); }
 .sec-icon { font-size: 13px; }
 .sec-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sec-badge { min-width: 16px; padding: 0 4px; border-radius: 8px; font-size: 10px; line-height: 15px; font-weight: 700; text-align: center; color: var(--bg); }

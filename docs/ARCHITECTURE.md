@@ -40,7 +40,7 @@ navegador (file://src/index.html)                     máquina local
 - La primera es siempre "Todas" (`id: 'all'`). Muestra todas las carpetas (y las terminales "Sin proyecto"), no guarda `projects` y no se puede eliminar, pero sí editar su ícono, título y cómo se ve.
 - Una carpeta puede estar en varias secciones. Se asigna al editar la sección, al editar la carpeta (casillas "Secciones"), arrastrándola desde su asa ⠿ sobre el chip o creándola mientras la sección está elegida. El orden es el de `state.projects`.
 - `ensureSections()` (en cada `renderProjects`) deja "Todas" primero y quita ids repetidos y carpetas que ya no existen. Al eliminar una carpeta también sale de las secciones.
-- Cada chip muestra cuántas carpetas de la sección tienen avisos (amarillo: espera tu respuesta; verde: terminó). Clic derecho: editar, mover y eliminar. Se exportan como parte de la configuración ("Secciones del panel izquierdo").
+- Cada chip muestra cuántas carpetas de la sección tienen avisos (amarillo: espera tu respuesta; verde: terminó). Se reordenan arrastrando el chip ("Todas" queda primera). Clic derecho: editar, mover y eliminar. Se exportan como parte de la configuración ("Secciones del panel izquierdo").
 
 ## Vistas por proyecto (git, DB, Archivos, Notas, Código)
 

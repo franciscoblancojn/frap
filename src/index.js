@@ -1194,6 +1194,26 @@
     });
     requestAnimationFrame(() => title.focus());
   }
+  // reordenar secciones arrastrando el chip ("Todas" queda siempre primera)
+  let secDrag = null; // id de la sección que se arrastra
+  function clearSecMarks() { for (const el of $$('#sections .drop-before, #sections .drop-after')) el.classList.remove('drop-before', 'drop-after'); }
+  /** Dónde caería la sección arrastrada sobre este chip: {after} o null si no se puede. */
+  function secDropPos(e, s) {
+    if (!secDrag || s.id === secDrag) return null;
+    if (s.id === 'all') return { after: true }; // soltar sobre "Todas" = ponerla justo después
+    const r = e.currentTarget.getBoundingClientRect();
+    return { after: e.clientX > r.left + r.width / 2 };
+  }
+  function reorderSection(id, targetId, after) {
+    const moved = state.sections.find((x) => x.id === id);
+    const list = state.sections.filter((x) => x.id !== id);
+    const i = list.findIndex((x) => x.id === targetId);
+    if (!moved || i < 0) return;
+    list.splice(after ? i + 1 : i, 0, moved);
+    state.sections = list;
+    ensureSections();
+    save();
+  }
   function renderSections() {
     const bar = $('#sections');
     const cur = activeSection();
@@ -1206,20 +1226,52 @@
       const n = s.id === 'all' ? state.projects.length : s.projects.length;
       return h('button.sec-chip', {
         class: `sec-chip${s === cur ? ' active' : ''}`,
-        title: `${s.title}${s.desc ? `\n${s.desc}` : ''}\n${n} carpeta${n === 1 ? '' : 's'} · clic derecho o doble clic: editar`,
+        title: `${s.title}${s.desc ? `\n${s.desc}` : ''}\n${n} carpeta${n === 1 ? '' : 's'} · clic derecho o doble clic: editar${s.id === 'all' ? '' : ' · arrastra para ordenar'}`,
+        draggable: s.id === 'all' ? null : 'true',
+        dataset: { sec: s.id },
         onclick: () => selectSection(s.id),
+        ondragstart: (e) => {
+          if (s.id === 'all') { e.preventDefault(); return; }
+          secDrag = s.id;
+          e.currentTarget.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', s.title);
+        },
+        ondragend: (e) => {
+          e.currentTarget.classList.toggle('dragging', false);
+          secDrag = null;
+          clearSecMarks();
+        },
         ondblclick: () => editSection(s),
         oncontextmenu: (e) => sectionMenu(e, s),
         // soltar una carpeta (arrastrada desde su asa ⠿) sobre la sección la agrega
         ondragover: (e) => {
+          const pos = secDropPos(e, s);
+          if (pos) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            clearSecMarks();
+            e.currentTarget.classList.add(pos.after ? 'drop-after' : 'drop-before');
+            return;
+          }
           if (!dragging || dragging.type !== 'project' || s.id === 'all') return;
           e.preventDefault();
           e.dataTransfer.dropEffect = 'copy';
           e.currentTarget.classList.add('drop');
         },
-        ondragleave: (e) => e.currentTarget.classList.remove('drop'),
+        ondragleave: (e) => e.currentTarget.classList.remove('drop', 'drop-before', 'drop-after'),
         ondrop: (e) => {
           e.currentTarget.classList.remove('drop');
+          const pos = secDropPos(e, s);
+          if (pos) {
+            e.preventDefault();
+            const id = secDrag;
+            secDrag = null;
+            clearSecMarks();
+            reorderSection(id, s.id, pos.after);
+            renderProjects();
+            return;
+          }
           if (!dragging || dragging.type !== 'project' || s.id === 'all') return;
           e.preventDefault();
           const p = project(dragging.key);
