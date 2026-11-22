@@ -918,10 +918,12 @@ const ops = {
       .sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
     return { path: dir, parent: dir === FS_ROOT ? null : path.dirname(dir), entries: ents };
   },
-  'fs.read': ({ path: p }) => {
+  /** Lee un archivo (≤ 2 MB). encoding 'base64': binarios (la vista previa de HTML incrusta así sus imágenes). */
+  'fs.read': ({ path: p, encoding }) => {
     const f = safePath(p);
     const st = fs.statSync(f);
     if (st.size > 2 * 1024 * 1024) throw new Error('Archivo demasiado grande (>2MB)');
+    if (encoding === 'base64') return { path: f, content: fs.readFileSync(f).toString('base64'), encoding: 'base64', mtime: st.mtimeMs };
     return { path: f, content: fs.readFileSync(f, 'utf8'), mtime: st.mtimeMs };
   },
   'fs.write': ({ path: p, content }) => {

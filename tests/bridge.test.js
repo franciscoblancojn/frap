@@ -190,6 +190,12 @@ test('fs: escribir/leer dentro de la raíz, rechazar fuera', async () => {
   const f = path.join(root, 'proj', 'nota.md');
   await client.call('fs.write', { path: f, content: 'hola' });
   assert.equal((await client.call('fs.read', { path: f })).content, 'hola');
+  const bin = path.join(root, 'proj', 'bin.dat');
+  fs.writeFileSync(bin, Buffer.from([0, 255, 137, 80, 78, 71]));
+  const b64 = await client.call('fs.read', { path: bin, encoding: 'base64' });
+  assert.equal(b64.encoding, 'base64');
+  assert.deepEqual([...Buffer.from(b64.content, 'base64')], [0, 255, 137, 80, 78, 71]);
+  await assert.rejects(client.call('fs.read', { path: '/etc/hostname', encoding: 'base64' }), /fuera/);
   assert.equal(await client.call('fs.exists', { path: f }), true);
   const ls = await client.call('fs.list', { path: root });
   assert.ok(ls.entries.some((e) => e.name === 'proj' && e.dir));

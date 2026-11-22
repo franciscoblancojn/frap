@@ -64,13 +64,22 @@ navegador (file://src/index.html)                     máquina local
 ## Editor de código (vista "Código")
 
 - Vista por proyecto (Alt+Shift+E o el lanzador `</>`): árbol de las carpetas del proyecto a la izquierda y hasta 4 paneles con pestañas (1, 2 o 3 columnas, o 2×2). Usa CodeMirror 5.65.18 empaquetado en `src/vendor/codemirror/` (script clásico, funciona en `file://`; lista de modos y addons en su README). Tema `cm-s-frap` en `index.css`.
-- **Documentos:** un documento maestro por archivo (`CodeMirror.Doc`). Cada panel que lo muestra usa un `linkedDoc({sharedHist: true})`, así el mismo archivo en dos paneles comparte texto, historial y estado "sin guardar" (`isClean(gen)` sobre el maestro). Los archivos se leen y escriben con `fs.read` / `fs.write` (máx. 2 MB, dentro de `FRAP_FS_ROOT`). Binarios: solo aviso; imágenes: vista previa con `file://`.
+- **Documentos:** un documento maestro por archivo (`CodeMirror.Doc`). Cada panel que lo muestra usa un `linkedDoc({sharedHist: true})`, así el mismo archivo en dos paneles comparte texto, historial y estado "sin guardar" (`isClean(gen)` sobre el maestro). Los archivos se leen y escriben con `fs.read` / `fs.write` (máx. 2 MB, dentro de `FRAP_FS_ROOT`). Binarios: solo aviso; imágenes, video, audio y PDF: visor automático con `file://` (ver "Vista previa de archivos").
 - **Cambios en disco (IA):** mientras la vista está visible, cada 2,5 s y al volver el foco, `fs.stat` de los archivos abiertos. Si cambió el `mtime` y no hay cambios locales, recarga conservando cursor y scroll. Si hay cambios locales, aviso con "Usar la del disco" / "Guardar la mía" / "Decidir luego". Guardar también compara el `mtime` antes de escribir, para no pisar lo que escribió otro.
 - **Persistencia:** `views[].data` = `{groups: [{tabs, active}], focus, expanded, side, hidden, wrap, cursors}`. Tras recargar vuelven las pestañas y la posición del cursor; el contenido se relee del disco. Cerrar la vista con cambios sin guardar pide confirmación y suelta su panel. Recargar la página con cambios sin guardar muestra el aviso del navegador.
 - **Funciones:** Ctrl+S guardar (Ctrl+Alt+S todo), Ctrl+P abrir por nombre (difuso, admite `ruta:línea`; lista de `code.files`), Ctrl+Shift+F buscar en archivos (`code.search`), Ctrl+F / Ctrl+H buscar y reemplazar, Ctrl+G ir a línea, Ctrl+/ comentar, Ctrl+\\ dividir, Alt+Z ajuste de línea, Ctrl+Espacio autocompletar palabras, keymap de Sublime (Ctrl+D siguiente coincidencia, multicursor, mover/duplicar líneas), plegado, cierre de paréntesis y etiquetas. Arrastrar una pestaña a otro panel la mueve. Ctrl+W no se usa: el navegador cierra la pestaña sin dejar interceptarlo.
 - **Árbol:** carga perezosa con `fs.list`; clic derecho: nuevo archivo/carpeta (`fs.write` / `fs.mkdir`), renombrar (`fs.rename`, las pestañas abiertas siguen al archivo), mover a la papelera (`fs.trash`: papelera de freedesktop, recuperable), copiar ruta, abrir terminal ahí, abrir en el editor externo.
 - **Pasar contexto a la IA:** Ctrl+Alt+C copia `ruta:línea` o `ruta:inicio-fin` según la selección (Ctrl+Shift+Alt+C agrega el código en un bloque ```); Ctrl+Alt+I (o "Enviar a la IA") escribe `ruta:líneas ` sin Enter en la última terminal de claude/codex/opencode usada del proyecto, con la ruta relativa a su carpeta, y la enfoca.
 - **Rutas clicadas en la terminal:** con `settings.editor = 'frap'` (por defecto) se abren en esta vista, en la línea y columna, en el proyecto de la terminal; una carpeta se revela en el árbol. Con otro valor (`code`, `cursor`…) van a `open.editor` como antes. `settings.extEditor` es el editor de "Abrir en…". Los estados existentes se migran una vez (`seeded: 'frap-editor'`).
+
+## Vista previa de archivos (editor y Notas)
+
+- **Con botón** "👁 Vista previa" (arriba a la derecha de cada panel del editor y en la barra de Notas; también Ctrl+Shift+V): `.md`, `.csv`/`.tsv`, `.svg` y `.html`. Alterna con el editor, se recuerda por archivo (`state.code.preview`, `state.notes.preview`) y se repinta al escribir o cuando una IA cambia el archivo.
+- **Automática** (no se editan): imágenes, video, audio y PDF. Se cargan directo del disco como `file://` (el PDF con el visor de Chrome en un iframe).
+- **Markdown:** renderizador propio (`mdBlocks` / `mdInline`, subconjunto de GFM) que arma nodos con `h()`, nunca HTML: el HTML crudo del .md se ve como texto. Las imágenes relativas van como `file://`. Un enlace relativo se abre en el editor de FRAP (`#L12` = línea) y uno externo en otra pestaña. `javascript:` y similares no se enlazan.
+- **CSV:** parser con comillas, detecta el separador (`,` `;` tab `|`) y muestra hasta 3000 filas.
+- **SVG:** `<img>` con un blob URL, donde el SVG no ejecuta scripts.
+- **HTML:** iframe `srcdoc` con `sandbox="allow-scripts allow-forms allow-popups allow-modals"`, **sin `allow-same-origin`**. En Chrome todas las páginas `file://` comparten localStorage, donde está el token del bridge; con origen opaco la página no puede leerlo ni tocar a FRAP. Como ese origen tampoco puede cargar `file://`, `htmlInline` incrusta los recursos relativos: `<link stylesheet>` pasa a `<style>` (con sus `url()`), `<script src>` a inline, y las imágenes, íconos y posters a `data:`, leídos con `fs.read` (`encoding: 'base64'` para binarios).
 
 ## Voz (dictado a las IA)
 
@@ -162,7 +171,7 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `ps` | — | `{sid: [{pid, ppid, etime, cpu, rss, args, depth}]}` |
 | `proc.kill` | `{pid, signal?}` | solo descendientes de sesiones FRAP |
 | `fs.list` | `{path, dirsOnly?, hidden?, details?}` | `{path, parent, entries:[{name, dir}]}`; con `details` cada entrada trae además `link, size, mtime` |
-| `fs.read` | `{path}` | `{path, content, mtime}` (≤ 2 MB) |
+| `fs.read` | `{path, encoding?}` | `{path, content, mtime}` (≤ 2 MB). `encoding: 'base64'`: contenido binario en base64 (+ `encoding`) |
 | `fs.write` | `{path, content}` | escritura atómica, crea los directorios |
 | `fs.exists` | `{path}` | `bool` |
 | `fs.stat` | `{paths}` (máx. 500) | `[{path, exists, mtime?, size?, dir?}]` |

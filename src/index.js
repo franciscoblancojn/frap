@@ -3119,7 +3119,304 @@
   //   hidden, wrap, cursors: {ruta: [línea, col]}}
   let codePane = null; // panel de la vista Código enlazada
   const CODE_MAX_GROUPS = 4;
-  const CODE_IMG = /\.(png|jpe?g|gif|webp|svg|ico|bmp|avif)$/i;
+  // ---------- vista previa de archivos (editor de código y notas) ----------
+  // Con botón (alternan con el editor): Markdown, CSV/TSV, SVG y HTML. Automática (no se editan): imágenes, video, audio y PDF.
+  // Todo se arma con h() (nada de innerHTML). El HTML va en un iframe con sandbox sin allow-same-origin: no puede tocar FRAP.
+  const PREVIEW_RE = /\.(md|markdown|mdx|csv|tsv|svg|html?)$/i;
+  const canPreview = (file) => PREVIEW_RE.test(file || '');
+  const MEDIA = [
+    ['image', /\.(png|jpe?g|gif|webp|ico|bmp|avif)$/i],
+    ['video', /\.(mp4|webm|ogv|mov|m4v|mkv)$/i],
+    ['audio', /\.(mp3|wav|ogg|oga|m4a|flac|aac|opus)$/i],
+    ['pdf', /\.pdf$/i],
+  ];
+  const mediaKind = (file) => { const m = MEDIA.find(([, re]) => re.test(file || '')); return m ? m[0] : null; };
+  const fileUrl = (p) => `file://${p.split('/').map(encodeURIComponent).join('/')}`;
+  const dirOf = (p) => p.slice(0, p.lastIndexOf('/')) || '/';
+  /** Ruta relativa de un enlace del archivo → absoluta (sin ?query ni #ancla). */
+  function resolveRel(dir, rel) {
+    let r = rel.replace(/[?#].*$/, '');
+    try { r = decodeURI(r); } catch (_) { /* tal cual */ }
+    const parts = (r.startsWith('/') ? r : `${dir}/${r}`).split('/');
+    const out = [];
+    for (const s of parts) { if (s === '..') out.pop(); else if (s && s !== '.') out.push(s); }
+    return `/${out.join('/')}`;
+  }
+  const isExternal = (u) => /^(https?:|mailto:)/i.test(u);
+
+  /** Visor de imagen / video / audio / PDF (se carga directo del disco como file://). */
+  function renderMedia(file, kind) {
+    const src = fileUrl(file);
+    const fail = (el) => { el.onerror = () => el.replaceWith(h('p.muted', 'No se pudo cargar el archivo (FRAP debe abrirse como file:// para ver archivos locales).')); return el; };
+    if (kind === 'image') return h('div.fp-media.fp-image', fail(h('img', { src, alt: basename(file) })));
+    if (kind === 'video') return h('div.fp-media', fail(h('video', { src, controls: true, preload: 'metadata' })));
+    if (kind === 'audio') return h('div.fp-media.fp-audio', h('div.fp-audio-name', `🎵 ${basename(file)}`), fail(h('audio', { src, controls: true, preload: 'metadata' })));
+    return h('div.fp-media.fp-pdf', h('iframe', { src, title: basename(file) }));
+  }
+
+  /** Vista previa de un archivo de texto (md, csv, svg, html) con su contenido actual (aunque no esté guardado). */
+  function renderPreview(file, text) {
+    const ext = (file.match(/\.(\w+)$/) || [])[1].toLowerCase();
+    const dir = dirOf(file);
+    if (ext === 'csv' || ext === 'tsv') return renderCsv(text, ext === 'tsv' ? '\t' : null);
+    if (ext === 'svg') {
+      const url = URL.createObjectURL(new Blob([text], { type: 'image/svg+xml' })); // en <img> el SVG no ejecuta scripts
+      const img = h('img', { src: url, alt: basename(file) });
+      img.onload = () => URL.revokeObjectURL(url);
+      img.onerror = () => { URL.revokeObjectURL(url); img.replaceWith(h('p.muted', 'SVG inválido.')); };
+      return h('div.fp-media.fp-image', img);
+    }
+    if (ext === 'html' || ext === 'htm') {
+      // sandbox SIN allow-same-origin: origen opaco, así la página no puede leer el localStorage de file:// (donde vive el
+      // token del bridge). Como ese origen no puede cargar file://, sus css/js/imágenes relativos se incrustan (htmlInline).
+      const frame = h('iframe.fp-html', { sandbox: 'allow-scripts allow-forms allow-popups allow-modals', title: basename(file) });
+      htmlInline(text, dir).then((doc) => { frame.srcdoc = doc; }).catch(() => { frame.srcdoc = text; });
+      return h('div.fp-htmlwrap', frame);
+    }
+    return h('div.md-body', mdBlocks(text, dir));
+  }
+
+  const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', ico: 'image/x-icon', bmp: 'image/bmp', avif: 'image/avif', woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf', mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg', ogg: 'audio/ogg', wav: 'audio/wav' };
+  /** HTML con sus recursos relativos incrustados: <link stylesheet> → <style>, <script src> → inline, imágenes → data:. */
+  async function htmlInline(text, dir) {
+    const doc = new DOMParser().parseFromString(text, 'text/html'); // documento inerte: aquí no se ejecuta nada
+    const local = (u) => u && !/^([a-z][\w+.-]*:|\/\/|#)/i.test(u.trim());
+    const read = async (rel, b64) => {
+      const r = await Bridge.call('fs.read', { path: resolveRel(dir, rel.trim()), ...(b64 ? { encoding: 'base64' } : {}) });
+      if (b64 && r.encoding !== 'base64') throw new Error('bridge viejo');
+      return r.content;
+    };
+    const dataUrl = async (rel) => {
+      const ext = (rel.replace(/[?#].*$/, '').match(/\.(\w+)$/) || [])[1];
+      return `data:${MIME[(ext || '').toLowerCase()] || 'application/octet-stream'};base64,${await read(rel, true)}`;
+    };
+    // url(...) relativas dentro del CSS (fondos, fuentes): relativas a la carpeta del .css
+    const cssUrls = async (css, cssDir) => {
+      const urls = [...new Set([...css.matchAll(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g)].map((m) => m[2]).filter(local))].slice(0, 30);
+      for (const u of urls) {
+        try {
+          const abs = resolveRel(cssDir, u);
+          const d = await dataUrl(abs);
+          css = css.split(u).join(d);
+        } catch (_) { /* se deja como está */ }
+      }
+      return css;
+    };
+    const jobs = [];
+    let n = 0;
+    for (const l of doc.querySelectorAll('link[href]')) {
+      const href = l.getAttribute('href');
+      if (!local(href) || ++n > 60) continue;
+      if (/\bstylesheet\b/i.test(l.rel)) {
+        jobs.push(read(href).then(async (css) => {
+          const st = doc.createElement('style');
+          st.textContent = await cssUrls(css, dirOf(resolveRel(dir, href)));
+          l.replaceWith(st);
+        }).catch(() => {}));
+      } else if (/\bicon\b/i.test(l.rel)) jobs.push(dataUrl(href).then((d) => l.setAttribute('href', d)).catch(() => {}));
+    }
+    for (const sc of doc.querySelectorAll('script[src]')) {
+      const src = sc.getAttribute('src');
+      if (!local(src) || ++n > 60) continue;
+      jobs.push(read(src).then((js) => { sc.removeAttribute('src'); sc.textContent = js; }).catch(() => {}));
+    }
+    for (const [sel, attr] of [['img[src]', 'src'], ['source[src]', 'src'], ['video[poster]', 'poster'], ['input[type=image][src]', 'src'], ['image[href]', 'href']]) {
+      for (const el of doc.querySelectorAll(sel)) {
+        const v = el.getAttribute(attr);
+        if (!local(v) || ++n > 60) continue;
+        jobs.push(dataUrl(v).then((d) => el.setAttribute(attr, d)).catch(() => {}));
+      }
+    }
+    for (const st of doc.querySelectorAll('style')) jobs.push(cssUrls(st.textContent, dir).then((css) => { st.textContent = css; }).catch(() => {}));
+    await Promise.all(jobs);
+    return `<!doctype html>\n${doc.documentElement.outerHTML}`;
+  }
+
+  // ----- CSV -----
+  function parseCsv(text, delim, max) {
+    const rows = [];
+    let row = [];
+    let field = '';
+    let q = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (q) {
+        if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; } else field += c;
+      } else if (c === '"' && field === '') q = true;
+      else if (c === delim) { row.push(field); field = ''; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && text[i + 1] === '\n') i++;
+        row.push(field); rows.push(row); row = []; field = '';
+        if (rows.length >= max) return { rows, more: i < text.length - 1 };
+      } else field += c;
+    }
+    if (field || row.length) { row.push(field); rows.push(row); }
+    return { rows, more: false };
+  }
+  function renderCsv(text, delim) {
+    if (!delim) {
+      const first = text.slice(0, text.indexOf('\n') >>> 0 || text.length);
+      const counts = [',', ';', '\t', '|'].map((d) => [d, first.split(d).length]);
+      delim = counts.sort((a, b) => b[1] - a[1])[0][0];
+    }
+    const MAX = 3000;
+    const { rows, more } = parseCsv(text, delim, MAX + 1);
+    if (!rows.length) return h('div.fp-csv', h('p.muted', 'Archivo vacío.'));
+    const [head, ...body] = rows;
+    const cols = Math.max(...rows.map((r) => r.length));
+    const pad = (r) => Array.from({ length: cols }, (_, i) => r[i] ?? '');
+    const num = (v) => /^-?[\d.,]+%?$/.test(v.trim()) && v.trim() !== '';
+    return h('div.fp-csv',
+      h('div.fp-csv-info.muted', `${body.length}${more ? '+' : ''} fila${body.length === 1 ? '' : 's'} · ${cols} columna${cols === 1 ? '' : 's'} · separador "${delim === '\t' ? 'tab' : delim}"${more ? ` · se muestran las primeras ${MAX}` : ''}`),
+      h('table.fp-table',
+        h('thead', h('tr', h('th.fp-rn', '#'), pad(head).map((c) => h('th', c)))),
+        h('tbody', body.slice(0, MAX).map((r, i) => h('tr', h('td.fp-rn', String(i + 1)), pad(r).map((c) => h(num(c) ? 'td.num' : 'td', c)))))));
+  }
+
+  // ----- Markdown (subconjunto de GFM: títulos, listas y tareas, citas, código, tablas, enlaces, imágenes) -----
+  const MD_BLOCK_START = /^(#{1,6}\s|\s*```|\s*~~~|\s*>|\s*([-*+]|\d+[.)])\s+|\s*([-*_])(\s*\3){2,}\s*$)/;
+  const mdSlug = (s) => s.toLowerCase().trim().replace(/[^\p{L}\p{N}\s-]/gu, '').replace(/\s+/g, '-');
+  const MD_TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+  function mdBlocks(src, dir) {
+    const lines = src.replace(/\r\n?/g, '\n').split('\n');
+    const out = [];
+    let i = 0;
+    const blank = (l) => !l.trim();
+    while (i < lines.length) {
+      const l = lines[i];
+      let m;
+      if (blank(l)) { i++; continue; }
+      if ((m = l.match(/^\s*(```+|~~~+)\s*([\w+#.-]*)/))) {
+        const fence = m[1];
+        const body = [];
+        i++;
+        while (i < lines.length && !lines[i].trim().startsWith(fence)) body.push(lines[i++]);
+        i++;
+        out.push(h('pre.md-code', m[2] ? { title: m[2] } : null, h('code', body.join('\n'))));
+        continue;
+      }
+      if ((m = l.match(/^(#{1,6})\s+(.*?)\s*#*\s*$/))) { out.push(h(`h${m[1].length}`, { id: mdSlug(m[2]) }, mdInline(m[2], dir))); i++; continue; }
+      if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(l)) { out.push(h('hr')); i++; continue; }
+      if (/^\s*>/.test(l)) {
+        const body = [];
+        while (i < lines.length && !blank(lines[i]) && (/^\s*>/.test(lines[i]) || !MD_BLOCK_START.test(lines[i]))) body.push(lines[i++].replace(/^\s*> ?/, ''));
+        out.push(h('blockquote', mdBlocks(body.join('\n'), dir)));
+        continue;
+      }
+      if (l.includes('|') && i + 1 < lines.length && MD_TABLE_SEP.test(lines[i + 1]) && lines[i + 1].includes('-')) {
+        const cells = (r) => r.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
+        const head = cells(l);
+        const align = cells(lines[i + 1]).map((c) => (c.startsWith(':') && c.endsWith(':') ? 'center' : c.endsWith(':') ? 'right' : null));
+        i += 2;
+        const rows = [];
+        while (i < lines.length && !blank(lines[i]) && lines[i].includes('|')) rows.push(cells(lines[i++]));
+        const st = (k) => (align[k] ? { style: `text-align:${align[k]}` } : null);
+        out.push(h('div.md-tablewrap', h('table',
+          h('thead', h('tr', head.map((c, k) => h('th', st(k), mdInline(c, dir))))),
+          h('tbody', rows.map((r) => h('tr', head.map((_, k) => h('td', st(k), mdInline(r[k] || '', dir)))))))));
+        continue;
+      }
+      if (/^\s*([-*+]|\d+[.)])\s+/.test(l)) { const [el, ni] = mdList(lines, i, dir); out.push(el); i = ni; continue; }
+      const body = [];
+      while (i < lines.length && !blank(lines[i]) && (!body.length || !MD_BLOCK_START.test(lines[i]))) body.push(lines[i++]);
+      out.push(h('p', mdInline(body.join('\n'), dir)));
+    }
+    return out;
+  }
+  function mdList(lines, i, dir) {
+    const indent = lines[i].match(/^\s*/)[0].length;
+    const ordered = /^\s*\d+[.)]/.test(lines[i]);
+    const start = ordered ? parseInt(lines[i].trim(), 10) : 1;
+    const items = [];
+    while (i < lines.length) {
+      const l = lines[i];
+      const m = l.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+      const ind = l.match(/^\s*/)[0].length;
+      if (m && ind === indent) { items.push({ text: [m[3]], sub: [] }); i++; continue; }
+      if (m && ind > indent && items.length) { const [el, ni] = mdList(lines, i, dir); items[items.length - 1].sub.push(el); i = ni; continue; }
+      if (!m && l.trim() && items.length && (ind > indent || !MD_BLOCK_START.test(l))) {
+        if (ind > indent && /^\s*(```|~~~)/.test(l)) { // bloque de código dentro del ítem
+          const block = [];
+          const fence = l.trim().match(/^(```+|~~~+)/)[1];
+          block.push(l.slice(Math.min(ind, indent + 2)));
+          i++;
+          while (i < lines.length && !lines[i].trim().startsWith(fence)) block.push(lines[i++].slice(Math.min(ind, indent + 2)));
+          if (i < lines.length) block.push(lines[i++].trim());
+          items[items.length - 1].sub.push(...mdBlocks(block.join('\n'), dir));
+          continue;
+        }
+        items[items.length - 1].text.push(l.trim());
+        i++;
+        continue;
+      }
+      // línea en blanco dentro de la lista: sigue si lo próximo es otro ítem o está indentado
+      if (!l.trim()) {
+        let j = i + 1;
+        while (j < lines.length && !lines[j].trim()) j++;
+        const nx = lines[j];
+        if (nx != null && (nx.match(/^\s*/)[0].length > indent || (nx.match(/^\s*/)[0].length === indent && /^\s*([-*+]|\d+[.)])\s+/.test(nx) && /^\s*\d+[.)]/.test(nx) === ordered))) { i = j; continue; }
+      }
+      break;
+    }
+    const lis = items.map((it) => {
+      const t = it.text.join('\n');
+      const task = t.match(/^\[([ xX])\]\s+([\s\S]*)$/);
+      if (task) return h('li.md-task', h('input', { type: 'checkbox', disabled: true, checked: task[1] !== ' ' }), ' ', mdInline(task[2], dir), it.sub);
+      return h('li', mdInline(t, dir), it.sub);
+    });
+    return [h(ordered ? 'ol' : 'ul', ordered && start !== 1 ? { start: String(start) } : null, lis), i];
+  }
+  const MD_INLINE = new RegExp([
+    /\\([\\`*_{}[\]()#+\-.!|~>])/.source, // 1 escape
+    /(`+)([\s\S]*?[^`])\2(?!`)/.source, // 2-3 código
+    /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/.source, // 4-5 imagen
+    /\[((?:[^[\]]|\[[^\]]*\])*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/.source, // 6-7 enlace
+    /<((?:https?:\/\/|mailto:)[^>\s]+)>/.source, // 8 autoenlace
+    /\*\*(?=\S)([\s\S]*?\S)\*\*/.source, // 9 negrita
+    /(?<!\w)__(?=\S)([\s\S]*?\S)__(?!\w)/.source, // 10 negrita
+    /\*(?=[^\s*])([\s\S]*?[^\s*])\*/.source, // 11 cursiva
+    /(?<!\w)_(?=[^\s_])([\s\S]*?[^\s_])_(?!\w)/.source, // 12 cursiva
+    /~~(?=\S)([\s\S]*?\S)~~/.source, // 13 tachado
+    /(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/.source, // 14 URL suelta
+    /( {2,}|\\)\n/.source, // 15 salto de línea
+  ].join('|'), 'g');
+  function mdLink(href, kids, dir) {
+    if (href.startsWith('#')) {
+      return h('a', { href, onclick: (e) => { e.preventDefault(); const t = e.currentTarget.closest('.md-body'); const el = t && t.querySelector(`[id="${CSS.escape(href.slice(1))}"]`); if (el) el.scrollIntoView({ block: 'start' }); } }, kids);
+    }
+    if (isExternal(href)) return h('a', { href, target: '_blank', rel: 'noopener noreferrer', title: href }, kids);
+    if (/^[a-z][\w+.-]*:/i.test(href)) return h('span', kids); // javascript:, data:… no se enlazan
+    const abs = resolveRel(dir, href);
+    const line = (href.match(/#L(\d+)/) || [])[1];
+    return h('a', { href: fileUrl(abs), title: `${tilde(abs)} · clic: abrir en el editor`, onclick: (e) => { e.preventDefault(); openInFrap(abs, line ? Number(line) : undefined); } }, kids);
+  }
+  function mdInline(s, dir) {
+    const out = [];
+    let last = 0;
+    let m;
+    const re = new RegExp(MD_INLINE.source, 'g'); // uno por llamada: es recursiva y lastIndex no se puede compartir
+    const text = (t) => { if (t) out.push(t.replace(/\n/g, ' ')); };
+    while ((m = re.exec(s))) {
+      text(s.slice(last, m.index));
+      last = re.lastIndex;
+      if (m[1] != null) out.push(m[1]);
+      else if (m[3] != null) out.push(h('code', m[3].replace(/^ (.*) $/, '$1')));
+      else if (m[5] != null) {
+        const src = m[5];
+        const ok = isExternal(src) || /^data:image\//i.test(src);
+        out.push(/^[a-z][\w+.-]*:/i.test(src) && !ok ? h('span.muted', `[imagen: ${m[4]}]`) : h('img', { src: ok ? src : fileUrl(resolveRel(dir, src)), alt: m[4], loading: 'lazy' }));
+      } else if (m[7] != null) out.push(mdLink(m[7], mdInline(m[6], dir), dir));
+      else if (m[8] != null) out.push(mdLink(m[8], m[8].replace(/^mailto:/, ''), dir));
+      else if (m[9] != null || m[10] != null) out.push(h('strong', mdInline(m[9] ?? m[10], dir)));
+      else if (m[11] != null || m[12] != null) out.push(h('em', mdInline(m[11] ?? m[12], dir)));
+      else if (m[13] != null) out.push(h('del', mdInline(m[13], dir)));
+      else if (m[14] != null) out.push(mdLink(m[14], m[14], dir));
+      else out.push(h('br'));
+    }
+    text(s.slice(last));
+    return out;
+  }
+
   const CM_PHRASES = {
     'Search:': 'Buscar:', 'With:': 'Con:', 'Replace?': '¿Reemplazar?', Yes: 'Sí', No: 'No', All: 'Todas', Stop: 'Parar',
     'Replace all:': 'Reemplazar todas:', 'Replace:': 'Reemplazar:', 'Replace with:': 'Reemplazar con:',
@@ -3532,7 +3829,7 @@
     const P = codePane;
     let f = P.files.get(file);
     if (f && f.loading) return f.promise; // ya se está cargando: se espera esa misma carga
-    if (f && !force && (f.master || f.error || f.binary || f.image)) return Promise.resolve(f);
+    if (f && !force && (f.master || f.error || f.binary || f.media)) return Promise.resolve(f);
     if (!f) { f = {}; P.files.set(file, f); }
     f.loading = true;
     f.promise = codeLoadNow(P, file, f);
@@ -3540,8 +3837,8 @@
   }
   async function codeLoadNow(P, file, f) {
     if (!Bridge.ready) { P.files.delete(file); f.loading = false; return f; } // al conectar se vuelve a pintar (ver Bridge.on('open'))
-    f.image = CODE_IMG.test(file) && !/\.svg$/i.test(file);
-    if (f.image) { f.loading = false; f.exists = true; return f; }
+    f.media = mediaKind(file); // imagen, video, audio o PDF: se ven directo del disco, no se cargan como texto
+    if (f.media) { f.loading = false; f.exists = true; return f; }
     try {
       const r = await Bridge.call('fs.read', { path: file });
       const text = r.content;
@@ -3657,6 +3954,7 @@
         'Ctrl-/': 'toggleComment', 'Cmd-/': 'toggleComment',
         'Ctrl-\\': () => codeSplit(G.index), // Ctrl+W no: el navegador cierra la pestaña sin dejar interceptarlo
         'Alt-Z': () => codeToggleWrap(),
+        'Shift-Ctrl-V': () => codeTogglePreview(G.index),
         'Ctrl-Alt-C': () => codeCopyRef(G, false), 'Shift-Ctrl-Alt-C': () => codeCopyRef(G, true),
         'Ctrl-Alt-I': () => codeSendSel(G),
         'Ctrl-Space': 'autocomplete',
@@ -3728,6 +4026,10 @@
         }),
         h('span.grow'),
         h('div.code-gbtns',
+          g.active && canPreview(g.active) ? h(`button.mini.code-prevbtn${codePreviewOn(g.active) ? '.on' : ''}`, {
+            title: `${codePreviewOn(g.active) ? 'Volver al editor' : 'Ver el archivo renderizado'} (Ctrl+Shift+V)`,
+            onclick: () => codeTogglePreview(gi),
+          }, codePreviewOn(g.active) ? '✎ Editar' : '👁 Vista previa') : null,
           gs_len() < CODE_MAX_GROUPS ? h('button.icon.mini', { title: 'Dividir: abrir en un panel nuevo (Ctrl+\\, máx. 4)', onclick: () => codeSplit(gi) }, '◫') : null,
           gs_len() > 1 ? h('button.icon.mini', { title: 'Cerrar este panel', onclick: () => codeCloseGroup(gi) }, '✕') : null));
       const a = G.tabsEl.querySelector('.ed-tab.active');
@@ -3735,6 +4037,18 @@
     });
   }
   const gs_len = () => state.code.groups.length;
+  const codePreviewOn = (file) => !!(state.code.preview && state.code.preview[file]) && canPreview(file);
+  /** Alterna editor ⇄ vista previa del archivo activo del panel (se recuerda por archivo). */
+  function codeTogglePreview(gi = state.code.focus) {
+    const g = state.code.groups[gi];
+    if (!g || !g.active || !canPreview(g.active)) return;
+    const pv = state.code.preview || (state.code.preview = {});
+    if (pv[g.active]) delete pv[g.active]; else pv[g.active] = true;
+    save();
+    state.code.groups.forEach((gg, i) => { if (gg.active === g.active) codeShowActive(i); });
+    codeRenderTabsOnly();
+    if (!pv[g.active]) codeFocusEditor(gi);
+  }
 
   /** Muestra en el grupo su pestaña activa (editor, imagen, binario, error o bienvenida). */
   function codeShowActive(gi) {
@@ -3745,6 +4059,7 @@
     const file = g.active;
     G.shown = file;
     const f = file ? P.files.get(file) : null;
+    const keepScroll = G.preview && G.preview.dataset.file === file ? G.preview.scrollTop : 0; // repintar la vista previa sin saltar arriba
     if (G.preview) { G.preview.remove(); G.preview = null; }
     const showMsg = (...kids) => { G.preview = h('div.code-msg', ...kids); G.bodyEl.append(G.preview); if (G.cm) G.cm.getWrapperElement().classList.add('hidden'); };
     codeRenderBanner(gi);
@@ -3766,13 +4081,26 @@
       return;
     }
     if (f.error) { showMsg(h('p', f.error), h('p.muted.mono', tilde(file)), h('button', { onclick: async () => { f.error = null; await codeLoad(file, true); codeShowActive(gi); } }, 'Reintentar')); return; }
-    if (f.image) {
-      const img = h('img', { src: `file://${encodeURI(file)}`, alt: basename(file) });
-      img.onerror = () => { img.replaceWith(h('p.muted', 'No se pudo previsualizar (abre FRAP como file:// para ver imágenes).')); };
-      showMsg(h('div.code-img', img), h('p.muted.mono', tilde(file)));
+    if (f.media) {
+      G.preview = h('div.code-preview.code-media', renderMedia(file, f.media));
+      G.bodyEl.append(G.preview);
+      if (G.cm) G.cm.getWrapperElement().classList.add('hidden');
       return;
     }
     if (f.binary) { showMsg(h('p', 'Archivo binario: no se puede editar aquí.'), h('p.muted.mono', tilde(file)), h('button', { onclick: () => openExternal(file) }, `Abrir en ${extEditorName()}`)); return; }
+    if (codePreviewOn(file)) {
+      if (!f.previewHook) {
+        // cambios en el texto (tecleo, recarga del disco al editarlo una IA): se repinta la vista previa
+        f.previewHook = debounce(() => state.code.groups.forEach((gg, i) => { if (codePane && gg.active === file && codePreviewOn(file)) codeShowActive(i); }), 350);
+        f.master.on('change', f.previewHook);
+      }
+      G.preview = h('div.code-preview', renderPreview(file, f.master.getValue()));
+      G.preview.dataset.file = file;
+      G.bodyEl.append(G.preview);
+      if (keepScroll) G.preview.scrollTop = keepScroll;
+      if (G.cm) G.cm.getWrapperElement().classList.add('hidden');
+      return;
+    }
     const cm = codeEnsureCm(G);
     if (!cm) { showMsg(h('p', 'No se cargó CodeMirror (src/vendor/codemirror).')); return; }
     cm.getWrapperElement().classList.remove('hidden');
@@ -4199,24 +4527,29 @@
     ta.addEventListener('input', () => { renderNotesStatus(); autosave(); });
     ta.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); notesSave(true); }
+      else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === 'KeyV') { e.preventDefault(); notesTogglePreview(); }
       else if (e.key === 'Tab') { e.preventDefault(); ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end'); ta.dispatchEvent(new Event('input')); }
     });
     const banner = h('div.notes-banner.hidden');
     const empty = h('div.notes-empty.hidden');
+    const previewEl = h('div.notes-preview.hidden');
+    const previewBtn = h('button.mini.notes-prevbtn', { onclick: () => notesTogglePreview() });
     const root = h('div.notes-pane.hidden',
       h('div.db-bar.notes-bar',
         ignore,
         pathEl,
         h('span.grow'),
         status,
+        previewBtn,
         skillBtn,
         h('button.icon', { title: 'Recargar del disco', onclick: () => notesLoad() }, '⟳'),
         h('button.primary.notes-save', { title: 'Guardar (Ctrl+S). También se guarda solo al dejar de escribir.', onclick: () => notesSave(true) }, '💾 Guardar')),
       banner,
       empty,
-      ta);
+      ta,
+      previewEl);
     $('#term-host').append(root);
-    notesPane = { root, ignore, ignoreBtn, ignoreInfo, pathEl, status, skillBtn, ta, banner, empty, file: null, exists: false, saved: '', mtime: 0, savedAt: 0, conflict: null, repo: null, ignored: false, tracked: false };
+    notesPane = { root, ignore, ignoreBtn, ignoreInfo, pathEl, status, skillBtn, ta, banner, empty, previewEl, previewBtn, previewText: null, file: null, exists: false, saved: '', mtime: 0, savedAt: 0, conflict: null, repo: null, ignored: false, tracked: false };
     viewPanes.set(bound.notes, notesPane);
     notesLoad();
     return notesPane;
@@ -4402,7 +4735,14 @@
     p.skillBtn.title = sk
       ? 'Skill frap-notes instalada para claude y codex: diles "guarda esto en notas" o "lee las notas" (también en Prompts). Clic: reinstalar.'
       : 'Instala la skill frap-notes en ~/.claude/skills y ~/.codex/skills para que la IA entienda "guarda esto en notas" y "lee las notas"';
-    p.ta.classList.toggle('hidden', !p.exists);
+    const pv = p.exists && !!state.notes.preview;
+    p.ta.classList.toggle('hidden', !p.exists || pv);
+    p.previewEl.classList.toggle('hidden', !pv);
+    p.previewBtn.classList.toggle('hidden', !p.exists);
+    p.previewBtn.classList.toggle('on', pv);
+    p.previewBtn.textContent = pv ? '✎ Editar' : '👁 Vista previa';
+    p.previewBtn.title = pv ? 'Volver a editar (Ctrl+Shift+V)' : 'Ver NOTES.md renderizado (Ctrl+Shift+V)';
+    if (pv) notesRenderPreview();
     p.empty.classList.toggle('hidden', p.exists);
     p.root.querySelector('.notes-save').classList.toggle('hidden', !p.exists);
     if (!p.exists) {
@@ -4421,6 +4761,23 @@
     }
     p.banner.classList.toggle('hidden', !p.conflict);
     renderNotesStatus();
+  }
+  /** Pinta el Markdown de las notas (solo si cambió el texto; conserva el scroll). */
+  function notesRenderPreview() {
+    const p = notesPane;
+    if (!p || !p.file || p.previewText === p.ta.value) return;
+    p.previewText = p.ta.value;
+    const top = p.previewEl.scrollTop;
+    p.previewEl.replaceChildren(renderPreview(p.file, p.ta.value));
+    p.previewEl.scrollTop = top;
+  }
+  function notesTogglePreview() {
+    const p = notesPane;
+    if (!p || !p.exists) return;
+    state.notes.preview = !state.notes.preview;
+    save();
+    renderNotes();
+    if (!state.notes.preview) p.ta.focus();
   }
   function renderNotesStatus() {
     const p = notesPane;
