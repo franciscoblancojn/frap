@@ -877,7 +877,8 @@ textarea.prompt-body { min-height: 180px; font: 12.5px/1.5 var(--mono); resize: 
 .ed-tab.dirty .x { opacity: 1; color: var(--warn); }
 .ed-tab.dirty .code-tname { font-style: italic; }
 .ed-tab.conflict .code-tname { color: var(--err); }
-.code-gbtns { display: flex; align-items: center; gap: 4px; padding: 0 4px; position: sticky; right: 0; background: var(--bg-2); }
+.code-gbtns { display: flex; align-items: center; gap: 4px; padding: 0 4px; position: sticky; right: 0; background: var(--bg-2); flex-shrink: 0; white-space: nowrap; }
+.code-prevbtn, .notes-prevbtn { white-space: nowrap; flex-shrink: 0; }
 .code-banner { display: flex; align-items: center; gap: 8px; padding: 5px 10px; background: color-mix(in srgb, var(--warn) 18%, var(--bg-2)); border-bottom: 1px solid var(--line); font-size: 12px; flex-wrap: wrap; }
 .code-body { flex: 1; position: relative; min-height: 0; }
 .code-body .CodeMirror { position: absolute; inset: 0; height: auto; }
