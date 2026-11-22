@@ -86,6 +86,60 @@ const FINAL_TEMPLATE = `# Cierre — {{ID}}
 <!-- el comentario exactamente como se envió a Linear -->
 `;
 
+// ---------- prioridad (misma escala y formato que Linear, venga o no de Linear) ----------
+// En issue.md es la línea «- **Prioridad:** High». Se escribe siempre con la etiqueta de Linear.
+const PRIORITIES = [
+  { key: 'urgent', label: 'Urgent', es: 'Urgente', linear: 1 },
+  { key: 'high', label: 'High', es: 'Alta', linear: 2 },
+  { key: 'medium', label: 'Medium', es: 'Media', linear: 3 },
+  { key: 'low', label: 'Low', es: 'Baja', linear: 4 },
+  { key: 'none', label: 'No priority', es: 'Sin prioridad', linear: 0 },
+];
+const PRIORITY_ALIASES = {
+  urgent: ['urgent', 'urgente', '1', 'p1', 'p0', 'critica', 'crítica'],
+  high: ['high', 'alta', '2', 'p2'],
+  medium: ['medium', 'media', 'normal', '3', 'p3'],
+  low: ['low', 'baja', '4', 'p4'],
+  none: ['none', 'no priority', 'sin prioridad', 'ninguna', '0', '—', '-', ''],
+};
+/** Clave de prioridad (urgent/high/medium/low/none) desde texto en inglés, español o el número de Linear; null si no se reconoce. */
+function parsePriority(v) {
+  const t = String(v == null ? '' : v).toLowerCase().replace(/[*_`]/g, '').replace(/\s*\(.*\)\s*$/, '').trim();
+  for (const [k, al] of Object.entries(PRIORITY_ALIASES)) if (al.includes(t)) return k;
+  return null;
+}
+const priorityInfo = (key) => PRIORITIES.find((p) => p.key === key) || PRIORITIES[4];
+const PRIORITY_LINE = /^([ \t]*[-*][ \t]+\*\*Prioridad:\*\*)[ \t]*(.*)$/m;
+function priorityOf(issueMd) {
+  const m = issueMd.match(PRIORITY_LINE);
+  return (m && parsePriority(m[2])) || 'none';
+}
+/** Cambia (o agrega) la línea de prioridad de issue.md, con la etiqueta de Linear. */
+function setPriority(rawId, value) {
+  const id = checkId(rawId);
+  const key = parsePriority(value);
+  if (!key) throw new Error(`Prioridad inválida: ${value} (usa urgent, high, medium, low o none)`);
+  const file = path.join(ISSUES_DIR, id, 'issue.md');
+  if (!exists(file)) throw new Error(`No existe ${id}/issue.md`);
+  const label = priorityInfo(key).label;
+  let md = fs.readFileSync(file, 'utf8');
+  if (PRIORITY_LINE.test(md)) md = md.replace(PRIORITY_LINE, (_, a) => `${a} ${label}`);
+  else if (/^[ \t]*[-*][ \t]+\*\*Estado:\*\*.*$/m.test(md)) md = md.replace(/^([ \t]*[-*][ \t]+\*\*Estado:\*\*.*)$/m, `$1\n- **Prioridad:** ${label}`);
+  else md = md.replace(/^(#[^\n]*\n)/, `$1\n- **Prioridad:** ${label}\n`) || md;
+  if (!PRIORITY_LINE.test(md)) md = `- **Prioridad:** ${label}\n\n${md}`;
+  fs.writeFileSync(file, md);
+  return { id, priority: key, label };
+}
+/** Siguiente identificador libre para issues sin tracker: LOCAL-1, LOCAL-2… */
+function nextId(prefix = 'LOCAL') {
+  const pre = String(prefix).toUpperCase();
+  if (!/^[A-Z][A-Z0-9]*$/.test(pre)) throw new Error(`Prefijo inválido: ${prefix}`);
+  ensureLocal();
+  let max = 0;
+  for (const n of fs.readdirSync(ISSUES_DIR)) { const m = n.match(new RegExp(`^${pre}-(\\d+)$`)); if (m) max = Math.max(max, Number(m[1])); }
+  return `${pre}-${max + 1}`;
+}
+
 function now() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
@@ -105,17 +159,37 @@ function checkId(id) {
   return id.toUpperCase();
 }
 
-/** Crea local/issues/<ID>/ con las plantillas. Si ya existe, no toca nada (se retoma). */
-function createIssue(rawId, title = '') {
-  const id = checkId(rawId);
+/**
+ * Crea local/issues/<ID>/ con las plantillas. Si ya existe, no toca nada (se retoma).
+ * Si `rawId` es solo un prefijo (p. ej. LOCAL) se numera solo y la issue es local (sin tracker).
+ * `priority` (urgent/high/medium/low/none, o su nombre en español) se escribe en issue.md con el formato de Linear.
+ */
+function createIssue(rawId, title = '', { priority, local } = {}) {
+  let key = null;
+  if (priority != null && priority !== '') {
+    key = parsePriority(priority);
+    if (!key) throw new Error(`Prioridad inválida: ${priority} (usa urgent, high, medium, low o none)`);
+  }
+  const auto = typeof rawId === 'string' && /^[A-Za-z][A-Za-z0-9]*$/.test(rawId.trim());
+  const id = auto ? nextId(rawId.trim()) : checkId(rawId);
   ensureLocal();
   const dir = path.join(ISSUES_DIR, id);
   if (exists(dir)) return { id, dir, created: false };
   fs.mkdirSync(dir, { recursive: true });
   const date = now();
   const t = String(title || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 300);
-  for (const [f, tpl] of Object.entries(TEMPLATES)) fs.writeFileSync(path.join(dir, f), fill(tpl, id, t, date));
-  return { id, dir, created: true };
+  for (const [f, tpl] of Object.entries(TEMPLATES)) {
+    let txt = fill(tpl, id, t, date);
+    if (f === 'issue.md' && (auto || local)) {
+      txt = txt.replace(/^> Copia fiel[^\n]*\n> Copiada: ([^\n]*)$/m, '> Issue local (sin tracker): se redacta aquí con el mismo formato.\n> Creada: $1')
+        .replace(/^- \*\*URL:\*\*$/m, '- **URL:** —')
+        .replace(/^- \*\*Estado:\*\*$/m, '- **Estado:** Backlog')
+        .replace(/^<!-- pegar aquí la descripción completa, tal cual -->$/m, '<!-- qué hay que hacer, por qué y cómo se sabe que está listo -->');
+    }
+    fs.writeFileSync(path.join(dir, f), txt);
+  }
+  if (key || auto || local) setPriority(id, key || 'none');
+  return { id, dir, created: true, priority: key || 'none' };
 }
 
 /** Sección "## 📤 Por enviar…" de status.md: cuántos ítems quedan pendientes de enviar al tracker. */
@@ -135,6 +209,7 @@ function readIssue(id) {
   const title = head.replace(new RegExp(`^${id.replace(/[-]/g, '\\-')}\\s*[—–-]\\s*`, 'i'), '').trim();
   const estado = ((status.match(/\*\*Estado general:\*\*\s*(.+)/) || [])[1] || '').trim();
   const url = ((issue.match(/\*\*URL:\*\*\s*(\S+)/) || [])[1] || '').trim();
+  const priority = priorityOf(issue);
   let updated = 0;
   let files = [];
   try {
@@ -142,7 +217,7 @@ function readIssue(id) {
     for (const f of files) { try { updated = Math.max(updated, fs.statSync(path.join(dir, f)).mtimeMs); } catch (_) { /* nada */ } }
   } catch (_) { /* nada */ }
   const hasFinal = files.includes('final.md');
-  return { id, dir, title, estado, url: /^https?:\/\//.test(url) ? url : '', updated, hasFinal, closed: hasFinal || CLOSED_RE.test(estado), pending: pendingCount(status), files: files.filter((f) => f.endsWith('.md')) };
+  return { id, dir, title, estado, priority, url: /^https?:\/\//.test(url) ? url : '', updated, hasFinal, closed: hasFinal || CLOSED_RE.test(estado), pending: pendingCount(status), files: files.filter((f) => f.endsWith('.md')) };
 }
 function listIssues() {
   ensureLocal();
@@ -331,8 +406,10 @@ ${path.join(LOCAL_DIR, 'scripts')}/<ID>/   ← scripts propios de la issue; lo g
 FRAP muestra estas issues en su pestaña "Issues". No se empieza a escribir código de una issue sin su carpeta.
 
 Herramienta: \`node ${CLI}\`
-- \`new <ID> ["Título"]\` crea la carpeta desde las plantillas (si existe, se retoma).
-- \`list [--all]\` lista las issues (activas por defecto) con su estado.
+- \`new <ID> ["Título"] [--prioridad <p>]\` crea la carpeta desde las plantillas (si existe, se retoma).
+- \`new LOCAL "Título" --prioridad <p>\` crea una issue **local, sin tracker**, con el siguiente número libre (LOCAL-1, LOCAL-2…). Otro prefijo sin número también vale (p. ej. \`new INT "…"\` → INT-1).
+- \`priority <ID> <p>\` cambia la prioridad.
+- \`list [--all]\` lista las issues (activas por defecto) por prioridad, con su estado.
 - \`path <ID>\` imprime la carpeta de la issue.
 
 ## 1. Tomar la issue
@@ -341,6 +418,22 @@ Herramienta: \`node ${CLI}\`
 3. Llenar \`status.md\` con el plan inicial: los pasos derivados de la issue, todos en «Pendientes».
 4. Si aplica pasarla a «In Progress» en el tracker, **preguntar antes**; si el usuario prefiere esperar, anotarlo en «📤 Por enviar a Linear».
 5. Rama: en cada repo que se toque, \`git checkout -b LINEAR-<ID>\` desde la rama principal actualizada (o la convención que indique el repo). Si ya existe, cambiar a ella. Anotar en \`status.md\` y el changelog qué rama se usa en qué repo.
+
+## Prioridad
+Toda issue tiene prioridad, con la escala y el formato de Linear, venga o no de Linear. Va en \`issue.md\` en la línea \`- **Prioridad:** <valor>\` y FRAP agrupa las issues por ella.
+
+| Valor | Cuándo |
+|---|---|
+| \`Urgent\` | Producción caída o con datos/dinero en riesgo, seguridad, o algo que bloquea a otros hoy. |
+| \`High\` | Importante y con fecha cercana; afecta a clientes o desbloquea otro trabajo. |
+| \`Medium\` | Trabajo normal planificado. |
+| \`Low\` | Mejora o deuda sin urgencia. |
+| \`No priority\` | Sin clasificar todavía. |
+
+- Si viene de Linear: se copia **tal cual** la de Linear (\`priority\` 1 = Urgent, 2 = High, 3 = Medium, 4 = Low, 0 = No priority). No se cambia en Linear sin que el usuario lo pida.
+- Si se crea en local (sin tracker): se clasifica al crearla con \`--prioridad\`. Si el usuario no la dijo, se propone una con la tabla de arriba, se dice cuál y por qué, y se usa \`priority <ID> <p>\` si la corrige.
+- Al cambiar la prioridad se anota en el changelog (de cuál a cuál y por qué). Si la issue es de Linear y el cambio debe llegar allá, se agrega a «📤 Por enviar a Linear».
+- \`<p>\` acepta \`urgent|high|medium|low|none\` o \`urgente|alta|media|baja|sin prioridad\`; siempre se escribe en inglés como en Linear.
 
 ## 2. Mientras se trabaja
 - **No se escribe en el tracker mientras se trabaja** (ni comentarios ni cambios de estado). Lo que haya que comunicar se anota en la sección «📤 Por enviar a Linear» de \`status.md\` (un ítem por comentario o cambio de estado).
@@ -406,6 +499,7 @@ function setSkill(on) {
 
 module.exports = {
   LOCAL_DIR, ISSUES_DIR, ID_RE, FINAL_TEMPLATE,
+  PRIORITIES, parsePriority, setPriority, nextId,
   createIssue, listIssues, readIssue, importIssuesDir, exportLocal, importLocal,
   zip, unzip, crc32, skillText, skillStatus, setSkill, pendingCount,
 };

@@ -1235,7 +1235,9 @@ const ops = {
   /** {dir, local, issues: [{id, title, estado, url, updated, closed, pending, files}]} */
   'issues.list': () => issues.listIssues(),
   /** Crea local/issues/<ID>/ desde las plantillas (si existe no toca nada). {id, dir, created} */
-  'issues.create': ({ id, title }) => issues.createIssue(id, title),
+  'issues.create': ({ id, title, priority, local }) => issues.createIssue(id, title, { priority, local: !!local }),
+  /** Prioridad de una issue (formato de Linear en issue.md). */
+  'issues.setPriority': ({ id, priority }) => issues.setPriority(id, priority),
   /** Copia carpetas de issues (<ID>/) de otra carpeta sin pisar las existentes. {from, copied, skipped} */
   'issues.importDir': ({ path: p }) => issues.importIssuesDir(safePath(p)),
   /** Skill frap-issues: {claude: {installed, current, file}, codex: {…}} */

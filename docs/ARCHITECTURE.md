@@ -82,13 +82,20 @@ navegador (file://src/index.html)                     máquina local
 
 - Replica dentro de FRAP el harness de tareas `_linear`. Cada issue vive en `local/issues/<ID>/` de la carpeta de FRAP, con `issue.md` (copia fiel del tracker), `changelog.md`, `status.md` y `final.md` al cerrar.
 - `local/` está en el `.gitignore` de FRAP y además tiene su propio `.gitignore` con `*`. Ahí pueden ir más cosas locales en el futuro.
-- Toda la lógica está en `bridge/issues.js`: plantillas, lista, importación, zip y skill, solo con la librería estándar. `bridge/frap-issues.js` es el CLI para agentes (`new`, `list`, `path`, `dir`). `FRAP_LOCAL` cambia la carpeta (lo usan los tests).
+- Toda la lógica está en `bridge/issues.js`: plantillas, lista, importación, zip y skill, solo con la librería estándar. `bridge/frap-issues.js` es el CLI para agentes (`new`, `priority`, `list`, `path`, `dir`). `FRAP_LOCAL` cambia la carpeta (lo usan los tests).
+- **Prioridad:** misma escala y formato que Linear, venga o no de Linear. Es la línea `- **Prioridad:** Urgent|High|Medium|Low|No priority` de `issue.md`.
+  - `parsePriority` acepta inglés, español o el número de Linear (1–4, 0). Sin línea o con un valor que no se reconoce, la issue queda en "No priority".
+  - `setPriority` reescribe esa línea, o la agrega bajo «Estado», siempre con la etiqueta en inglés.
+  - Una issue local (sin tracker) se crea con un prefijo sin número (`new LOCAL "…"` → `LOCAL-1`, `LOCAL-2`…) o con `local: true`. Su `issue.md` dice que es local y empieza en Backlog con la prioridad elegida.
+  - La skill explica cuándo usar cada prioridad. Las de Linear se copian tal cual; las locales se clasifican al crearlas y la IA dice cuál propone y por qué.
 - **Skill `frap-issues`:** con el módulo activo, FRAP la instala o actualiza al conectar en `~/.claude/skills` y `~/.codex/skills`. Al apagar el módulo la quita, solo si es la suya.
   - La skill explica el flujo: tomar, trabajar, cerrar y fin de jornada.
   - Mientras se trabaja no se escribe en el tracker. Lo pendiente se anota en «📤 Por enviar a Linear» de `status.md` y se envía al cerrar o al final de la jornada, siempre mostrándolo antes al usuario.
 - **Pestaña Issues (panel derecho):** lista Activas, Cerradas o Todas con buscador. Una issue cuenta como cerrada si tiene `final.md` o su «Estado general» dice terminada o cancelada. El badge 📤 muestra los pendientes por enviar.
   - Abre sus archivos en el editor de FRAP.
   - "Nueva" crea la carpeta y puede pedirle a la IA que la traiga.
+  - Las issues se agrupan por prioridad en secciones plegables (Urgente, Alta, Media, Baja, Sin prioridad). Lo plegado se recuerda en `state.ui.issuesCollapsed`. El icono de cada tarjeta abre un menú para cambiar la prioridad.
+  - "Nueva" permite elegir prioridad y marcar la issue como local (sin tracker).
   - "Retomar", "Cerrar" y "Fin de jornada" escriben el pedido en la terminal de IA del proyecto, sin Enter. Si no hay terminal de IA, lo copian al portapapeles.
   - ⇩ importa carpetas de un harness existente.
 - **Zip:** en Exportar / importar, "Carpeta local (.zip)" descarga o restaura todo `local/` (issues, scripts con sus interruptores…, sin `node_modules`, que se reinstala con `bun install`) (`local.export` / `local.import`). El zip se escribe y se lee a mano (deflate de zlib y CRC32 propio). Al importar se descartan las rutas con `..`.
@@ -286,8 +293,9 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `scripts.command` | `{path}` | `{cwd, line, rel}` para ejecutarlo en una terminal de FRAP; falla si el módulo o «Usuario» están apagados |
 | `scripts.skill` | — | `{claude, codex}`: `{installed, current, file}` de la skill `frap-scripts` |
 | `scripts.setModule` | `{on}` | instala/quita la skill `frap-scripts` y habilita/bloquea `frap-scripts run` |
-| `issues.list` | — | `{dir, local, issues: [{id, title, estado, url, updated, closed, pending, files}]}` de `local/issues/` |
-| `issues.create` | `{id, title?}` | crea `local/issues/<ID>/` desde las plantillas; si existe no toca nada. `{id, dir, created}` |
+| `issues.list` | — | `{dir, local, issues: [{id, title, estado, priority, url, updated, closed, pending, files}]}` de `local/issues/` (`priority`: `urgent\|high\|medium\|low\|none`) |
+| `issues.create` | `{id, title?, priority?, local?}` | crea `local/issues/<ID>/` desde las plantillas; si existe no toca nada. `id` sin número (`LOCAL`) numera solo y la marca local. `{id, dir, created, priority}` |
+| `issues.setPriority` | `{id, priority}` | cambia la línea `**Prioridad:**` de `issue.md` (formato de Linear). `{id, priority, label}` |
 | `issues.importDir` | `{path}` | copia carpetas `<ID>/` de otra carpeta (o de su `issues/`) sin pisar las existentes. `{from, copied, skipped}` |
 | `issues.skill` | — | `{claude, codex}`: `{installed, current, file}` de la skill `frap-issues` |
 | `issues.setSkill` | `{on}` | instala/actualiza (`on`) o quita la skill `frap-issues` en `~/.claude/skills` y `~/.codex/skills`. `{on, changed}` |

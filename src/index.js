@@ -422,7 +422,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -7031,11 +7031,32 @@
     } catch (e) { toast(`Skill frap-issues: ${e.message}`, 'err'); }
   }
   const ISSUE_PROMPTS = {
-    take: (id) => `Toma la issue ${id} (skill frap-issues): tráela de Linear a local y arma el plan en su status.md.`,
+    take: (id) => `Toma la issue ${id} (skill frap-issues): tráela de Linear a local (con su prioridad tal cual) y arma el plan en su status.md.`,
+    local: (id) => `Toma la issue local ${id} (skill frap-issues, sin tracker): ayúdame a redactar issue.md (qué, por qué, cuándo está lista), revisa que la prioridad sea la adecuada y arma el plan en su status.md.`,
     resume: (id) => `Retoma la issue ${id} (skill frap-issues): lee su status.md y changelog.md y sigue con lo pendiente.`,
     close: (id) => `Cierra la issue ${id} (skill frap-issues): redacta el comentario final para Linear con lo pendiente de enviar y muéstramelo antes de enviarlo.`,
     day: () => 'Fin de jornada (skill frap-issues): revisa las issues activas en local, arma los comentarios y cambios de estado pendientes para Linear y muéstramelos antes de enviar nada.',
   };
+  // Prioridad: misma escala y formato que Linear (la línea «- **Prioridad:** High» de issue.md), venga o no de Linear.
+  const ISSUE_PRIORITIES = [
+    { key: 'urgent', label: 'Urgente', en: 'Urgent', icon: '🔴' },
+    { key: 'high', label: 'Alta', en: 'High', icon: '🟠' },
+    { key: 'medium', label: 'Media', en: 'Medium', icon: '🟡' },
+    { key: 'low', label: 'Baja', en: 'Low', icon: '🔵' },
+    { key: 'none', label: 'Sin prioridad', en: 'No priority', icon: '⚪' },
+  ];
+  const issuePrio = (k) => ISSUE_PRIORITIES.find((p) => p.key === k) || ISSUE_PRIORITIES[4];
+  async function setIssuePriority(i, key) {
+    if (i.priority === key) return;
+    try {
+      await Bridge.call('issues.setPriority', { id: i.id, priority: key });
+      toast(`${i.id}: prioridad ${issuePrio(key).label}`, 'ok');
+      await loadIssues();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  function issuePrioMenu(ev, i) {
+    popMenu(ev, ISSUE_PRIORITIES.map((p) => ({ label: `${p.icon} ${p.label}`, hint: p.key === i.priority ? '✓' : p.en, action: () => setIssuePriority(i, p.key) })));
+  }
   /** Escribe el pedido en la terminal de IA del proyecto (sin Enter, para revisarlo). Sin IA abierta: lo copia. */
   function issueAsk(text) {
     const t = codeAiTarget();
@@ -7047,27 +7068,45 @@
   function newIssue() {
     const id = h('input.mono', { placeholder: 'AVE-303', style: 'text-transform:uppercase' });
     const title = h('input', { placeholder: 'Título (opcional: la IA lo completa desde Linear)' });
+    const prio = h('select', h('option', { value: '' }, 'La de Linear (la copia la IA)'), ISSUE_PRIORITIES.map((p) => h('option', { value: p.key }, `${p.icon} ${p.label} (${p.en})`)));
+    const local = h('input', { type: 'checkbox' });
     const ask = h('input', { type: 'checkbox' });
     ask.checked = true;
+    const askLabel = h('span', ' Pedirle a la IA del proyecto que la traiga de Linear y arme el plan');
+    const idLabel = h('label', 'Identificador');
+    const sync = () => {
+      const l = local.checked;
+      id.placeholder = l ? 'LOCAL (se numera solo: LOCAL-1, LOCAL-2…)' : 'AVE-303';
+      title.placeholder = l ? 'Título' : 'Título (opcional: la IA lo completa desde Linear)';
+      idLabel.textContent = l ? 'Prefijo o identificador (opcional)' : 'Identificador';
+      prio.options[0].textContent = l ? '⚪ Sin prioridad' : 'La de Linear (la copia la IA)';
+      askLabel.textContent = l ? ' Pedirle a la IA del proyecto que ayude a redactarla y arme el plan' : ' Pedirle a la IA del proyecto que la traiga de Linear y arme el plan';
+    };
+    local.addEventListener('change', sync);
     const doCreate = async () => {
-      const v = id.value.trim().toUpperCase();
-      if (!/^[A-Z][A-Z0-9]*-\d+$/.test(v)) { toast('Identificador inválido (algo como AVE-303)', 'err'); id.focus(); return; }
+      let v = id.value.trim().toUpperCase();
+      if (local.checked && !v) v = 'LOCAL';
+      const ok = /^[A-Z][A-Z0-9]*-\d+$/.test(v) || (local.checked && /^[A-Z][A-Z0-9]*$/.test(v));
+      if (!ok) { toast(local.checked ? 'Identificador inválido (un prefijo como LOCAL o algo como LOCAL-7)' : 'Identificador inválido (algo como AVE-303)', 'err'); id.focus(); return; }
+      if (local.checked && !title.value.trim()) { toast('Una issue local necesita título', 'err'); title.focus(); return; }
       try {
-        const r = await Bridge.call('issues.create', { id: v, title: title.value.trim() });
+        const r = await Bridge.call('issues.create', { id: v, title: title.value.trim(), priority: prio.value || (local.checked ? 'none' : undefined), local: local.checked });
         modalClose(true);
         issuesOpen = r.id;
         toast(r.created ? `Issue ${r.id} creada en ${tilde(r.dir)}` : `${r.id} ya existía: se retoma`, 'ok');
         await loadIssues();
-        if (ask.checked) issueAsk(r.created ? ISSUE_PROMPTS.take(r.id) : ISSUE_PROMPTS.resume(r.id));
+        if (ask.checked) issueAsk(!r.created ? ISSUE_PROMPTS.resume(r.id) : local.checked ? ISSUE_PROMPTS.local(r.id) : ISSUE_PROMPTS.take(r.id));
       } catch (e) { toast(e.message, 'err'); }
     };
     [id, title].forEach((el) => el.addEventListener('keydown', (e) => { if (e.key === 'Enter') doCreate(); }));
     openModal({
       title: 'Nueva issue',
       body: [
-        h('div.field', h('label', 'Identificador'), id),
+        h('label.muted', local, ' Issue local (no viene de Linear ni de otro tracker)'),
+        h('div.field', idLabel, id),
         h('div.field', h('label', 'Título'), title),
-        h('label.muted', ask, ' Pedirle a la IA del proyecto que la traiga de Linear y arme el plan'),
+        h('div.field', h('label', 'Prioridad'), prio),
+        h('label.muted', ask, askLabel),
         h('p.muted', { style: 'margin:4px 0 0;font-size:11px' }, `Se crea en ${issuesInfo ? tilde(issuesInfo.dir) : 'local/issues'}/<ID> con issue.md, changelog.md y status.md.`),
       ],
       foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doCreate }, 'Crear')],
@@ -7092,9 +7131,9 @@
     const q = (state.ui.issuesQuery || '').toLowerCase();
     const all = issuesInfo.issues;
     const counts = { open: all.filter((i) => !i.closed).length, closed: all.filter((i) => i.closed).length, all: all.length };
-    const list = all.filter((i) => (f === 'all' || (f === 'open' ? !i.closed : i.closed)) && (!q || `${i.id} ${i.title} ${i.estado}`.toLowerCase().includes(q)));
+    const list = all.filter((i) => (f === 'all' || (f === 'open' ? !i.closed : i.closed)) && (!q || `${i.id} ${i.title} ${i.estado} ${issuePrio(i.priority).label} ${issuePrio(i.priority).en}`.toLowerCase().includes(q)));
     const pending = all.filter((i) => !i.closed && i.pending).reduce((n, i) => n + i.pending, 0);
-    const search = h('input.filter', { placeholder: 'Buscar por ID, título o estado…', value: state.ui.issuesQuery || '' });
+    const search = h('input.filter', { placeholder: 'Buscar por ID, título, estado o prioridad…', value: state.ui.issuesQuery || '' });
     search.addEventListener('input', debounce(() => { state.ui.issuesQuery = search.value; save(); renderRight(); requestAnimationFrame(() => { const s = $('#rbody .filter'); if (s) { s.focus(); s.setSelectionRange(s.value.length, s.value.length); } }); }, 200));
     const seg = (k, label) => h(`button.mini${f === k ? '.primary' : ''}`, { onclick: () => { state.ui.issuesFilter = k; save(); renderRight(); } }, `${label} ${counts[k]}`);
     return [
@@ -7106,25 +7145,44 @@
         h('button.mini', { title: ISSUE_PROMPTS.day(), onclick: () => issueAsk(ISSUE_PROMPTS.day()) }, `📤 Fin de jornada${pending ? ` (${pending})` : ''}`)),
       search,
       h('p.muted.iss-hint', `En ${tilde(issuesInfo.dir)} (fuera de git). La IA las gestiona con la skill frap-issues: dile "toma la issue AVE-…".`),
-      list.length ? h('div.iss-list', list.map((i) => {
-        const open = issuesOpen === i.id;
-        return h(`div.iss-card${open ? '.open' : ''}${i.closed ? '.closed' : ''}`,
-          h('div.iss-head', { onclick: () => { issuesOpen = open ? null : i.id; renderRight(); } },
-            h('span.iss-id', i.id),
-            i.pending && !i.closed ? h('span.iss-pend', { title: `${i.pending} comentario(s)/cambio(s) por enviar a Linear` }, `📤 ${i.pending}`) : null,
-            h('span.grow'),
-            h('span.muted.iss-date', i.updated ? new Date(i.updated).toLocaleDateString([], { day: '2-digit', month: 'short' }) : '')),
-          h('div.iss-title', i.title || h('span.muted', '(sin título)')),
-          i.estado ? h('div.iss-estado.muted', i.estado) : null,
-          open ? h('div.iss-acts',
-            h('div.iss-files', ['status.md', 'issue.md', 'changelog.md', 'final.md'].filter((x) => i.files.includes(x)).map((x) => h('button.mini', { title: tilde(issueFile(i, x)), onclick: () => openInFrap(issueFile(i, x)) }, x))),
-            h('div.iss-files',
-              i.closed ? null : h('button.mini', { onclick: () => issueAsk(ISSUE_PROMPTS.resume(i.id)) }, '🤖 Retomar con la IA'),
-              i.closed ? null : h('button.mini', { onclick: () => issueAsk(ISSUE_PROMPTS.close(i.id)) }, '✅ Cerrar'),
-              i.url ? h('button.mini', { title: i.url, onclick: () => openPageTab({ url: i.url }) }, '↗ Linear') : null,
-              h('button.mini', { title: 'Copiar la carpeta de la issue', onclick: () => { copyText(i.dir); toast(`Copiado: ${tilde(i.dir)}`, 'ok'); } }, '⧉ Ruta'))) : null);
+      list.length ? h('div.iss-list', ISSUE_PRIORITIES.map((p) => {
+        const items = list.filter((i) => (i.priority || 'none') === p.key);
+        if (!items.length) return null;
+        const collapsed = (state.ui.issuesCollapsed || []).includes(p.key);
+        const toggle = () => {
+          const set = new Set(state.ui.issuesCollapsed || []);
+          if (set.has(p.key)) set.delete(p.key); else set.add(p.key);
+          state.ui.issuesCollapsed = [...set];
+          save();
+          renderRight();
+        };
+        return h(`div.iss-group.prio-${p.key}${collapsed ? '.collapsed' : ''}`,
+          h('div.iss-ghead', { onclick: toggle, title: collapsed ? 'Desplegar' : 'Plegar' },
+            h('span.iss-caret', collapsed ? '▸' : '▾'), h('span', p.icon), h('span.iss-gname', p.label), h('span.iss-count', String(items.length)),
+            h('span.grow'), h('span.muted.iss-gen', p.en)),
+          collapsed ? null : h('div.iss-gitems', items.map((i) => issueCard(i))));
       })) : h('div.empty-list', all.length ? 'Nada con ese filtro.' : 'Sin issues todavía. Crea una con "+ Nueva" o dile a la IA "toma la issue AVE-…".'),
     ];
+  }
+  function issueCard(i) {
+    const open = issuesOpen === i.id;
+    const pr = issuePrio(i.priority);
+    return h(`div.iss-card${open ? '.open' : ''}${i.closed ? '.closed' : ''}`,
+      h('div.iss-head', { onclick: () => { issuesOpen = open ? null : i.id; renderRight(); } },
+        h('button.iss-prio', { title: `Prioridad: ${pr.label} (${pr.en}) · clic para cambiarla`, onclick: (e) => issuePrioMenu(e, i) }, pr.icon),
+        h('span.iss-id', i.id),
+        i.pending && !i.closed ? h('span.iss-pend', { title: `${i.pending} comentario(s)/cambio(s) por enviar a Linear` }, `📤 ${i.pending}`) : null,
+        h('span.grow'),
+        h('span.muted.iss-date', i.updated ? new Date(i.updated).toLocaleDateString([], { day: '2-digit', month: 'short' }) : '')),
+      h('div.iss-title', i.title || h('span.muted', '(sin título)')),
+      i.estado ? h('div.iss-estado.muted', i.estado) : null,
+      open ? h('div.iss-acts',
+        h('div.iss-files', ['status.md', 'issue.md', 'changelog.md', 'final.md'].filter((x) => i.files.includes(x)).map((x) => h('button.mini', { title: tilde(issueFile(i, x)), onclick: () => openInFrap(issueFile(i, x)) }, x))),
+        h('div.iss-files',
+          i.closed ? null : h('button.mini', { onclick: () => issueAsk(ISSUE_PROMPTS.resume(i.id)) }, '🤖 Retomar con la IA'),
+          i.closed ? null : h('button.mini', { onclick: () => issueAsk(ISSUE_PROMPTS.close(i.id)) }, '✅ Cerrar'),
+          i.url ? h('button.mini', { title: i.url, onclick: () => openPageTab({ url: i.url }) }, '↗ Linear') : null,
+          h('button.mini', { title: 'Copiar la carpeta de la issue', onclick: () => { copyText(i.dir); toast(`Copiado: ${tilde(i.dir)}`, 'ok'); } }, '⧉ Ruta'))) : null);
   }
 
   // ----- carpeta local/ como .zip (exportar / importar) -----

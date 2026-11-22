@@ -1078,6 +1078,20 @@ li.CodeMirror-hint-active { background: var(--accent); color: var(--bg); }
 .iss-bar { display: flex; align-items: center; gap: 4px; margin: 0 0 6px; flex-wrap: wrap; }
 .iss-hint { font-size: 11px; margin: 4px 0 8px; }
 .iss-list { display: flex; flex-direction: column; gap: 6px; }
+.iss-group { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.iss-ghead { display: flex; align-items: center; gap: 6px; padding: 5px 8px; cursor: pointer; user-select: none; background: var(--bg-2); font-size: 12px; }
+.iss-ghead:hover { background: var(--bg-hover); }
+.iss-caret { width: 10px; color: var(--fg-2); }
+.iss-gname { font-weight: 600; }
+.iss-count { font-size: 10.5px; padding: 0 6px; border-radius: 8px; background: var(--bg); color: var(--fg-2); }
+.iss-gen { font-size: 10.5px; }
+.iss-group.prio-urgent { border-left: 3px solid #e5484d; }
+.iss-group.prio-high { border-left: 3px solid #f5a524; }
+.iss-group.prio-medium { border-left: 3px solid #e2c044; }
+.iss-group.prio-low { border-left: 3px solid #4c9aff; }
+.iss-gitems { display: flex; flex-direction: column; gap: 6px; padding: 6px; border-top: 1px solid var(--line); }
+.iss-prio { background: none; border: 0; padding: 0 2px; font-size: 11px; line-height: 1; cursor: pointer; }
+.iss-prio:hover { transform: scale(1.2); }
 .iss-card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2); padding: 7px 9px; }
 .iss-card.open { border-color: var(--accent); }
 .iss-card.closed { opacity: .7; }

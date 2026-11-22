@@ -808,15 +808,37 @@ test('issues.* y local.*: carpeta local/issues, skill frap-issues, importar carp
   assert.equal(a.pending, 2);
   assert.equal(a.closed, false);
   assert.equal(l.issues.find((i) => i.id === 'AVE-1').closed, true);
+  // prioridad: formato de Linear en issue.md, venga o no de Linear
+  assert.equal(a.priority, 'none'); // plantilla de Linear sin llenar
+  const md303 = path.join(c.dir, 'issue.md');
+  fs.writeFileSync(md303, fs.readFileSync(md303, 'utf8').replace(/^- \*\*Prioridad:\*\*.*$/m, '- **Prioridad:** High'));
+  assert.equal((await client.call('issues.list')).issues.find((i) => i.id === 'AVE-303').priority, 'high');
+  assert.deepEqual(await client.call('issues.setPriority', { id: 'ave-303', priority: 'urgente' }), { id: 'AVE-303', priority: 'urgent', label: 'Urgent' });
+  assert.match(fs.readFileSync(md303, 'utf8'), /^- \*\*Prioridad:\*\* Urgent$/m);
+  assert.equal(fs.readFileSync(md303, 'utf8').match(/Prioridad/g).length, 1);
+  await assert.rejects(client.call('issues.setPriority', { id: 'AVE-303', priority: 'altísima' }), /Prioridad inválida/);
+  await assert.rejects(client.call('issues.setPriority', { id: 'AVE-999', priority: 'low' }), /No existe/);
+  // issue local (sin tracker): prefijo → número siguiente, con prioridad
+  const loc = await client.call('issues.create', { id: 'LOCAL', title: 'Tarea interna', priority: 'media', local: true });
+  assert.equal(loc.id, 'LOCAL-1');
+  const locMd = fs.readFileSync(path.join(loc.dir, 'issue.md'), 'utf8');
+  assert.match(locMd, /^- \*\*Prioridad:\*\* Medium$/m);
+  assert.match(locMd, /Issue local \(sin tracker\)/);
+  assert.equal((await client.call('issues.create', { id: 'local', title: 'Otra' })).id, 'LOCAL-2');
+  assert.equal((await client.call('issues.list')).issues.find((i) => i.id === 'LOCAL-2').priority, 'none');
+  await assert.rejects(client.call('issues.create', { id: 'LOCAL', priority: 'x' }), /Prioridad inválida/);
   // CLI para agentes
   const { execFileSync } = require('child_process');
   const cli = (...args) => execFileSync(process.execPath, [path.join(__dirname, '..', 'bridge', 'frap-issues.js'), ...args], { env: { ...process.env, FRAP_LOCAL: local }, encoding: 'utf8' });
   assert.match(cli('new', 'ENG-7', 'Desde', 'la', 'CLI'), /Creada/);
   assert.match(cli('new', 'ENG-7'), /ya existe/);
   const lst = cli('list');
-  assert.match(lst, /AVE-303\tactiva\tEn curso\t📤 2 por enviar\tVisor/);
+  assert.match(lst, /AVE-303\tUrgent\tactiva\tEn curso\t📤 2 por enviar\tVisor/);
+  assert.ok(lst.indexOf('AVE-303') < lst.indexOf('LOCAL-1') && lst.indexOf('LOCAL-1') < lst.indexOf('LOCAL-2'), 'ordenada por prioridad');
   assert.doesNotMatch(lst, /AVE-1\t/);
-  assert.match(cli('list', '--all'), /AVE-1\tcerrada/);
+  assert.match(cli('list', '--all'), /AVE-1\tNo priority\tcerrada/);
+  assert.match(cli('new', 'INT', 'Interna', '--prioridad', 'baja'), /Creada INT-1 .*Prioridad: Low/);
+  assert.match(cli('priority', 'INT-1', 'high'), /INT-1: prioridad High/);
   // importar carpeta (acepta la que contiene "issues"), sin pisar existentes
   const old = path.join(root, 'harness');
   fs.mkdirSync(path.join(old, 'issues', 'AVE-9'), { recursive: true });
