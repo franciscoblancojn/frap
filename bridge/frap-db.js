@@ -68,9 +68,10 @@ async function main() {
     return v === undefined || v.startsWith('--') ? true : v;
   };
   const json = flag('--json') !== undefined;
-  const limit = Number(flag('--limit')) || 200;
   const describe = flag('--describe');
   const tables = flag('--tables') !== undefined;
+  // --tables sin tope: una base puede tener más de 200 tablas (las de más quedaban fuera de la lista)
+  const limit = Number(flag('--limit')) || (tables || describe ? 100000 : 200);
 
   if (!args.length || args[0] === '-h' || args[0] === '--help') { console.log(USAGE); return; }
 

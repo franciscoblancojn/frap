@@ -245,6 +245,17 @@ test('CLI frap-db: list, --tables, --describe, consulta, --json y rechazo de esc
   assert.doesNotMatch(list.stdout, /secreto/);
 
   assert.match(cli('tienda', '--tables').stdout, /clientes/);
+  // muchas tablas: --tables las lista todas (antes se cortaba en 200)
+  const many = path.join(root, 'muchas.db');
+  spawnSync('sqlite3', [many], { input: Array.from({ length: 230 }, (_, i) => `CREATE TABLE t_${String(i).padStart(3, '0')} (id INTEGER);`).join('\n') });
+  db.saveConnections(path.join(home, 'databases.env'), [
+    { id: 'tienda', name: 'Tienda', engine: 'sqlite', host: '', port: '', user: '', password: 'secreto-no-mostrar', database: sqliteFile, uiWrite: true },
+    { id: 'muchas', name: 'Muchas', engine: 'sqlite', host: '', port: '', user: '', password: '', database: many },
+  ]);
+  const tl = cli('muchas', '--tables').stdout;
+  assert.match(tl, /t_229/);
+  assert.doesNotMatch(tl, /truncado/);
+  assert.match(cli('muchas', 'SELECT name FROM sqlite_master').stdout, /truncado a 200/); // las consultas siguen con su tope
   assert.match(cli('tienda', '--describe', 'clientes').stdout, /nombre/);
 
   const q = cli('tienda', 'SELECT nombre, nota FROM clientes ORDER BY id');
