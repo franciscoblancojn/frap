@@ -1877,8 +1877,15 @@
     });
   }
 
+  /** Archivos de configuración abiertos en el editor de código: al guardarlos se valida el JSON y se refresca el panel. */
+  const cfgFiles = new Set();
   /** Editor de archivos (agentes, skills, hooks, memoria…). */
   async function openEditor(path, { create = false, template = '', title } = {}) {
+    if (launchOn('code') && project()) { // con el editor de código activo (Módulos) se abre en él; si no, en esta modal
+      cfgFiles.add(path);
+      await openInFrap(path, undefined, undefined, false, undefined, { template: create ? template : '' });
+      return;
+    }
     let content = template;
     if (!create) {
       try { content = (await Bridge.call('fs.read', { path })).content; } catch (e) {
@@ -3943,12 +3950,15 @@
     f.promise = codeLoadNow(P, file, f);
     return f.promise;
   }
+  /** Contenido inicial de archivos que se abren para crearlos (ver openEditor). */
+  const codeTemplates = new Map();
   async function codeLoadNow(P, file, f) {
     if (!Bridge.ready) { P.files.delete(file); f.loading = false; return f; } // al conectar se vuelve a pintar (ver Bridge.on('open'))
     f.media = mediaKind(file); // imagen, video, audio o PDF: se ven directo del disco, no se cargan como texto
     if (f.media) { f.loading = false; f.exists = true; return f; }
     try {
       const r = await Bridge.call('fs.read', { path: file });
+      codeTemplates.delete(file);
       const text = r.content;
       if (text.slice(0, 8000).includes('\0')) { Object.assign(f, { binary: true, loading: false, error: null }); return f; }
       f.mode = codeModeFor(file);
@@ -3959,6 +3969,15 @@
       }
       Object.assign(f, { saved: text, gen: f.master.changeGeneration(true), mtime: r.mtime, exists: true, error: null, binary: false, loading: false, conflict: null });
     } catch (e) {
+      const tpl = codeTemplates.get(file);
+      if (tpl != null && /ENOENT|no such file/i.test(e.message)) { // archivo nuevo (skill, memoria…): sin guardar hasta Ctrl+S
+        f.mode = codeModeFor(file);
+        f.master = new CodeMirror.Doc('', f.mode);
+        Object.assign(f, { saved: '', gen: f.master.changeGeneration(true), mtime: 0, exists: false, error: null, binary: false, loading: false, conflict: null });
+        codeTemplates.delete(file);
+        if (tpl) f.master.setValue(tpl);
+        return f;
+      }
       Object.assign(f, { loading: false, error: /ENOENT|no such file/i.test(e.message) ? 'El archivo no existe (¿lo borraron o renombraron?)' : e.message });
     }
     return f;
@@ -3984,6 +4003,7 @@
     let gi = opts.group != null ? opts.group : c.focus;
     if (gi >= c.groups.length) { if (c.groups.length >= CODE_MAX_GROUPS) gi = c.groups.length - 1; else { c.groups.push({ tabs: [], active: null }); gi = c.groups.length - 1; } }
     const g = c.groups[gi];
+    if (opts.template != null) { const f0 = codePane.files.get(file); if (!f0 || f0.error) { codePane.files.delete(file); codeTemplates.set(file, opts.template); } } // si no existe se crea al guardar
     if (!g.tabs.includes(file)) {
       const i = g.active ? g.tabs.indexOf(g.active) : -1;
       g.tabs.splice(i + 1, 0, file);
@@ -4469,6 +4489,9 @@
     const f = P && P.files.get(file);
     if (!f || !f.master) return false;
     const text = f.master.getValue();
+    if (cfgFiles.has(file) && file.endsWith('.json')) {
+      try { JSON.parse(text); } catch (e) { toast(`JSON inválido: ${e.message}`, 'err'); return false; }
+    }
     try {
       if (f.mtime) {
         const st = (await Bridge.call('fs.stat', { paths: [file] }))[0];
@@ -4482,6 +4505,7 @@
       Object.assign(f, { saved: text, gen, mtime: r.mtime, exists: true, conflict: null, ignoreMtime: null });
       if (explicit) toast(`Guardado ${basename(file)}`, 'ok');
       codeRenderGroupsFor(file);
+      if (cfgFiles.has(file)) loadConfig(true); // agentes, skills, hooks, memoria: refresca el panel derecho
       return true;
     } catch (e) { toast(e.message, 'err'); return false; }
   }
@@ -4573,7 +4597,7 @@
   }
 
   /** Abre un archivo en el editor de FRAP (clic en una ruta de la terminal). pid: proyecto de la terminal. */
-  async function openInFrap(file, line, col, isDir, pid) {
+  async function openInFrap(file, line, col, isDir, pid, extra = {}) {
     const owner = state.projects.find((p) => p.folders.some((f) => file === f.replace(/\/+$/, '') || file.startsWith(`${f.replace(/\/+$/, '')}/`)));
     const target = (pid && project(pid)) || owner || project();
     if (!target) { toast('Primero crea o selecciona un proyecto', 'err'); return; }
@@ -4581,7 +4605,7 @@
     openCodeView();
     ensureCodePane();
     if (isDir) { await codeRevealDir(file); return; }
-    await codeOpenFile(file, { line, col });
+    await codeOpenFile(file, { line, col, ...extra });
   }
   async function codeRevealDir(dir) {
     const r = codeRoots().find((x) => dir === x || dir.startsWith(`${x}/`));

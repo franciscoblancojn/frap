@@ -306,3 +306,7 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | Comandos | `~/.claude/commands/**/*.md`, `~/.codex/prompts/*.md`, `~/.config/opencode/command(s)/` | `.claude/commands/**`, `.opencode/command(s)/` |
 | Hooks | `~/.claude/settings{,.local}.json` | `.claude/settings{,.local}.json` |
 | Memoria | `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.config/opencode/AGENTS.md` | `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` |
+
+Al hacer clic en uno de estos archivos (`openEditor`), se abre en el **editor de código** si su módulo está activo. Si no, se abre en la modal de edición.
+- Un archivo que aún no existe (skill nueva, memoria sin crear) se abre como pestaña sin guardar con su plantilla (`codeTemplates`) y se crea con Ctrl+S.
+- Al guardar uno de estos archivos (`cfgFiles`) se valida el JSON y se refresca el panel.
