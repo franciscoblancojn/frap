@@ -265,6 +265,15 @@ function psTable() {
     });
   });
 }
+/** [{pid, sess}]: id de sesión de Unix de cada proceso (para cerrar todo lo que cuelga de una terminal). */
+function psSessions() {
+  return new Promise((resolve) => {
+    execFile('ps', ['-eo', 'pid=,sess='], { maxBuffer: 4 * 1024 * 1024 }, (err, out) => {
+      if (err) return resolve([]);
+      resolve(out.split('\n').map((l) => l.trim().split(/\s+/).map(Number)).filter((x) => x.length === 2 && x[0] && x[1]).map(([pid, sess]) => ({ pid, sess })));
+    });
+  });
+}
 function descendants(rows, rootPid) {
   const byParent = new Map();
   for (const r of rows) {
@@ -502,6 +511,7 @@ async function rediscoverSessions() {
     sessions.set(m.sid, s);
     try {
       await Promise.race([connectSession(s), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000))]);
+      if (s.meta.closing) { s.closing = true; killSession(s, { escalate: true }); return; } // se estaba cerrando
       n++;
     } catch (_) {
       sessions.delete(m.sid);
@@ -519,10 +529,29 @@ function getSession(sid) {
 function write(s, data) {
   if (s.alive && s.sock && !s.sock.destroyed) s.sock.write(frame('I', String(data)));
 }
-function killSession(s) {
+const KILL_GRACE_MS = Number(process.env.FRAP_KILL_GRACE_MS) || 4000;
+/**
+ * Cierra una sesión: SIGHUP (lo manda frap_pty.py, como al cerrar una terminal). Con `escalate`, si a los
+ * KILL_GRACE_MS sigue viva (claude, por ejemplo, captura SIGHUP y no termina), SIGTERM a todo su árbol de
+ * procesos y, si aún sigue, SIGKILL. Así la ✕ cierra de verdad y la terminal no vuelve al recargar.
+ */
+function killSession(s, { escalate = false } = {}) {
   if (!s.alive) return;
   if (s.sock && !s.sock.destroyed) s.sock.write(frame('K'));
   else { try { process.kill(s.pid, 'SIGTERM'); } catch (_) { /* ya no existe */ } }
+  if (!escalate) return;
+  const signalTree = async (sig) => {
+    if (!s.alive) return;
+    const rows = await psTable();
+    const tree = descendants(rows, s.pid);
+    // la shell es líder de su sesión de Unix: los programas que quedaron huérfanos al morir ella (claude
+    // capturando SIGHUP) ya no son sus hijos, pero siguen en esa sesión y con la terminal abierta
+    const leaders = new Set(tree.filter((r) => r.depth === 0).map((r) => r.pid));
+    const pids = new Set(tree.map((r) => r.pid));
+    for (const r of await psSessions()) if (leaders.has(r.sess) && r.pid !== s.pid) pids.add(r.pid);
+    for (const pid of pids) { try { process.kill(pid, sig); } catch (_) { /* ya no existe */ } }
+  };
+  setTimeout(() => signalTree('SIGTERM').then(() => setTimeout(() => signalTree('SIGKILL'), KILL_GRACE_MS / 2)), KILL_GRACE_MS).unref?.();
 }
 
 // ---------- estado persistente de la UI ----------
@@ -915,7 +944,7 @@ const ops = {
     ops: Object.keys(ops),
     startedAt: STARTED_AT,
   }),
-  'sessions.list': () => [...sessions.values()].map(sessionInfo),
+  'sessions.list': () => [...sessions.values()].filter((s) => !s.closing).map(sessionInfo), // las que se están cerrando ya no se muestran
   'session.create': (p) => createSession({ ...p, env: undefined }),
   'session.attach': ({ sid }) => {
     const s = getSession(sid);
@@ -957,8 +986,13 @@ const ops = {
   },
   'session.kill': ({ sid }) => {
     const s = getSession(sid);
-    if (s.alive) killSession(s);
-    else sessions.delete(sid);
+    if (s.alive) {
+      s.closing = true;
+      s.meta.closing = true; // si el bridge se reinicia antes de que termine, el siguiente la sigue cerrando
+      saveMeta(s);
+      killSession(s, { escalate: true });
+      broadcast({ ev: 'sessions' });
+    } else sessions.delete(sid);
     return true;
   },
   ps: async () => {

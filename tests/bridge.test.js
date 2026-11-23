@@ -110,7 +110,7 @@ test.before(async () => {
       ...process.env,
       FRAP_PORT: '0', FRAP_TOKEN: TOKEN, HOME: root, CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', FRAP_HOME: path.join(root, 'cfg'),
       FRAP_TEST_SFTP_SERVER: SFTP_SERVER || '', FRAP_TEST_SFTP_LOG: path.join(root, 'sftp.log'),
-      FRAP_FS_ROOT: root, FRAP_LOCAL: path.join(root, 'local'), FRAP_QUIET: '1', SHELL: '/bin/sh', PATH: `${path.join(root, 'fakebin')}${path.delimiter}${process.env.PATH}`,
+      FRAP_FS_ROOT: root, FRAP_LOCAL: path.join(root, 'local'), FRAP_QUIET: '1', FRAP_KILL_GRACE_MS: '800', SHELL: '/bin/sh', PATH: `${path.join(root, 'fakebin')}${path.delimiter}${process.env.PATH}`,
       GIT_AUTHOR_NAME: 'FRAP Test', GIT_AUTHOR_EMAIL: 'test@frap.local', GIT_COMMITTER_NAME: 'FRAP Test', GIT_COMMITTER_EMAIL: 'test@frap.local',
     },
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
@@ -180,6 +180,21 @@ test('sesión interactiva: input, resize y attach', async () => {
 
   await client.call('session.kill', { sid: s.sid });
   await client.waitFor((e) => e.ev === 'exit' && e.sid === s.sid);
+});
+
+test('session.kill cierra aunque el programa capture SIGHUP (como claude): deja de listarse y termina', async () => {
+  const { execFileSync } = require('child_process');
+  const mark = `frap-hup-${process.pid}-${Date.now()}`;
+  // bash interactiva (como las terminales reales) con un programa que ignora SIGHUP y queda huérfano al morir la shell
+  const s = await client.call('session.create', { cwd: root, cmd: ['bash', '-i'], meta: { kind: 'claude' }, init: `node -e "process.title='${mark}'; process.on('SIGHUP',()=>console.log('HUP')); setInterval(()=>{},1000)"` });
+  const running = () => execFileSync('ps', ['-eo', 'args=']).toString().split('\n').some((l) => l.includes(mark));
+  for (let i = 0; i < 50 && !running(); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.ok(running(), 'el programa de prueba arrancó');
+  await client.call('session.kill', { sid: s.sid });
+  assert.equal((await client.call('sessions.list')).some((x) => x.sid === s.sid), false, 'ya no se lista (no vuelve al recargar)');
+  await client.waitFor((e) => e.ev === 'exit' && e.sid === s.sid, 8000);
+  for (let i = 0; i < 20 && running(); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.equal(running(), false, 'no queda el programa huérfano');
 });
 
 test('init escribe el comando inicial en la shell', async () => {

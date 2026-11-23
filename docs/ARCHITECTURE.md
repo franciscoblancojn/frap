@@ -271,7 +271,7 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `session.resize` | `{sid, cols, rows}` | — |
 | `session.meta` | `{sid, meta}` | info (mezcla la meta) |
 | `session.seen` | `{sid}` | `true`; borra el aviso (`notice`) de la sesión |
-| `session.kill` | `{sid}` | `true` |
+| `session.kill` | `{sid}` | `true`. Deja de listarla al instante (y lo guarda en su meta por si el bridge se reinicia); SIGHUP vía `frap_pty.py` y, si a los `FRAP_KILL_GRACE_MS` (4 s) sigue viva (claude captura SIGHUP y queda huérfano al morir la shell), SIGTERM y luego SIGKILL a su árbol y a toda su sesión de Unix |
 | `ps` | — | `{sid: [{pid, ppid, etime, cpu, rss, args, depth}]}` |
 | `proc.kill` | `{pid, signal?}` | solo descendientes de sesiones FRAP |
 | `fs.list` | `{path, dirsOnly?, hidden?, details?}` | `{path, parent, entries:[{name, dir}]}`; con `details` cada entrada trae además `link, size, mtime` |
