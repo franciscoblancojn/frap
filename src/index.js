@@ -1520,6 +1520,8 @@
 
   function renderTabs() {
     const tabs = $('#tabs');
+    const keepLeft = tabs.scrollLeft; // al vaciar, el scroll vuelve a 0: se restaura al final
+    const prevActive = tabs.dataset.active || '';
     tabs.replaceChildren();
     const at = activeTerm();
     if (at && termKind(at) === 'action') {
@@ -1573,7 +1575,21 @@
       h('span.tname', { git: 'Git', db: 'DB', sftp: '⇅ Archivos', notes: 'Notas', code: 'Código' }[v.kind]),
       h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeView(v); } }, '✕')));
     }
+    tabs.scrollLeft = keepLeft;
+    // si cambió la pestaña activa, que quede a la vista
+    const active = tabs.querySelector('.tab.active');
+    tabs.dataset.active = state.activeSid || '';
+    if (active && prevActive !== tabs.dataset.active) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
+  // rueda del ratón sobre la barra de pestañas: desplaza en horizontal (antes solo se podía con Shift o el touchpad)
+  $('#tabs').addEventListener('wheel', (e) => {
+    const tabs = e.currentTarget;
+    if (tabs.scrollWidth <= tabs.clientWidth) return;
+    const d = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+    if (!d) return;
+    e.preventDefault();
+    tabs.scrollLeft += e.deltaMode === 1 ? d * 30 : d; // deltaMode 1 = líneas
+  }, { passive: false });
 
   // ---------- pantalla dividida ----------
   // Muestra a la vez las primeras N terminales (shell/agentes/ssh) del proyecto activo.
