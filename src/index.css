@@ -1239,3 +1239,15 @@ li.CodeMirror-hint-active { background: var(--accent); color: var(--bg); }
 @media (max-width: 700px) { .code-dir-item { grid-template-columns: 30px minmax(0, 1fr) 70px; } .code-dir-date { display: none; } }
 
 .iss-review { font-size: 10px; padding: 0 6px; border-radius: 8px; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); white-space: nowrap; }
+
+/* git: publicar versión (npm run push-v -- major|minor|patch) */
+.rel-kinds { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 6px 0 10px; }
+.rel-kind { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 10px; text-align: left; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2); }
+.rel-kind b { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; }
+.rel-kind .rel-next { font-family: var(--mono); font-size: 12px; color: var(--fg); }
+.rel-kind .muted { font-size: 11px; }
+.rel-kind.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--bg-2)); box-shadow: 0 0 0 1px var(--accent); }
+.rel-cmdrow { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.rel-cmd { font-family: var(--mono); background: var(--bg-3); padding: 2px 6px; border-radius: 4px; }
+.rel-warn { color: var(--warn); font-size: 12px; margin: 8px 0 0; }
+@media (max-width: 700px) { .rel-kinds { grid-template-columns: 1fr; } }

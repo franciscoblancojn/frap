@@ -283,6 +283,37 @@ test('fs.addRoot / removeRoot: carpetas extra permitidas (p. ej. /var/www), nunc
   await assert.rejects(client.call('fs.removeRoot', { path: extra }), /No es una carpeta extra/);
 });
 
+test('git.findRepos: repos en subcarpetas (la carpeta del proyecto puede no tener git), sin entrar en dependencias', async () => {
+  const base = path.join(root, 'multi');
+  for (const d of ['api/.git', 'web/app/.git', 'web/app/node_modules/dep/.git', 'node_modules/x/.git', 'a/b/c/d/e/.git', 'docs']) fs.mkdirSync(path.join(base, d), { recursive: true });
+  const found = await client.call('git.findRepos', { paths: [base] });
+  assert.deepEqual(found.sort(), [path.join(base, 'api'), path.join(base, 'web', 'app')].sort());
+  assert.deepEqual(await client.call('git.findRepos', { paths: [base], depth: 1 }), [path.join(base, 'api')]);
+  // la propia carpeta con git también cuenta
+  fs.mkdirSync(path.join(base, 'api', 'sub', '.git'), { recursive: true });
+  assert.ok((await client.call('git.findRepos', { paths: [path.join(base, 'api')] })).includes(path.join(base, 'api')));
+  await assert.rejects(client.call('git.findRepos', { paths: ['/etc'] }), /fuera/);
+});
+
+test('git.release: npm run push-v|deploy -- major|minor|patch con la salida en vivo (sin terminal)', async () => {
+  const repo = path.join(root, 'rel-repo');
+  fs.mkdirSync(repo, { recursive: true });
+  fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'x', scripts: { 'push-v': 'bash scripts/bump.sh', test: 'rm -rf /' } }));
+  fs.mkdirSync(path.join(root, 'fakebin'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'fakebin', 'npm'), '#!/bin/sh\necho "npm $*"\necho "en $(pwd)"\necho "prompt=$GIT_TERMINAL_PROMPT" >&2\n[ "$4" = "major" ] && exit 3\nexit 0\n', { mode: 0o755 });
+  const r = await client.call('git.release', { cwd: repo, script: 'push-v', kind: 'patch', rid: 'r1' });
+  assert.equal(r.code, 0);
+  const out = client.events.filter((e) => e.ev === 'release' && e.rid === 'r1').map((e) => e.d).join('');
+  assert.match(out, /npm run push-v -- patch/);
+  assert.match(out, new RegExp(`en ${repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  assert.match(out, /prompt=0/, 'nunca se queda esperando credenciales');
+  assert.equal((await client.call('git.release', { cwd: repo, script: 'push-v', kind: 'major', rid: 'r2' })).code, 3);
+  await assert.rejects(client.call('git.release', { cwd: repo, script: 'test', kind: 'patch' }), /no permitido/);
+  await assert.rejects(client.call('git.release', { cwd: repo, script: 'push-v', kind: '1.2.3; rm -rf /' }), /Tipo inválido/);
+  await assert.rejects(client.call('git.release', { cwd: repo, script: 'deploy', kind: 'patch' }), /no tiene el script "deploy"/);
+  await assert.rejects(client.call('git.release', { cwd: '/etc', script: 'push-v', kind: 'patch' }), /fuera/);
+});
+
 test('fs: escribir/leer dentro de la raíz, rechazar fuera', async () => {
   const f = path.join(root, 'proj', 'nota.md');
   await client.call('fs.write', { path: f, content: 'hola' });

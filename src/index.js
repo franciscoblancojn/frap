@@ -423,7 +423,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -2751,6 +2751,8 @@
         if (r.code === 0 && top && !repos.includes(top)) repos.push(top);
       } catch (_) { /* sin acceso */ }
     }
+    // repos internos: la carpeta puede no tener git pero sí una subcarpeta (o tener varios)
+    try { for (const r of await Bridge.call('git.findRepos', { paths: p.folders, depth: 3 })) if (!repos.includes(r)) repos.push(r); } catch (_) { /* bridge viejo */ }
     rt.repos = repos;
     if (!repos.includes(gs.repo)) gs.repo = repos[0] || null;
     save();
@@ -3000,13 +3002,16 @@
     newBranch.addEventListener('keydown', (e) => { if (e.key === 'Enter') gitNewBranch(); });
     const free = h('input.mono.grow', { placeholder: 'status · log --oneline -10 · diff HEAD~1 · branch -a …', spellcheck: 'false' });
     free.addEventListener('keydown', (e) => { if (e.key === 'Enter') gitFree(); });
+    const relSlot = h('span.git-rel'); // botón «🚀 Versión» si el repo tiene npm run push-v
     const left = h('div.git-left');
     const rtabs = h('div.git-rtabs');
     const right = h('div.git-right-body');
     const root = h('div.git-pane.hidden',
       h('div.git-bar',
-        repo, branch,
-        h('span.grow'), busy,
+        repo,
+        btn('🔍', 'Buscar de nuevo los repos del proyecto (también los de subcarpetas)', () => gitSyncProject(true), '.icon'),
+        branch,
+        h('span.grow'), busy, relSlot,
         btn('⟳', 'Actualizar (git status)', () => gitRefresh(), '.icon'),
         btn('⤓ Fetch', 'git fetch --all --prune', gitFetch),
         btn('⬇ Pull', 'git pull --no-edit', gitPull),
@@ -3018,7 +3023,7 @@
         h('div.git-right', rtabs, right,
           h('div.git-free', h('span.mono.muted', '$ git'), free, h('button', { onclick: gitFree, title: 'Ejecutar el comando (Enter)' }, 'Ejecutar')))));
     $('#term-host').append(root);
-    gitPane = { root, repo, branch, busy, msg, newBranch, free, left, rtabs, right };
+    gitPane = { root, repo, branch, busy, msg, newBranch, free, left, rtabs, right, relSlot };
     viewPanes.set(bound.git, gitPane);
     return gitPane;
   }
@@ -3066,6 +3071,112 @@
     }
   }
 
+  /** Nombre del repo relativo a la carpeta del proyecto que lo contiene: "frap" o "frap/integrations/x". */
+  function gitRepoLabel(r) {
+    const p = project();
+    const f = p && p.folders.map((x) => x.replace(/\/+$/, '')).filter((x) => r === x || r.startsWith(`${x}/`)).sort((a, b) => b.length - a.length)[0];
+    return f ? (r === f ? basename(f) : `${basename(f)}/${r.slice(f.length + 1)}`) : basename(r);
+  }
+
+  // ----- publicar versión: npm run push-v -- major|minor|patch (o "deploy" si llama a bump-version) -----
+  const gitReleaseCache = new Map(); // repo → {script, version, at} | {none, at}
+  async function gitReleaseInfo(repo) {
+    const c = gitReleaseCache.get(repo);
+    if (c && Date.now() - c.at < 20000) return c;
+    let info = { none: true, at: Date.now() };
+    try {
+      const pkg = JSON.parse((await Bridge.call('fs.read', { path: `${repo}/package.json` })).content);
+      const sc = pkg.scripts || {};
+      const script = sc['push-v'] ? 'push-v' : sc.deploy && /bump-version/.test(sc.deploy) ? 'deploy' : null;
+      if (script) {
+        let version = pkg.version || '';
+        if (/index\.php/.test(sc.v || '') || /bump-version/.test(sc[script])) { // la versión vive en la cabecera de index.php
+          try { const php = (await Bridge.call('fs.read', { path: `${repo}/index.php` })).content; const m = php.match(/^\s*\*?\s*Version:\s*([0-9][\w.-]*)/im); if (m) version = m[1]; } catch (_) { /* sin index.php */ }
+        }
+        info = { script, version, at: Date.now() };
+      }
+    } catch (_) { /* sin package.json */ }
+    gitReleaseCache.set(repo, info);
+    return info;
+  }
+  function renderGitRelease() {
+    const p = gitPane;
+    const repo = state.git.repo;
+    if (!p || !p.relSlot) return;
+    if (!repo) { p.relSlot.replaceChildren(); return; }
+    gitReleaseInfo(repo).then((i) => {
+      if (gitPane !== p || state.git.repo !== repo) return;
+      p.relSlot.replaceChildren(i.none ? '' : h('button', { disabled: Git.releasing || null, title: `Publicar versión: npm run ${i.script} -- major|minor|patch${i.version ? ` (actual ${i.version})` : ''}`, onclick: () => gitReleaseModal(repo, i) }, `🚀 Versión${i.version ? ` ${i.version}` : ''}`));
+    });
+  }
+  // la salida de «Publicar versión» llega en vivo (evento 'release') a la pestaña Salida de la vista Git
+  const relRuns = new Map(); // rid → {entry, rt}
+  const renderGitRightSoon = debounce(() => { if (gitPane && (state.git.tab || 'diff') === 'out') renderGitRight(); }, 80);
+  Bridge.on('release', ({ rid, d }) => {
+    const run = relRuns.get(rid);
+    if (!run) return;
+    run.entry.text += stripAnsi(String(d)); // (la existente también quita los \r de las barras de progreso)
+    if (Git === run.rt) renderGitRightSoon();
+  });
+  async function gitRunRelease(repo, info, kind) {
+    const rt = Git;
+    if (rt.releasing) { toast('Ya hay una publicación en curso', 'err'); return; }
+    const rid = uid();
+    const entry = { cmd: `npm run ${info.script} -- ${kind}`, code: null, text: '', at: Date.now(), repo };
+    rt.out.push(entry);
+    if (rt.out.length > 100) rt.out.shift();
+    relRuns.set(rid, { entry, rt });
+    rt.releasing = true;
+    state.git.tab = 'out';
+    save();
+    renderGit();
+    try {
+      const r = await Bridge.call('git.release', { cwd: repo, script: info.script, kind, rid });
+      entry.code = r.code;
+      entry.text = entry.text.trimEnd();
+      toast(r.code === 0 ? `${gitRepoLabel(repo)}: versión publicada (${Math.round(r.ms / 1000)} s)` : `${gitRepoLabel(repo)}: ${entry.cmd} falló (código ${r.code}); mira la Salida`, r.code === 0 ? 'ok' : 'err');
+    } catch (e) {
+      entry.code = 1;
+      entry.text += `${entry.text ? '\n' : ''}${e.message}`;
+      toast(e.message, 'err');
+    }
+    relRuns.delete(rid);
+    rt.releasing = false;
+    gitReleaseCache.delete(repo);
+    if (Git === rt) { renderGit(); gitRefresh(); }
+  }
+  function bumpVersion(v, kind) {
+    const m = String(v || '').match(/^(\d+)\.(\d+)\.(\d+)/);
+    if (!m) return '';
+    const [a, b, c] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    return kind === 'major' ? `${a + 1}.0.0` : kind === 'minor' ? `${a}.${b + 1}.0` : `${a}.${b}.${c + 1}`;
+  }
+  function gitReleaseModal(repo, info) {
+    let kind = 'patch';
+    const st = Git.status;
+    const dirty = st && !st.error ? st.staged.length + st.unstaged.length + st.untracked.length : 0;
+    const DESC = { patch: 'Correcciones (bugs), sin cambios de uso', minor: 'Funciones nuevas compatibles', major: 'Cambios que rompen compatibilidad' };
+    const cards = h('div.rel-kinds');
+    const cmd = h('code.rel-cmd');
+    const paint = () => {
+      cards.replaceChildren(...['patch', 'minor', 'major'].map((k) => h(`button.rel-kind${k === kind ? '.on' : ''}`, { onclick: () => { kind = k; paint(); } },
+        h('b', k), h('span.rel-next', info.version ? `${info.version} → ${bumpVersion(info.version, k) || '?'}` : ''), h('span.muted', DESC[k]))));
+      cmd.textContent = `npm run ${info.script} -- ${kind}`;
+    };
+    paint();
+    const go = () => { modalClose(true); gitRunRelease(repo, info, kind); };
+    openModal({
+      title: `Publicar versión · ${gitRepoLabel(repo)}`,
+      body: [
+        h('p.muted', { style: 'margin:0 0 8px' }, info.version ? `Versión actual: ${info.version}. ` : '', 'Se ejecuta en ', h('span.mono', tilde(repo)), ' y su salida aparece en vivo en la pestaña «Salida» de Git (sube la versión, hace commit, tag y push según su script).'),
+        cards,
+        h('div.rel-cmdrow', h('span.muted', 'Comando:'), cmd),
+        dirty ? h('p.rel-warn', `⚠ Hay ${dirty} archivo(s) con cambios sin commit: el script puede incluirlos o fallar. Revisa antes de publicar.`) : null,
+      ],
+      foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: go }, '🚀 Publicar')],
+    });
+  }
+
   function renderGit() {
     if (!gitPane) return;
     keepFocus(gitPane.root, renderGitInner);
@@ -3073,9 +3184,10 @@
   function renderGitInner() {
     const p = gitPane;
     const st = Git.status;
-    p.repo.replaceChildren(...(Git.repos.length ? Git.repos.map((r) => h('option', { value: r, title: tilde(r) }, `📁 ${basename(r)}`)) : [h('option', { value: '' }, 'Sin repositorio')]));
+    p.repo.replaceChildren(...(Git.repos.length ? Git.repos.map((r) => h('option', { value: r, title: tilde(r) }, `📁 ${gitRepoLabel(r)}`)) : [h('option', { value: '' }, 'Sin repositorio')]));
     p.repo.value = state.git.repo || '';
     p.repo.title = state.git.repo ? tilde(state.git.repo) : '';
+    renderGitRelease();
     if (!st || st.error || !state.git.repo) {
       p.branch.replaceChildren();
       const proj = project();
@@ -3151,7 +3263,7 @@
     } else {
       body = Git.out.length
         ? [h('div.git-out', [...Git.out].reverse().map((o) => h('div.git-out-item',
-          h('div.mono', h(`span.${o.code === 0 ? 'ok' : 'err'}`, o.code === 0 ? '✓' : '✗'), ` $ ${o.cmd}`),
+          h('div.mono', o.code == null ? h('span.git-run', '⏳') : h(`span.${o.code === 0 ? 'ok' : 'err'}`, o.code === 0 ? '✓' : '✗'), ` $ ${o.cmd}`, o.code == null ? h('span.muted', '  ejecutando…') : null),
           o.text ? h('pre', o.text) : null)))]
         : [h('p.muted.git-hint', 'Aquí aparece cada comando git que ejecutes desde esta vista, con su salida. Así ves exactamente qué hace cada botón.')];
     }

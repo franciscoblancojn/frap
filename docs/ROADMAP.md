@@ -8,6 +8,7 @@
 - [x] Panel central: pestañas y lanzadores shell/claude/codex/opencode (`--add-dir` para las carpetas extra)
 - [x] Terminales persistentes: sobreviven a recargar la página y se re-adjuntan con su scrollback
 - [x] Shell y SSH: botones arriba a la derecha para limpiar (también vacía el historial guardado: no vuelve al recargar ni al reiniciar el bridge) y copiar todo el contenido de la terminal
+- [x] Git: el selector incluye los repos de subcarpetas (la carpeta del proyecto puede no tener git) y 🔍 vuelve a buscarlos; botón «🚀 Versión X.Y.Z» si el repo tiene `npm run push-v` (o `deploy` con bump-version): modal patch/minor/major con la versión siguiente y aviso de cambios sin commit; se ejecuta en el bridge y su salida aparece en vivo en la pestaña «Salida» de Git
 - [x] Reabrir terminales tras reiniciar: cada terminal de claude retoma SU conversación (`claude --resume <id>`, leído de `~/.claude/sessions/<pid>.json`), no la última de la carpeta
 - [x] Cerrar una terminal (✕) la cierra de verdad aunque el programa capture SIGHUP (claude): escalada a SIGTERM/SIGKILL de toda su sesión; ya no reaparece al recargar
 - [x] Terminales: se repintan al volver a mostrarse, tras re-adjuntar (recargar la página o el bridge), al cargar la fuente y al volver a la pestaña; al re-adjuntar se manda un SIGWINCH (tamaño de ida y vuelta) para que claude/codex se redibujen enteras

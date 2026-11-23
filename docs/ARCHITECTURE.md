@@ -300,6 +300,8 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `paths.check` | `{cwd, paths}` | `[{input, path, dir}]` de las rutas que existen (las relativas se resuelven contra `cwd`; solo dentro de `FRAP_FS_ROOT`) |
 | `open.editor` | `{path, line?, col?, editor?}` | abre en el editor sin shell; la familia VS Code recibe `--goto ruta:línea:col` |
 | `open.folder` | `{path}` | abre en el explorador de archivos: una carpeta con `xdg-open`; un archivo, su carpeta con él seleccionado (`FileManager1.ShowItems` por D-Bus, si no `xdg-open` de la carpeta). macOS: `open` / `open -R`. `{opened, how}` |
+| `git.release` | `{cwd, script: push-v\|deploy, kind: major\|minor\|patch, rid}` | `npm run <script> -- <kind>` en el repo, sin terminal (solo esos scripts, si existen en su package.json, y esos tres argumentos; sin stdin y `GIT_TERMINAL_PROMPT=0`). Emite la salida en vivo como `{ev: 'release', rid, d}`; resuelve `{code, ms}` |
+| `git.findRepos` | `{paths, depth?}` | repos (carpetas con `.git`) dentro de las carpetas del proyecto, hasta 3 niveles (máx. 4), sin entrar en `node_modules`, `vendor`, `libs`… ni dentro de otro repo. La vista Git los ofrece en su selector |
 | `git.run` | `{cwd, args}` | `{code, stdout, stderr}`; ejecuta `git` sin shell, solo subcomandos de `GIT_ALLOWED`, sin `-c`/`--upload-pack`/`--exec`…; un código distinto de 0 no lanza error |
 | `music.ytInfo` | `{id}` | `{title, author}` vía oEmbed público de YouTube |
 | `ssh.list` | — | `{envFile, cli, client, skills, hosts}` (sin contraseñas) |

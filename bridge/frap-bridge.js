@@ -1638,6 +1638,53 @@ const ops = {
    * Ejecuta `git <args>` en `cwd` (sin shell). Nunca lanza por código de salida distinto de 0:
    * devuelve {code, stdout, stderr} para que la UI muestre el error de git tal cual.
    */
+  /**
+   * Publicar versión desde la vista Git: `npm run push-v|deploy -- major|minor|patch` en el repo, sin terminal.
+   * Solo esos dos scripts (y solo si existen en su package.json) y solo esos tres argumentos. La salida se emite
+   * en vivo como eventos {ev: 'release', rid, d}; resuelve al terminar con {code, ms}. Sin stdin y sin pedir
+   * credenciales (GIT_TERMINAL_PROMPT=0): si algo pide algo, falla en vez de quedarse colgado.
+   */
+  'git.release': ({ cwd, script, kind, rid }) => {
+    const dir = safePath(cwd);
+    if (!['push-v', 'deploy'].includes(script)) throw new Error('Script no permitido (solo push-v o deploy)');
+    if (!['major', 'minor', 'patch'].includes(kind)) throw new Error('Tipo inválido (major, minor o patch)');
+    let pkg;
+    try { pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')); } catch (_) { throw new Error(`No hay package.json en ${dir}`); }
+    if (!pkg.scripts || !pkg.scripts[script]) throw new Error(`El package.json no tiene el script "${script}"`);
+    const id = String(rid || '').slice(0, 40);
+    const t0 = Date.now();
+    return new Promise((resolve, reject) => {
+      const child = spawn('npm', ['run', script, '--', kind], {
+        cwd: dir, stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', npm_config_color: 'false', FORCE_COLOR: '0' },
+      });
+      const emit = (d) => broadcast({ ev: 'release', rid: id, d: d.toString('utf8') });
+      child.stdout.on('data', emit);
+      child.stderr.on('data', emit);
+      const timer = setTimeout(() => { emit(Buffer.from('\n[FRAP] Tiempo agotado (15 min): se detiene.\n')); child.kill('SIGTERM'); }, 15 * 60 * 1000);
+      child.on('error', (e) => { clearTimeout(timer); reject(new Error(e.code === 'ENOENT' ? 'No se encontró npm' : e.message)); });
+      child.on('close', (code) => { clearTimeout(timer); resolve({ code: code == null ? 1 : code, ms: Date.now() - t0 }); });
+    });
+  },
+  /**
+   * Repos git dentro de las carpetas del proyecto (la carpeta puede no tener git pero sí una interna).
+   * Busca carpetas con `.git` hasta `depth` niveles (máx. 4), sin entrar en dependencias ni en otros repos. → [rutas]
+   */
+  'git.findRepos': ({ paths = [], depth = 3 }) => {
+    const max = Math.min(4, Math.max(0, Number(depth) || 0));
+    const SKIP = new Set(['node_modules', 'vendor', 'libs', 'bower_components', 'dist', 'build', '.cache', '.next', '.nuxt', 'target', '__pycache__', '.venv', 'venv']);
+    const out = [];
+    const walk = (dir, d) => {
+      if (out.length >= 60) return;
+      let ents;
+      try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+      if (ents.some((e) => e.name === '.git')) { if (!out.includes(dir)) out.push(dir); if (d > 0) return; } // un repo interno no se recorre (submódulos aparte)
+      if (d >= max) return;
+      for (const e of ents) if (e.isDirectory() && !e.name.startsWith('.') && !SKIP.has(e.name)) walk(path.join(dir, e.name), d + 1);
+    };
+    for (const p of (Array.isArray(paths) ? paths : []).slice(0, 10)) walk(safePath(String(p)), 0);
+    return out;
+  },
   'git.run': ({ cwd, args }) => {
     const dir = safePath(cwd);
     if (!Array.isArray(args) || !args.length || args.some((a) => typeof a !== 'string')) throw new Error('Argumentos de git inválidos');
