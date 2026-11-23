@@ -78,6 +78,27 @@ navegador (file://src/index.html)                     máquina local
 - **Skill `frap-scripts`:** con el módulo activo se instala en `~/.claude/skills` y `~/.codex/skills`. Explica dónde crear los scripts (`frap-scripts new <carpeta>/<nombre.ext>`, con cabecera), cómo nombrarlos, que no escriban en bases de datos (generan un `.sql`) y que se anoten en el changelog de la issue. Al apagar el módulo se quita la skill y `run` queda bloqueado.
 - **Pestaña Scripts:** grupos por carpeta ("Compartidos" primero; 🎫 si la carpeta es una issue), con su botón "📂 salida N". Cada script tiene descripción (el primer comentario del archivo), interruptores, ▶ y un menú con ejecutar con argumentos, abrir en el editor, copiar ruta o el comando para la IA, mostrar en el explorador y mandar a la papelera. "+ Nuevo" crea el script con cabecera y lo abre en el editor.
 
+## Integraciones (panel izquierdo): WordPress
+
+- Módulo `left.integrations`: un bloque plegable abajo del panel izquierdo («Integraciones») con un colapsable por integración. Por ahora solo **WordPress**. Lo plegado se recuerda en `state.ui.integCollapsed`.
+- **Plugin `frap-wordpress`** (`integrations/wordpress/frap-wordpress/`, PHP, misma estructura que los demás plugins del autor: `index.php` con constantes, `src/{data,services,api,page}` con su `_.php`, `libs/` con `wordpress_utils` y `FWUUpdate`, harness, `push-v` y workflow de release).
+  - El administrador crea **tokens** en WordPress → FRAP → Tokens.
+    - Cada token tiene nombre, duración (24 h por defecto, de 1 h a 30 días) y permisos por recurso × acción (ver, crear, editar, eliminar).
+    - Por defecto todo es solo lectura, y lo que tiene datos personales (usuarios, pedidos, clientes) empieza apagado.
+    - Del token solo se guarda el hash. Se puede renovar (mismo valor), revocar o eliminar.
+  - **API** `frap/v1` con la cabecera `X-Frap-Token`:
+    - `GET /info` devuelve el sitio, las versiones, el vencimiento y los permisos.
+    - `/<recurso>[/<id>[/variations[/<id>]]]` se traduce con `rest_do_request` a `/wp/v2/…` o `/wc/v3/…`. Se ejecuta como el administrador que creó el token, después de comprobar el permiso: GET = ver, POST sin id = crear, POST/PUT/PATCH con id = editar, DELETE = eliminar.
+    - Todo queda en «Actividad» (`FWUSystemLog`).
+  - **Repo propio:** el código vive en FRAP y se publica con `git subtree split` (`scripts/publish.sh`, `npm run push-v`) en `franciscoblancojn/frap-wordpress` (`FRAPWP_REMOTE` lo cambia). Su workflow arma la release que lee `FWUUpdate`. El token de GitHub de `FWUUpdate` va en `wp-config.php` (`FRAPWP_GITHUB_TOKEN`), no en el código.
+- **En FRAP** (`bridge/wordpress.js`): conexiones `FRAP_WP_<ID>_{NAME,URL,TOKEN,ENABLED,AI}` en `FRAP_HOME/wordpress.env` (0600).
+  - `publicSite` quita el token (la UI solo ve `hasToken` y los últimos 4 caracteres).
+  - Las peticiones usan `?rest_route=`, así funcionan sin enlaces permanentes. En hosts locales o de red privada (`isPrivateHost`) aceptan certificados propios.
+- **Interruptores** Activa / IA, como en las bases de datos. `bridge/frap-wp.js` (skill `frap-wordpress`) solo ve los sitios activos y con IA, y nunca imprime el token.
+  - La skill se instala y se quita con el módulo.
+  - Antes de crear, editar o eliminar, la IA muestra el cambio y espera el visto bueno.
+- **UI:** cada sitio muestra un punto de estado (probado al conectar), el host, el vencimiento del token, los interruptores y un menú: probar, editar o cambiar el token, abrir los tokens en WordPress, abrir el sitio, copiar el comando para la IA y eliminar.
+
 ## Gestión de issues (módulo interno)
 
 - Replica dentro de FRAP el harness de tareas `_linear`. Cada issue vive en `local/issues/<ID>/` de la carpeta de FRAP, con `issue.md` (copia fiel del tracker), `changelog.md`, `status.md` y `final.md` al cerrar.
@@ -296,6 +317,13 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `issues.list` | — | `{dir, local, issues: [{id, title, estado, priority, url, updated, closed, pending, files}]}` de `local/issues/` (`priority`: `urgent\|high\|medium\|low\|none`) |
 | `issues.create` | `{id, title?, priority?, local?}` | crea `local/issues/<ID>/` desde las plantillas; si existe no toca nada. `id` sin número (`LOCAL`) numera solo y la marca local. `{id, dir, created, priority}` |
 | `issues.setPriority` | `{id, priority}` | cambia la línea `**Prioridad:**` de `issue.md` (formato de Linear). `{id, priority, label}` |
+| `wp.list` | — | `{envFile, cli, skill, sites: [{id, name, url, enabled, ai, hasToken, tokenHint}]}` (sin tokens) |
+| `wp.save` | `{site: {id?, name, url, token?}}` | crea o edita una conexión WordPress; URL normalizada; token vacío al editar = conservar. Devuelve la conexión pública |
+| `wp.toggle` | `{id, enabled?, ai?}` | interruptores Activa / IA |
+| `wp.delete` | `{id}` | quita la conexión (el token sigue existiendo en el sitio hasta que venza o se revoque) |
+| `wp.check` | `{id}` o `{site}` | `GET /info` del plugin: `{site, name, plugin, wordpress, woocommerce, now, token, resources, ms}` |
+| `wp.skill` | — | `{claude, codex}`: `{installed, current, file}` de la skill `frap-wordpress` |
+| `wp.setSkill` | `{on}` | instala/actualiza o quita (solo la de FRAP) la skill `frap-wordpress`. `{on, changed}` |
 | `issues.importDir` | `{path}` | copia carpetas `<ID>/` de otra carpeta (o de su `issues/`) sin pisar las existentes. `{from, copied, skipped}` |
 | `issues.skill` | — | `{claude, codex}`: `{installed, current, file}` de la skill `frap-issues` |
 | `issues.setSkill` | `{on}` | instala/actualiza (`on`) o quita la skill `frap-issues` en `~/.claude/skills` y `~/.codex/skills`. `{on, changed}` |

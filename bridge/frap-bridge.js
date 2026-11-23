@@ -23,6 +23,7 @@ const sftp = require('./sftp');
 const issues = require('./issues');
 const tunnels = require('./tunnels');
 const scripts = require('./scripts');
+const wordpress = require('./wordpress');
 
 const VERSION = '1.3.0';
 const STARTED_AT = Date.now();
@@ -504,6 +505,25 @@ const SKILL_DIRS = {
   codex: () => path.join(HOME, '.codex', 'skills', 'frap-db'),
 };
 function dbConns() { return db.loadConnections(DB_ENV); }
+// ---------- integración WordPress ----------
+const WP_ENV = path.join(FRAP_HOME, 'wordpress.env');
+function wpSites() { return wordpress.loadSites(WP_ENV); }
+/** Valida y normaliza una conexión de la UI. Token vacío o null al editar = conservar el guardado. */
+function wpNormalize(input, existing) {
+  const name = String(input.name || '').trim();
+  if (!name) throw new Error('El nombre es obligatorio');
+  const token = input.token == null || String(input.token).trim() === '' ? (existing ? existing.token : '') : String(input.token).trim();
+  if (!token) throw new Error('El token es obligatorio (créalo en WordPress → FRAP → Tokens)');
+  if (/\s/.test(token) || token.length > 200) throw new Error('Token inválido');
+  return {
+    id: existing ? existing.id : '',
+    name,
+    url: wordpress.normalizeUrl(input.url),
+    token,
+    enabled: input.enabled !== undefined ? input.enabled !== false : existing ? existing.enabled !== false : true,
+    ai: input.ai !== undefined ? input.ai !== false : existing ? existing.ai !== false : true,
+  };
+}
 function dbConn(id) {
   const c = dbConns().find((x) => x.id === id);
   if (!c) throw new Error(`Conexión no encontrada: ${id}`);
@@ -1217,6 +1237,46 @@ const ops = {
   'tunnel.stop': ({ id }) => tunnels.stop(String(id || '')),
   // ----- módulo interno "Scripts": local/scripts/<carpeta>/ con interruptores Usuario / IA -----
   /** {dir, enabled, bun, scripts: [{path, abs, folder, name, ext, runnable, runner, desc, size, mtime, user, ai}], folders: [{name, salida}]} */
+  // ----- integración WordPress (plugin frap-wordpress): URL + token por sitio en FRAP_HOME/wordpress.env -----
+  /** {envFile, cli, skill, sites: [{id, name, url, enabled, ai, hasToken, tokenHint}]} (sin tokens) */
+  'wp.list': () => ({ envFile: WP_ENV, cli: wordpress.CLI, skill: wordpress.skillStatus(), sites: wpSites().map(wordpress.publicSite) }),
+  /** Crea o edita. `token: null` (o vacío al editar) = conservar el guardado. */
+  'wp.save': ({ site }) => {
+    const sites = wpSites();
+    const existing = site && site.id ? sites.find((c) => c.id === site.id) : null;
+    if (site && site.id && !existing) throw new Error(`Conexión no encontrada: ${site.id}`);
+    const c = wpNormalize(site || {}, existing);
+    if (existing) sites[sites.indexOf(existing)] = c;
+    else { c.id = db.slugify(c.name, new Set(sites.map((x) => x.id))); sites.push(c); }
+    wordpress.saveSites(WP_ENV, sites);
+    return wordpress.publicSite(c);
+  },
+  /** Interruptores: `enabled` (activa) y/o `ai` (usable por agentes con frap-wp). */
+  'wp.toggle': ({ id, enabled, ai }) => {
+    const sites = wpSites();
+    const c = sites.find((x) => x.id === id);
+    if (!c) throw new Error(`Conexión no encontrada: ${id}`);
+    if (enabled !== undefined) c.enabled = !!enabled;
+    if (ai !== undefined) c.ai = !!ai;
+    wordpress.saveSites(WP_ENV, sites);
+    return wordpress.publicSite(c);
+  },
+  'wp.delete': ({ id }) => {
+    const sites = wpSites();
+    if (!sites.some((c) => c.id === id)) throw new Error(`Conexión no encontrada: ${id}`);
+    wordpress.saveSites(WP_ENV, sites.filter((c) => c.id !== id));
+    return true;
+  },
+  /** GET /info del plugin: de una conexión guardada (`id`) o de una sin guardar (`site`, para "Probar" en el formulario). */
+  'wp.check': ({ id, site }) => {
+    const existing = id ? wpSites().find((c) => c.id === id) : site && site.id ? wpSites().find((c) => c.id === site.id) : null;
+    if (id && !existing) throw new Error(`Conexión no encontrada: ${id}`);
+    return wordpress.info(site ? wpNormalize(site, existing) : existing);
+  },
+  /** Skill frap-wordpress: {claude, codex}: {installed, current, file} */
+  'wp.skill': () => wordpress.skillStatus(),
+  /** on=true la instala/actualiza; on=false la quita (módulo Integraciones apagado). {on, changed} */
+  'wp.setSkill': ({ on }) => wordpress.setSkill(!!on),
   'scripts.list': () => scripts.listScripts(),
   /** Cambia los interruptores de un script. {path, user?, ai?} → {path, user, ai} */
   'scripts.set': ({ path: p, user, ai }) => scripts.setFlags(p, { user, ai }),

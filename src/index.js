@@ -422,7 +422,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -1688,6 +1688,7 @@
 
   function renderAll() {
     renderProjects();
+    renderIntegrations();
     renderTabs();
     renderPanes();
     updateTitle();
@@ -7185,6 +7186,171 @@
           h('button.mini', { title: 'Copiar la carpeta de la issue', onclick: () => { copyText(i.dir); toast(`Copiado: ${tilde(i.dir)}`, 'ok'); } }, '⧉ Ruta'))) : null);
   }
 
+  // ---------- integraciones (panel izquierdo): WordPress con el plugin frap-wordpress ----------
+  // Cada sitio es URL + token (temporal; sus permisos se configuran en el WordPress). Los tokens viven en
+  // FRAP_HOME/wordpress.env y nunca llegan a la UI. Las IA los usan con la skill frap-wordpress (frap-wp.js),
+  // solo si la conexión está Activa y con IA, como las bases de datos.
+  let wpInfo = null; // respuesta de wp.list
+  let wpError = null;
+  const wpChecks = new Map(); // id → {ok, info?, error?, at}
+  let wpSkillSynced = null;
+  async function loadWp(checkAll) {
+    if (!Bridge.ready || !modOn('left.integrations')) { renderIntegrations(); return; }
+    try { wpInfo = await Bridge.call('wp.list'); wpError = null; } catch (e) { wpError = e.message; }
+    renderIntegrations();
+    if (checkAll && wpInfo) for (const s of wpInfo.sites) if (s.enabled && !wpChecks.has(s.id)) checkWp(s, true);
+  }
+  async function syncWpSkill(force) {
+    if (!Bridge.ready) return;
+    const on = modOn('left.integrations');
+    if (!force && wpSkillSynced === on) return;
+    try {
+      const r = await Bridge.call('wp.setSkill', { on });
+      wpSkillSynced = on;
+      if (r.changed.length) toast(on ? 'Skill frap-wordpress lista en claude y codex' : 'Skill frap-wordpress quitada de claude y codex', 'ok');
+    } catch (e) { toast(`Skill frap-wordpress: ${e.message}`, 'err'); }
+  }
+  async function checkWp(s, quiet) {
+    wpChecks.set(s.id, { ...(wpChecks.get(s.id) || {}), loading: true });
+    renderIntegrations();
+    try {
+      const info = await Bridge.call('wp.check', { id: s.id });
+      wpChecks.set(s.id, { ok: true, info, at: Date.now() });
+      if (!quiet) toast(`${s.name}: conectado (${info.ms} ms) · token vence ${wpLeft(info)}`, 'ok');
+    } catch (e) {
+      wpChecks.set(s.id, { ok: false, error: e.message, at: Date.now() });
+      if (!quiet) toast(`${s.name}: ${e.message}`, 'err');
+    }
+    renderIntegrations();
+  }
+  /** "en 23 h 5 min" según el reloj del sitio cuando se probó. */
+  function wpLeft(info, at = Date.now()) {
+    const s = Math.max(0, info.token.expires - info.now - Math.round((Date.now() - at) / 1000));
+    if (!s) return 'vencido';
+    const d = Math.floor(s / 86400), hh = Math.floor((s % 86400) / 3600), mm = Math.floor((s % 3600) / 60);
+    return `en ${d ? `${d} d ` : ''}${d || hh ? `${hh} h ` : ''}${mm} min`;
+  }
+  const WP_ACT = { read: 'ver', create: 'crear', update: 'editar', delete: 'eliminar' };
+  /** Resumen de permisos: "Entradas: ver, editar · Páginas: ver…". */
+  function wpPermSummary(info) {
+    const rows = Object.values(info.resources || {}).filter((r) => r.allowed.length);
+    return rows.length ? rows.map((r) => `${r.label}: ${r.allowed.map((a) => WP_ACT[a] || a).join(', ')}`).join(' · ') : 'sin permisos';
+  }
+  async function toggleWp(s, key) {
+    try {
+      await Bridge.call('wp.toggle', { id: s.id, [key]: !s[key] });
+      await loadWp();
+      if (key === 'enabled' && !s.enabled) checkWp(s, true);
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  function editWpSite(s) {
+    const name = h('input', { placeholder: 'Mi tienda', value: s ? s.name : '' });
+    const url = h('input.mono', { placeholder: 'https://misitio.com', value: s ? s.url : '' });
+    const token = h('input.mono', { type: 'password', autocomplete: 'off', placeholder: s && s.hasToken ? `•••• ${s.tokenHint} (vacío = conservar el actual)` : 'frapwp_…' });
+    const result = h('div.wp-test.muted');
+    const read = () => ({ id: s ? s.id : undefined, name: name.value.trim() || (url.value.trim() ? url.value.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '') : ''), url: url.value.trim(), token: token.value.trim() || null });
+    const test = async () => {
+      result.className = 'wp-test muted';
+      result.textContent = 'Probando…';
+      try {
+        const i = await Bridge.call('wp.check', { site: read() });
+        result.className = 'wp-test ok';
+        result.replaceChildren(h('div', `✓ ${i.name} · WordPress ${i.wordpress}${i.woocommerce ? ` · WooCommerce ${i.woocommerce}` : ''} · plugin ${i.plugin}`),
+          h('div', `Token «${i.token.name}», vence ${wpLeft(i)}`), h('div.muted', wpPermSummary(i)));
+      } catch (e) { result.className = 'wp-test err'; result.textContent = `✗ ${e.message}`; }
+    };
+    const doSave = async () => {
+      try {
+        const r = await Bridge.call('wp.save', { site: read() });
+        modalClose(true);
+        toast(`Conexión ${r.name} guardada`, 'ok');
+        await loadWp();
+        checkWp(r, true);
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    openModal({
+      title: s ? `WordPress · ${s.name}` : 'Nueva conexión WordPress',
+      body: [
+        h('p.muted', { style: 'margin:0 0 8px' }, 'En el sitio instala el plugin frap-wordpress y crea un token en WordPress → FRAP → Tokens (24 h por defecto, solo lectura salvo que le des más permisos).'),
+        h('div.field', h('label', 'Nombre'), name),
+        h('div.field', h('label', 'URL del sitio'), url),
+        h('div.field', h('label', 'Token'), token),
+        result,
+      ],
+      foot: [h('button', { onclick: test }, 'Probar'), h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
+    });
+    requestAnimationFrame(() => (s ? token : url).focus());
+  }
+  async function deleteWp(s) {
+    if (!window.confirm(`¿Eliminar la conexión «${s.name}»? El token se borra de FRAP (en el sitio sigue existiendo hasta que venza o lo revoques).`)) return;
+    try { await Bridge.call('wp.delete', { id: s.id }); wpChecks.delete(s.id); toast('Conexión eliminada', 'ok'); loadWp(); } catch (e) { toast(e.message, 'err'); }
+  }
+  function wpMenu(ev, s) {
+    popMenu(ev, [
+      { label: '⟳ Probar conexión', action: () => checkWp(s) },
+      { label: '✎ Editar / cambiar token', action: () => editWpSite(s) },
+      { label: '↗ Tokens en WordPress', hint: 'renovar, permisos', action: () => openPageTab({ url: `${s.url}/wp-admin/admin.php?page=FRAPWP` }) },
+      { label: '↗ Abrir el sitio', action: () => openPageTab({ url: s.url }) },
+      { label: '⧉ Copiar comando para la IA', hint: 'frap-wp', action: () => { const c = `node ${wpInfo.cli} ${s.id} info`; copyText(c); toast(`Copiado: ${c}`, 'ok'); } },
+      '-',
+      { label: '🗑 Eliminar conexión', danger: true, action: () => deleteWp(s) },
+    ]);
+  }
+  function wpSwitch(s, key) {
+    const on = !!s[key];
+    return h('label.wp-sw', { title: key === 'ai' ? 'Las IA la pueden usar (skill frap-wordpress), con los permisos del token' : 'Conexión activa' },
+      h('button', { class: `switch ${on ? 'on' : 'off'}`, role: 'switch', 'aria-checked': String(on), onclick: (e) => { e.preventDefault(); e.stopPropagation(); toggleWp(s, key); } }),
+      key === 'ai' ? 'IA' : 'Activa');
+  }
+  function integCollapsed(k) { return (state.ui.integCollapsed || []).includes(k); }
+  function integToggle(k) {
+    const set = new Set(state.ui.integCollapsed || []);
+    if (set.has(k)) set.delete(k); else set.add(k);
+    state.ui.integCollapsed = [...set];
+    save();
+    renderIntegrations();
+  }
+  function renderIntegrations() {
+    const root = $('#integrations');
+    if (!root) return;
+    const on = modOn('left.integrations');
+    root.classList.toggle('hidden', !on);
+    if (!on) return;
+    const all = integCollapsed('all');
+    const head = h('div.integ-head', { onclick: () => integToggle('all'), title: all ? 'Desplegar' : 'Plegar' },
+      h('span.integ-caret', all ? '▸' : '▾'), h('span.integ-title', 'Integraciones'));
+    if (all) { root.replaceChildren(head); return; }
+    let body;
+    if (!Bridge.ready) body = h('div.integ-empty', 'Bridge desconectado.');
+    else if (wpError) body = h('div.integ-empty', wpError);
+    else if (!wpInfo) { body = h('div.integ-empty', 'Cargando…'); loadWp(true); }
+    else {
+      const sites = wpInfo.sites;
+      const col = integCollapsed('wordpress');
+      body = h('div.integ-group',
+        h('div.integ-ghead', { onclick: () => integToggle('wordpress') },
+          h('span.integ-caret', col ? '▸' : '▾'), h('span.integ-logo', 'W'), h('span.grow', 'WordPress'),
+          h('span.integ-count', String(sites.length)),
+          h('button.icon.mini', { title: 'Nueva conexión WordPress', onclick: (e) => { e.stopPropagation(); editWpSite(null); } }, '＋')),
+        col ? null : sites.length ? h('div.integ-items', sites.map((s) => {
+          const c = wpChecks.get(s.id);
+          const st = !s.enabled ? 'off' : !c || c.loading ? 'wait' : c.ok ? 'ok' : 'err';
+          const title = !s.enabled ? 'Apagada' : !c ? 'Sin probar' : c.loading ? 'Probando…' : c.ok ? `Conectado · token vence ${wpLeft(c.info, c.at)}\n${wpPermSummary(c.info)}` : c.error;
+          let host = s.url;
+          try { host = new URL(s.url).host; } catch (_) { /* se deja la URL */ }
+          return h(`div.integ-site${s.enabled ? '' : '.off'}`, { title, oncontextmenu: (e) => wpMenu(e, s) },
+            h('div.integ-row',
+              h(`span.integ-dot.${st}`),
+              h('span.integ-name', s.name),
+              h('span.grow'),
+              h('button.icon.mini', { title: 'Opciones', onclick: (e) => wpMenu(e, s) }, '⋯')),
+            h('div.integ-sub.muted', host, c && c.ok && s.enabled ? ` · vence ${wpLeft(c.info, c.at)}` : c && !c.ok && s.enabled && !c.loading ? ` · ${c.error}` : ''),
+            h('div.integ-sws', wpSwitch(s, 'enabled'), wpSwitch(s, 'ai')));
+        })) : h('div.integ-empty', 'Sin sitios. Pulsa ＋ y pega la URL y el token que crea el plugin frap-wordpress.'));
+    }
+    root.replaceChildren(head, body);
+  }
+
   // ----- carpeta local/ como .zip (exportar / importar) -----
   function b64FromBytes(bytes) {
     let s = '';
@@ -7593,6 +7759,7 @@
   const MODULES = {
     left: [
       { key: 'left.sections', icon: '🗂️', name: 'Secciones de carpetas', desc: 'Barra de secciones arriba de las carpetas (Todas, Trabajo…)' },
+      { key: 'left.integrations', icon: '🔌', name: 'Integraciones', desc: 'Sitios WordPress (plugin frap-wordpress) con interruptores Activa / IA y skill frap-wordpress' },
     ],
     center: [
       { key: 'center.shell', launch: 'shell', icon: '＞_', name: 'Shell', desc: 'Nueva terminal (Alt+Shift+T)' },
@@ -7662,6 +7829,7 @@
     renderAll();
     syncIssuesSkill();
     syncScriptsModule();
+    syncWpSkill();
   }
 
   /** Modal de Módulos: tres columnas (izquierdo, central, derecho) con un switch por módulo. */
@@ -8107,6 +8275,8 @@
     pollProcs();
     syncIssuesSkill(true);
     syncScriptsModule(true);
+    syncWpSkill(true);
+    loadWp(true);
     loadIssues();
     loadScripts();
     loadTunnels(state.ui.rtab === 'tunnels');

@@ -16,7 +16,8 @@ FRAP es una alternativa ligera a Warp que corre en el navegador: 3 paneles (proy
    - `frap-db.js` (agentes) es siempre solo lectura, sin flags para escribir.
    - No debilites `assertReadOnly` ni las capas del motor: cualquier cambio necesita un test en `tests/db.test.js`.
 7. **SSH**: contraseñas solo en `FRAP_HOME/ssh.env` (0600) y se entregan a `ssh` por askpass, nunca en argv ni en el entorno de la terminal. Host y usuario se validan (nada que empiece por `-`) y van tras `--`. `frap-ssh.js` solo ve servidores con `ENABLED=1` y `AI=1`. Cambios aquí necesitan test en `tests/ssh.test.js`.
-8. La UI está en español.
+8. **WordPress**: los tokens solo viven en `FRAP_HOME/wordpress.env` (0600): nunca en la UI (usa `publicSite`) ni en la salida de `frap-wp.js`, que solo ve sitios con `ENABLED=1` y `AI=1`. Los permisos los decide el token en el sitio (plugin `frap-wordpress`, por defecto solo lectura). El plugin y el cliente (`bridge/wordpress.js`) cambian juntos; el plugin tiene su propio `AGENTS.md` y `npm run check`.
+9. La UI está en español.
 
 ## Estructura
 
@@ -40,6 +41,9 @@ bridge/issues.js       módulo interno "Gestión de issues": local/issues/<ID>/,
 bridge/frap-issues.js  CLI para agentes (skill frap-issues): new / list / path de las issues locales
 bridge/scripts.js      módulo interno "Scripts": local/scripts/<carpeta>/, interruptores Usuario/IA, skill frap-scripts
 bridge/frap-scripts.js CLI para agentes (skill frap-scripts): new / run (respeta «IA») / list
+bridge/wordpress.js    integración WordPress: conexiones (URL + token) en wordpress.env, cliente de la API del plugin, skill frap-wordpress
+bridge/frap-wp.js      CLI para agentes (skill frap-wordpress): info / get / create / update / delete en sitios con ENABLED=1 y AI=1
+integrations/wordpress/frap-wordpress/  plugin de WordPress (PHP) del lado del sitio: se publica en su propio repo con git subtree (ver su README)
 local/                 datos locales de FRAP (issues…): ignorada en git, nunca se sube
 tests/bridge.test.js   tests de integración del bridge (node:test)
 tests/db.test.js       clasificador, parsers, .env, motores y CLI

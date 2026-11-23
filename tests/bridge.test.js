@@ -1094,3 +1094,115 @@ test('scripts.*: crear, listar, interruptores Usuario/IA, comando, CLI frap-scri
   assert.ok(!('tema-x/1-algo.py' in JSON.parse(fs.readFileSync(path.join(sdir, '.frap-scripts.json'), 'utf8')).scripts));
   void execFileSync;
 });
+
+test('wp.*: conexiones WordPress (plugin frap-wordpress), interruptores Activa/IA, CLI frap-wp y skill', async (t) => {
+  const http = require('http');
+  const { execFile } = require('child_process');
+  const SITE_TOKEN = 'frapwp_' + 'a'.repeat(48);
+  const seen = [];
+  const posts = [{ id: 1, title: { rendered: 'Hola mundo' } }];
+  const srv = http.createServer((req, res) => {
+    const u = new URL(req.url, 'http://x');
+    const route = u.searchParams.get('rest_route');
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      seen.push({ method: req.method, route, query: Object.fromEntries(u.searchParams), token: req.headers['x-frap-token'], body });
+      const json = (status, data, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json', ...headers }); res.end(JSON.stringify(data)); };
+      if (u.pathname.startsWith('/html')) { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<html>no es WordPress</html>'); return; }
+      if (req.headers['x-frap-token'] !== SITE_TOKEN) return json(401, { code: 'frapwp_bad_token', message: 'Token inválido.' });
+      if (route === '/frap/v1/info') {
+        return json(200, {
+          site: 'http://x', name: 'Tienda de prueba', plugin: '1.0.0', wordpress: '6.9', woocommerce: '10.4.3', now: 1000,
+          token: { name: 'FRAP', expires: 1000 + 23 * 3600, hours: 24 },
+          resources: { posts: { label: 'Entradas', allowed: ['read'], available: ['read', 'create', 'update', 'delete'] } },
+        });
+      }
+      if (route === '/frap/v1/posts' && req.method === 'GET') return json(200, posts, { 'X-WP-Total': '1', 'X-WP-TotalPages': '1' });
+      if (route === '/frap/v1/posts' && req.method === 'POST') return json(403, { code: 'frapwp_forbidden', message: 'El token no tiene permiso para Crear en Entradas.' });
+      return json(404, { code: 'frapwp_resource', message: 'Recurso desconocido' });
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  const envFile = path.join(root, 'cfg', 'wordpress.env');
+
+  // guardar: URL normalizada, token obligatorio, nunca vuelve a la UI
+  await assert.rejects(client.call('wp.save', { site: { name: 'Tienda', url: base } }), /token es obligatorio/);
+  await assert.rejects(client.call('wp.save', { site: { name: 'X', url: 'ftp://x', token: SITE_TOKEN } }), /http o https/);
+  const saved = await client.call('wp.save', { site: { name: 'Tienda', url: `${base}/wp-admin/`, token: SITE_TOKEN } });
+  assert.equal(saved.id, 'tienda');
+  assert.equal(saved.url, base);
+  assert.equal(saved.hasToken, true);
+  assert.equal(saved.tokenHint, 'aaaa');
+  assert.equal(saved.enabled, true);
+  assert.equal(saved.ai, true);
+  const list = await client.call('wp.list');
+  assert.ok(!JSON.stringify(list).includes(SITE_TOKEN), 'wp.list no expone el token');
+  assert.equal(list.sites.length, 1);
+  assert.equal(fs.statSync(envFile).mode & 0o777, 0o600);
+  assert.match(fs.readFileSync(envFile, 'utf8'), /FRAP_WP_TIENDA_TOKEN="frapwp_a+"/);
+  // editar sin token conserva el guardado
+  await client.call('wp.save', { site: { id: 'tienda', name: 'Tienda 2', url: base, token: '' } });
+  assert.match(fs.readFileSync(envFile, 'utf8'), /FRAP_WP_TIENDA_TOKEN="frapwp_a+"/);
+
+  // probar
+  const info = await client.call('wp.check', { id: 'tienda' });
+  assert.equal(info.name, 'Tienda de prueba');
+  assert.equal(seen.at(-1).token, SITE_TOKEN);
+  assert.equal(seen.at(-1).route, '/frap/v1/info');
+  await assert.rejects(client.call('wp.check', { site: { name: 'Mal', url: base, token: 'frapwp_malo' } }), /Token inválido/);
+  await assert.rejects(client.call('wp.check', { site: { name: 'Html', url: `${base}/html`, token: SITE_TOKEN } }), /plugin frap-wordpress/);
+
+  // CLI: solo ve conexiones Activas y con IA
+  const cli = (...args) => new Promise((resolve) => execFile(process.execPath, [path.join(__dirname, '..', 'bridge', 'frap-wp.js'), ...args], { env: { ...process.env, FRAP_HOME: path.join(root, 'cfg') } }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stdout, stderr })));
+  let r = await cli('list');
+  assert.match(r.stdout, /^tienda\tTienda 2\thttp:\/\/127\.0\.0\.1:\d+$/m);
+  assert.ok(!r.stdout.includes(SITE_TOKEN));
+  r = await cli('tienda', 'info');
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /Tienda de prueba/);
+  assert.match(r.stdout, /vence en 23 h 0 min/);
+  assert.match(r.stdout, /posts\s+read\s+\(no permitido: create, update, delete\)/);
+  r = await cli('tienda', 'get', 'posts', 'search=hola', '_fields=id,title');
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), posts);
+  assert.match(r.stderr, /1 en total/);
+  assert.equal(seen.at(-1).query.search, 'hola');
+  assert.equal(seen.at(-1).query._fields, 'id,title');
+  r = await cli('tienda', 'create', 'posts', '{"title":"Nueva","status":"draft"}');
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /Error 403: El token no tiene permiso/);
+  assert.deepEqual(JSON.parse(seen.at(-1).body), { title: 'Nueva', status: 'draft' });
+  r = await cli('tienda', 'update', 'posts', '{}');
+  assert.match(r.stderr, /update necesita <recurso>\/<id>/);
+  r = await cli('tienda', 'get', '../wp/v2/users');
+  assert.match(r.stderr, /Ruta inválida/);
+
+  await client.call('wp.toggle', { id: 'tienda', ai: false });
+  r = await cli('list');
+  assert.match(r.stdout, /Sin sitios disponibles/);
+  r = await cli('tienda', 'info');
+  assert.match(r.stderr, /Uso por IA/);
+  await client.call('wp.toggle', { id: 'tienda', ai: true, enabled: false });
+  r = await cli('tienda', 'info');
+  assert.match(r.stderr, /está apagada/);
+
+  // skill: se instala y se quita con el módulo (solo la de FRAP)
+  const skill = path.join(root, '.claude', 'skills', 'frap-wordpress', 'SKILL.md');
+  assert.equal((await client.call('wp.setSkill', { on: true })).changed.length, 2);
+  assert.match(fs.readFileSync(skill, 'utf8'), /frap-wp\.js <id> info/);
+  assert.equal((await client.call('wp.skill')).claude.current, true);
+  await client.call('wp.setSkill', { on: false });
+  assert.ok(!fs.existsSync(skill));
+
+  await client.call('wp.delete', { id: 'tienda' });
+  assert.equal((await client.call('wp.list')).sites.length, 0);
+});
+
+test('isPrivateHost: locales y redes privadas sí; dominios que empiezan por fc/fd no (se verifica su TLS)', () => {
+  const { isPrivateHost } = require('../bridge/tunnels');
+  for (const h of ['localhost', 'wordpress.local', 'app.test', '127.0.0.1', '10.1.2.3', '172.20.0.1', '192.168.1.5', '::1', 'fd00::1', '[fd00::1]', 'fe80::1']) assert.equal(isPrivateHost(h), true, h);
+  for (const h of ['example.com', 'fcbarcelona.com', 'fdsite.co', 'fe80.example.com', '8.8.8.8', '172.32.0.1']) assert.equal(isPrivateHost(h), false, h);
+});

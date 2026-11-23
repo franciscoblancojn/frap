@@ -105,6 +105,35 @@ input, textarea, select {
 }
 input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 
+/* ---------- integraciones (abajo del panel izquierdo) ---------- */
+.integrations { flex-shrink: 0; max-height: 45%; overflow-y: auto; border-top: 1px solid var(--line); padding: 4px 6px 6px; font-size: 12px; }
+.integ-head { display: flex; align-items: center; gap: 6px; padding: 4px 4px; cursor: pointer; user-select: none; color: var(--fg-2); text-transform: uppercase; font-size: 10.5px; letter-spacing: .06em; font-weight: 600; }
+.integ-caret { width: 10px; color: var(--fg-2); font-size: 10px; }
+.integ-group { border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2); }
+.integ-ghead { display: flex; align-items: center; gap: 6px; padding: 4px 6px; cursor: pointer; user-select: none; font-weight: 600; }
+.integ-ghead:hover { background: var(--bg-hover); }
+.integ-logo { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: #21759b; color: #fff; font: 700 10px/1 var(--sans, sans-serif); }
+.integ-count { font-size: 10.5px; padding: 0 6px; border-radius: 8px; background: var(--bg); color: var(--fg-2); font-weight: 400; }
+.integ-items { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.integ-site { padding: 5px 8px 6px; border-bottom: 1px solid var(--line); }
+.integ-site:last-child { border-bottom: 0; }
+.integ-site.off .integ-name { color: var(--fg-2); }
+.integ-row { display: flex; align-items: center; gap: 6px; }
+.integ-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.integ-sub { font-size: 11px; margin: 1px 0 4px 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.integ-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--fg-2); }
+.integ-dot.ok { background: var(--ok, #3fb950); }
+.integ-dot.err { background: var(--err, #f85149); }
+.integ-dot.wait { background: var(--warn, #d29922); }
+.integ-dot.off { background: transparent; border: 1px solid var(--fg-2); }
+.integ-sws { display: flex; gap: 12px; margin-left: 14px; }
+.wp-sw .switch { transform: scale(.75); margin: -2px -3px; }
+.wp-sw { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--fg-2); cursor: pointer; }
+.integ-empty { color: var(--fg-2); padding: 6px 8px; font-size: 11.5px; }
+.wp-test { margin-top: 6px; font-size: 12px; line-height: 1.45; }
+.wp-test.ok { color: var(--ok, #3fb950); }
+.wp-test.err { color: var(--err, #f85149); }
+
 /* ---------- secciones del panel izquierdo (chips arriba de las carpetas) ---------- */
 .sections {
   display: flex;

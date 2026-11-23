@@ -152,10 +152,11 @@ function sendFile(res, abs, req, st = fs.statSync(abs)) {
 }
 
 /** Equipo local o red privada: ahí un https con certificado propio es lo normal (no se verifica). */
-function isPrivateHost(h) {
+function isPrivateHost(host) {
+  const h = String(host || '').replace(/^\[|\]$/g, ''); // IPv6 de una URL viene entre corchetes
   if (/^(localhost|.*\.localhost|.*\.local|.*\.test)$/i.test(h) || h === '::1') return true;
   const m = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(h);
-  if (!m) return /^(fc|fd|fe80)/i.test(h);
+  if (!m) return h.includes(':') && /^(fc|fd|fe80)/i.test(h); // solo IPv6 privadas (no dominios como fcbarcelona.com)
   const [a, b] = [Number(m[1]), Number(m[2])];
   return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || a === 0;
 }
