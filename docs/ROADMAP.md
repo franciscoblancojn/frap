@@ -26,6 +26,7 @@
 - [x] SSH: servidores en `ssh.env` (0600), terminal conectada con askpass, prueba con pistas, interruptores activo / uso por IA, CLI `frap-ssh` y skill para agentes
 - [x] Archivos por SFTP (tipo FileZilla) sobre los servidores SSH: dos paneles local/servidor, subir/descargar archivos y carpetas (botones, doble clic o arrastrar), cola con cancelar, crear carpeta, renombrar y eliminar (carpetas solo vacías). Pestaña "Archivos" (Alt+Shift+F)
 - [x] SSH: ruta inicial opcional por servidor (la terminal hace `cd` ahí y el gestor SFTP abre ahí; botón ⌂ para volver)
+- [x] SFTP: clic derecho en ambos paneles. Local: editar en el editor de código, abrir carpeta, subir al servidor, nuevo archivo/carpeta, renombrar (F2), papelera (Supr), copiar ruta, enviar a la IA, terminal aquí, túnel, explorador y editor externo. Servidor: descargar, nueva carpeta, renombrar, eliminar, copiar ruta
 - [x] Proyectos con descripción y URL: ojo 👁 con tooltip (nombre + descripción, se puede ocultar) y botón 🌐 que abre la URL en otra pestaña
 - [x] Git, DB y Archivos (SFTP) por proyecto, como las terminales: cada carpeta del panel izquierdo tiene los suyos (repo, conexión y servidor propios) y se administran al cambiar de carpeta
 - [x] Tras apagar o reiniciar el equipo, ofrecer reabrir las terminales que estaban abiertas (foto en el estado), retomando la conversación de cada IA

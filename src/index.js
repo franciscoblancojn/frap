@@ -5383,15 +5383,20 @@
     (sshInfo ? Promise.resolve() : loadSsh()).then(() => {
       if (sftpPane !== pane) return;
       renderSftpQueue();
-      if (!fresh && !hostId) { renderSftpBar(); return; } // ya abierta: se queda donde estaba
-      const hosts = sftpHosts();
-      if (!sftpHost() && hosts.length) state.sftp.hostId = hosts[0].id;
-      const c0 = sftpHost();
-      if (c0 && c0.dir) delete state.sftp.remote[c0.id]; // al abrir, empieza en la ruta inicial
-      renderSftpBar();
-      sftpLoad('local');
-      sftpLoad('remote');
+      if (!fresh && !hostId && pane.local.path) { renderSftpBar(); return; } // ya abierta (y cargada): se queda donde estaba
+      sftpInitial();
     });
+  }
+  /** Primera carga de la vista Archivos enlazada: elige servidor y carga ambos lados. */
+  function sftpInitial() {
+    if (!sftpPane) return;
+    const hosts = sftpHosts();
+    if (!sftpHost() && hosts.length) state.sftp.hostId = hosts[0].id;
+    const c0 = sftpHost();
+    if (c0 && c0.dir) delete state.sftp.remote[c0.id]; // al abrir, empieza en la ruta inicial
+    renderSftpBar();
+    sftpLoad('local');
+    sftpLoad('remote');
   }
   function sftpStatusLine() {
     const c = sftpHost();
@@ -5416,9 +5421,16 @@
     s.list.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && s.sel.size) { e.preventDefault(); sftpTransfer(key, [...s.sel]); }
       else if (e.key === 'Backspace') { e.preventDefault(); sftpUp(key); }
-      else if (e.key === 'Delete' && remote) { e.preventDefault(); sftpRemove(); }
-      else if (e.key === 'F2' && remote) { e.preventDefault(); sftpRename(); }
+      else if (e.key === 'Delete') { e.preventDefault(); if (remote) sftpRemove(); else sftpLocalTrash(); }
+      else if (e.key === 'F2') { e.preventDefault(); if (remote) sftpRename(); else sftpLocalRename(); }
+      else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+        e.preventDefault();
+        const r = (s.list.querySelector('.sftp-item.sel') || s.list).getBoundingClientRect();
+        sftpMenu({ clientX: r.left + 24, clientY: r.top + Math.min(r.height, 20), preventDefault() {} }, key, null);
+      }
     });
+    // clic derecho en el fondo de la lista: opciones de la carpeta abierta
+    s.list.addEventListener('contextmenu', (e) => { if (e.target === s.list || !e.target.closest('.sftp-item')) sftpMenu(e, key, null); });
     s.sendBtn = h('button.primary.mini', {
       title: remote ? 'Descargar lo seleccionado a la carpeta local (o arrastra a la izquierda)' : 'Subir lo seleccionado a la carpeta remota (o arrastra a la derecha)',
       onclick: () => sftpTransfer(key, [...s.sel]),
@@ -5460,7 +5472,7 @@
     } }, 'Limpiar');
     const root = h('div.sftp-pane.hidden',
       h('div.db-bar', host, h('label.muted', { title: 'Mostrar archivos que empiezan por "."' }, hidden, ' ocultos'), h('span.grow'),
-        h('span.muted', { style: 'font-size:11px' }, 'Doble clic: abrir carpeta o transferir · arrastra entre paneles · Ctrl/Shift+clic: varios')),
+        h('span.muted', { style: 'font-size:11px' }, 'Doble clic: abrir carpeta o transferir · arrastra entre paneles · Ctrl/Shift+clic: varios · clic derecho: más opciones')),
       h('div.sftp-main', local.root, remote.root),
       h('div.sftp-qhead', h('span', 'Transferencias'), h('span.grow'), clear),
       queue);
@@ -5503,14 +5515,21 @@
       s.parent = r.parent;
       s.entries = r.entries;
       s.error = '';
-      if (remote) state.sftp.remote[c.id] = r.path;
-      if (r.startError) toast(r.startError, 'err');
-      else state.sftp.local = r.path;
+      if (remote) {
+        state.sftp.remote[c.id] = r.path;
+        if (r.startError) toast(r.startError, 'err');
+      } else state.sftp.local = r.path; // ojo: solo el lado local guarda la carpeta local
       save();
     } catch (e) {
       if (sftpPane !== p) { s.loading = false; return; }
       s.error = e.message;
       if (remote && path == null && state.sftp.remote[c.id]) { delete state.sftp.remote[c.id]; save(); } // la ruta guardada ya no existe
+      if (!remote && path == null && state.sftp.local) { // la carpeta local guardada no existe (o era una ruta del servidor): vuelve al proyecto
+        delete state.sftp.local;
+        save();
+        s.loading = false;
+        return sftpLoad('local');
+      }
     }
     s.loading = false;
     renderSftpList(key);
@@ -5536,6 +5555,10 @@
         title: remote ? `${e.perm || ''} ${e.owner || ''}`.trim() : '',
         onclick: (ev) => sftpSelect(key, items, i, ev),
         ondblclick: () => sftpOpen(key, e),
+        oncontextmenu: (ev) => {
+          if (!s.sel.has(e.name)) { s.sel.clear(); s.sel.add(e.name); s.last = e.name; renderSftpList(key); }
+          sftpMenu(ev, key, e);
+        },
         ondragstart: (ev) => {
           if (!s.sel.has(e.name)) { s.sel.clear(); s.sel.add(e.name); renderSftpList(key); }
           sftpDrag = { from: key, names: [...s.sel] };
@@ -5663,6 +5686,113 @@
       h('span.tm', j.started ? (fmtDur((j.ms || (Date.now() - j.started)) / 1000) || '<1 s') : ''),
       ['wait', 'run'].includes(j.status) ? h('button.icon.mini', { title: 'Cancelar', onclick: () => sftpCancel(j) }, '✕') : h('span')));
     sftpPane.queue.replaceChildren(...(rows.length ? rows : [h('p.muted', { style: 'padding:6px 10px;margin:0' }, 'Sin transferencias. Selecciona archivos y pulsa Subir/Descargar, haz doble clic o arrástralos al otro panel.')]));
+  }
+
+  /** Clic derecho en el gestor SFTP. e: la fila (ya seleccionada) o null = la carpeta abierta. */
+  function sftpMenu(ev, key, e) {
+    const p = sftpPane;
+    const s = p && p[key];
+    if (!s || !s.path || s.error) return;
+    const remote = key === 'remote';
+    const c = sftpHost();
+    const other = p[remote ? 'local' : 'remote'];
+    const sel = e ? [...s.sel] : [];
+    const n = sel.length;
+    const what = n === 1 ? `"${sel[0]}"` : `${n} elementos`;
+    const canSend = n && c && other.path && !other.error;
+    const full = e ? (remote ? joinRemote(s.path, e.name) : joinLocal(s.path, e.name)) : s.path;
+    const isDir = e ? !!e.dir : true;
+    if (remote) {
+      popMenu(ev, [
+        e && e.dir && n === 1 && { label: 'Abrir carpeta', action: () => sftpLoad('remote', full) },
+        canSend && { label: `⇦ Descargar ${what} a ${tilde(other.path)}`, action: () => sftpTransfer('remote', sel) },
+        e && n === 1 && { label: 'Copiar ruta remota', action: () => codeCopy(full) },
+        '-',
+        { label: 'Nueva carpeta…', action: sftpMkdir },
+        n === 1 && { label: 'Renombrar… (F2)', action: sftpRename },
+        n && { label: `Eliminar ${what}… (Supr)`, danger: true, action: sftpRemove },
+        '-',
+        { label: 'Recargar', action: () => sftpLoad('remote', s.path) },
+        !e && { label: 'Copiar ruta remota', action: () => codeCopy(s.path) },
+      ]);
+      return;
+    }
+    const isMedia = /\.(html?|svg|pdf|png|jpe?g|gif|webp|mp4|webm)$/i.test(full);
+    popMenu(ev, [
+      e && !e.dir && n === 1 && launchOn('code') && { label: 'Editar en el editor de código', action: () => openInFrap(full) },
+      e && e.dir && n === 1 && { label: 'Abrir carpeta', action: () => sftpLoad('local', full) },
+      e && e.dir && n === 1 && launchOn('code') && { label: 'Mostrar en el editor de código', action: () => openInFrap(full, null, null, true) },
+      canSend && { label: `Subir ${what} a ${other.path} ⇨`, action: () => sftpTransfer('local', sel) },
+      !c && n && { label: 'Subir al servidor (elige un servidor arriba)', disabled: true },
+      '-',
+      { label: 'Nuevo archivo…', action: () => sftpLocalNew(false) },
+      { label: 'Nueva carpeta…', action: () => sftpLocalNew(true) },
+      n === 1 && { label: 'Renombrar… (F2)', action: sftpLocalRename },
+      n && { label: `Mover ${what} a la papelera (Supr)`, danger: true, action: sftpLocalTrash },
+      '-',
+      { label: n > 1 ? 'Copiar rutas' : 'Copiar ruta', action: () => codeCopy(n > 1 ? sel.map((x) => joinLocal(s.path, x)).join('\n') : full) },
+      e && !e.dir && n === 1 && { label: 'Enviar ruta a la IA', action: () => codeSendToAi(full) },
+      (n <= 1) && isDir && { label: 'Abrir terminal aquí', action: () => launch('shell', { cwd: full, title: basename(full) }) },
+      (n <= 1) && (isDir || isMedia) && rtabOn('tunnels') && { label: 'Compartir por túnel…', action: () => { setRtab('tunnels'); editTunnel(null, { kind: 'path', path: full, name: basename(full) }); } },
+      (n <= 1) && { label: isDir ? 'Abrir en el explorador de archivos' : 'Mostrar en el explorador de archivos', action: () => openInFileManager(full) },
+      (n <= 1) && { label: `Abrir en ${extEditorName()}`, action: () => openExternal(full) },
+      '-',
+      { label: 'Recargar', action: () => sftpLoad('local', s.path) },
+      !e && project() && project().folders[0] && { label: 'Ir a la carpeta del proyecto', action: () => sftpLoad('local', project().folders[0]) },
+    ]);
+  }
+  /** Tras cambiar archivos locales desde el gestor: el árbol del editor de código no queda viejo. */
+  function sftpLocalChanged(abs) { if (codePane) { codeInvalidateDirs(abs); if (state.code.side === 'tree') codeRenderTree(); } }
+  async function sftpLocalNew(isDir) {
+    const s = sftpPane && sftpPane.local;
+    if (!s || !s.path) return;
+    const name = await askText(isDir ? 'Nueva carpeta' : 'Nuevo archivo', `En ${tilde(s.path)}/`);
+    if (!name) return;
+    if (name.includes('/')) { toast('El nombre no puede llevar "/"', 'err'); return; }
+    const abs = joinLocal(s.path, name);
+    try {
+      if (await Bridge.call('fs.exists', { path: abs })) { toast(`Ya existe: ${tilde(abs)}`, 'err'); return; }
+      if (isDir) await Bridge.call('fs.mkdir', { path: abs });
+      else await Bridge.call('fs.write', { path: abs, content: '' });
+      s.sel = new Set([name]);
+      s.last = name;
+      sftpLocalChanged(abs);
+      await sftpLoad('local', s.path);
+      if (!isDir && launchOn('code')) openInFrap(abs);
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  async function sftpLocalRename() {
+    const s = sftpPane && sftpPane.local;
+    if (!s || s.sel.size !== 1) { toast('Selecciona un solo elemento local', 'err'); return; }
+    const old = [...s.sel][0];
+    const name = await askText('Renombrar', 'Nuevo nombre', old);
+    if (!name || name === old) return;
+    if (name.includes('/')) { toast('El nombre no puede llevar "/"', 'err'); return; }
+    const from = joinLocal(s.path, old);
+    const to = joinLocal(s.path, name);
+    try {
+      if (await Bridge.call('fs.exists', { path: to })) { toast(`Ya existe: ${tilde(to)}`, 'err'); return; }
+      await Bridge.call('fs.rename', { from, to });
+      s.sel = new Set([name]);
+      s.last = name;
+      sftpLocalChanged(from);
+      sftpLocalChanged(to);
+      sftpLoad('local', s.path);
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  async function sftpLocalTrash() {
+    const s = sftpPane && sftpPane.local;
+    if (!s || !s.sel.size) { toast('Selecciona qué mover a la papelera', 'err'); return; }
+    const ents = [...s.sel].map((n) => s.entries.find((e) => e.name === n)).filter(Boolean);
+    if (!(await confirmBox(`¿Mover ${ents.length === 1 ? `"${ents[0].name}"` : `${ents.length} elementos`} a la papelera?`,
+      `${ents.slice(0, 10).map((e) => (e.dir ? `${e.name}/` : e.name)).join(', ')}${ents.length > 10 ? '…' : ''}\n\nEn ${tilde(s.path)}. Se puede recuperar desde la papelera del sistema.`))) return;
+    let ok = 0;
+    for (const e of ents) {
+      const abs = joinLocal(s.path, e.name);
+      try { await Bridge.call('fs.trash', { path: abs }); ok++; sftpLocalChanged(abs); } catch (err) { toast(`${e.name}: ${err.message}`, 'err'); }
+    }
+    if (ok) toast(`${ok} movido${ok === 1 ? '' : 's'} a la papelera`, 'ok');
+    sftpLoad('local', s.path);
   }
 
   async function sftpMkdir() {
@@ -8299,7 +8429,7 @@
     tickTimers();
     loadConfig(true);
     loadDbs();
-    loadSsh();
+    loadSsh().then(() => { if (sftpPane && !sftpPane.local.path) sftpInitial(); }); // vista Archivos restaurada al recargar: aún sin cargar
     pollProcs();
     syncIssuesSkill(true);
     syncScriptsModule(true);
