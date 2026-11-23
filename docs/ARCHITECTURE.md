@@ -78,9 +78,9 @@ navegador (file://src/index.html)                     máquina local
 - **Skill `frap-scripts`:** con el módulo activo se instala en `~/.claude/skills` y `~/.codex/skills`. Explica dónde crear los scripts (`frap-scripts new <carpeta>/<nombre.ext>`, con cabecera), cómo nombrarlos, que no escriban en bases de datos (generan un `.sql`) y que se anoten en el changelog de la issue. Al apagar el módulo se quita la skill y `run` queda bloqueado.
 - **Pestaña Scripts:** grupos por carpeta ("Compartidos" primero; 🎫 si la carpeta es una issue), con su botón "📂 salida N". Cada script tiene descripción (el primer comentario del archivo), interruptores, ▶ y un menú con ejecutar con argumentos, abrir en el editor, copiar ruta o el comando para la IA, mostrar en el explorador y mandar a la papelera. "+ Nuevo" crea el script con cabecera y lo abre en el editor.
 
-## Integraciones (panel izquierdo): WordPress
+## Integraciones (panel izquierdo): WordPress y Aveonline
 
-- Módulo `left.integrations`: un bloque plegable abajo del panel izquierdo («Integraciones») con un colapsable por integración. Por ahora solo **WordPress**. Lo plegado se recuerda en `state.ui.integCollapsed`.
+- Módulo `left.integrations`: un bloque plegable abajo del panel izquierdo («Integraciones») con un colapsable por integración: **WordPress** y **Aveonline**. Lo plegado se recuerda en `state.ui.integCollapsed`.
 - **Plugin `frap-wordpress`** (`integrations/wordpress/frap-wordpress/`, PHP, misma estructura que los demás plugins del autor: `index.php` con constantes, `src/{data,services,api,page}` con su `_.php`, `libs/` con `wordpress_utils` y `FWUUpdate`, harness, `push-v` y workflow de release).
   - El administrador crea **tokens** en WordPress → FRAP → Tokens.
     - Cada token tiene nombre, duración (24 h por defecto, de 1 h a 30 días) y permisos por recurso × acción (ver, crear, editar, eliminar).
@@ -99,6 +99,17 @@ navegador (file://src/index.html)                     máquina local
   - Antes de crear, editar o eliminar, la IA muestra el cambio y espera el visto bueno.
 - **Exportar / importar (.json):** grupo «Integraciones · WordPress» en la columna del panel izquierdo. Viajan URL e interruptores; el token, solo cifrado con la clave de la exportación (`secrets.wp`).
 - **UI:** cada sitio muestra un punto de estado (probado al conectar), el host, el vencimiento del token, los interruptores y un menú: probar, editar o cambiar el token, abrir los tokens en WordPress, abrir el sitio, copiar el comando para la IA y eliminar.
+
+### Aveonline (revisión por token del plugin de envíos)
+
+- Tiendas WooCommerce con el **plugin de envíos Aveonline** (repo aparte: `aveonline`), que trae la «Revisión por token» (WordPress → Aveonline → Revisión por token): **un solo token por tienda**, de corta vida (10 min por defecto, máx. 24 h), siempre **solo lectura**. Cabecera `X-Avshme-Token`, rutas `aveonline/v1/review/…`:
+  - `info` (versión, vencimiento, tipos de log), `orders` (últimos pedidos con Aveonline: guía y si tienen tramas; `per_page` ≤ 50, `page`, `status`, `aveonline=0`), `order/<id>` (tramas de cotización y guía con envío y respuesta, metadatos de envío) y `log` (`?type=`).
+  - `info` y `orders` existen desde la versión siguiente a 4.11.4; con un plugin anterior, FRAP comprueba con `log?type=` de un tipo inexistente (`legacy: true`) y solo funciona `log` y `order/<id>` (4.11.4).
+- **En FRAP** (`bridge/aveonline.js`): reutiliza el almacén y el cliente HTTP de WordPress (`envStore`, `restRequest`, `skillManager` en `bridge/wordpress.js`). Tiendas `FRAP_AVE_<ID>_{NAME,URL,TOKEN,ENABLED,AI}` en `FRAP_HOME/aveonline.env` (0600). El token nunca llega a la UI ni a la salida del CLI.
+- **«Pegar token»** (`ave.paste`): acepta el texto tal como se comparte («pedido 16322 token … tienda http://…»); el bridge saca URL, token y pedido. Si la tienda existe (por URL, o la elegida) le cambia el token; si no, la crea con el dominio como nombre e id (`chp.com.co` → `chp`). Devuelve el pedido para copiar la petición a la IA.
+- **CLI `bridge/frap-ave.js`** (skill `frap-aveonline`): `list`, `<id> info`, `<id> pedidos [per_page= page= status= aveonline=0] [--json]`, `<id> pedido <n>`, `<id> log [TIPO]`. Solo tiendas Activas, con IA y con token.
+- **UI:** colapsable «Aveonline» con 📋 (pegar token) y ＋. Cada tienda muestra estado, host y «vence en N min» (se refresca cada 30 s), interruptores y menú: pegar token nuevo, probar, últimos pedidos (modal con «⧉ IA» que copia la petición), editar, abrir la revisión por token en la tienda, abrir la tienda, copiar el comando y eliminar.
+- **Exportar / importar:** grupo «Integraciones · Aveonline»; token solo cifrado (`secrets.ave`). Como duran minutos, lo normal es pegar uno nuevo tras importar.
 
 ## Gestión de issues (módulo interno)
 
@@ -267,6 +278,9 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `fs.read` | `{path, encoding?}` | `{path, content, mtime}` (≤ 2 MB). `encoding: 'base64'`: contenido binario en base64 (+ `encoding`) |
 | `fs.write` | `{path, content}` | escritura atómica, crea los directorios |
 | `fs.exists` | `{path}` | `bool` |
+| `fs.roots` | — | `{main, extra: [{path, source: env\|file, exists}], file}`: carpetas que `fs.*` puede abrir |
+| `fs.addRoot` | `{path}` | permite una carpeta extra (absoluta, existente, no del sistema: nunca `/`, `/etc`, `/usr`, `/var`…). Se guarda en `FRAP_HOME/fs-roots` (0600). `{path, already, roots}` |
+| `fs.removeRoot` | `{path}` | deja de permitirla (solo las del archivo; las de `FRAP_FS_EXTRA` se quitan de la variable) |
 | `fs.stat` | `{paths}` (máx. 500) | `[{path, exists, mtime?, size?, dir?}]` |
 | `fs.mkdir` | `{path}` | `{path}`; falla si ya existe |
 | `fs.rename` | `{from, to}` | `{path}`; no pisa un destino existente ni mueve la raíz |
@@ -326,13 +340,21 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `wp.check` | `{id}` o `{site}` | `GET /info` del plugin: `{site, name, plugin, wordpress, woocommerce, now, token, resources, ms}` |
 | `wp.skill` | — | `{claude, codex}`: `{installed, current, file}` de la skill `frap-wordpress` |
 | `wp.setSkill` | `{on}` | instala/actualiza o quita (solo la de FRAP) la skill `frap-wordpress`. `{on, changed}` |
+| `ave.list` | — | `{envFile, cli, skill, sites: [{id, name, url, enabled, ai, hasToken, tokenHint}]}` (sin tokens) |
+| `ave.save` | `{site: {id?, name, url, token?}}` | crea o edita una tienda Aveonline; token vacío al editar = conservar |
+| `ave.paste` | `{text, id?}` | «Pegar token»: saca URL, token y pedido del texto; actualiza la tienda (por URL o `id`) o la crea. `{site, created, order}` (sin token) |
+| `ave.toggle` | `{id, enabled?, ai?}` | interruptores Activa / IA |
+| `ave.delete` | `{id}` | quita la tienda de FRAP |
+| `ave.check` | `{id}` o `{site}` | `GET /review/info` (o `log`, con plugin viejo): `{site, name, version, wordpress, woocommerce, now, expires, types, legacy, ms}` |
+| `ave.orders` | `{id, query?}` | `GET /review/orders` (`per_page`, `page`, `status`, `aveonline`): `{page, per_page, orders: [...]}` |
+| `ave.skill` / `ave.setSkill` | — / `{on}` | estado / instala o quita la skill `frap-aveonline` |
 | `issues.importDir` | `{path}` | copia carpetas `<ID>/` de otra carpeta (o de su `issues/`) sin pisar las existentes. `{from, copied, skipped}` |
 | `issues.skill` | — | `{claude, codex}`: `{installed, current, file}` de la skill `frap-issues` |
 | `issues.setSkill` | `{on}` | instala/actualiza (`on`) o quita la skill `frap-issues` en `~/.claude/skills` y `~/.codex/skills`. `{on, changed}` |
 | `local.export` | — | carpeta `local/` como .zip en base64 (entradas `local/…`, máx. 200 MB). `{data, files, bytes}` |
 | `local.import` | `{data, overwrite?}` | restaura un .zip en `local/` (rutas saneadas; sin `overwrite` no pisa). `{written, skipped, rejected}` |
-| `export.creds` | `{db: ids, ssh: ids, wp: ids, passphrase?}` | `{db, ssh, integrations: {wordpress}, secrets?}` sin contraseñas ni tokens; con `passphrase` (≥6) van en `secrets` cifrados (scrypt + AES-256-GCM) |
-| `import.creds` | `{db, ssh, wp, secrets?, passphrase?}` | `{db, ssh, wp, errors}`; mismo id se reemplaza; clave incorrecta → error; sin clave conserva la contraseña o el token existente (un sitio WordPress nuevo queda sin token) |
+| `export.creds` | `{db: ids, ssh: ids, wp: ids, ave: ids, passphrase?}` | `{db, ssh, integrations: {wordpress, aveonline}, secrets?}` sin contraseñas ni tokens; con `passphrase` (≥6) van en `secrets` cifrados (scrypt + AES-256-GCM) |
+| `import.creds` | `{db, ssh, wp, ave, secrets?, passphrase?}` | `{db, ssh, wp, ave, errors}`; mismo id se reemplaza; clave incorrecta → error; sin clave conserva la contraseña o el token existente (un sitio WordPress nuevo queda sin token) |
 | `db.installSkill` | `{tools}` | escribe `~/.claude/skills/frap-db/SKILL.md` y `~/.codex/skills/frap-db/SKILL.md` |
 
 ## Dónde se busca la configuración (`config.scan`)

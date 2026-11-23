@@ -13,59 +13,67 @@ const db = require('./db');
 const { isPrivateHost } = require('./tunnels');
 
 const FIELDS = ['NAME', 'URL', 'TOKEN', 'ENABLED', 'AI'];
-const KEY_RE = new RegExp(`^FRAP_WP_([A-Z0-9_]+?)_(${FIELDS.join('|')})$`);
 const MAX_BYTES = 20 * 1024 * 1024;
 const NAMESPACE = 'frap/v1';
 const CLI = path.join(__dirname, 'frap-wp.js');
 
-function loadSites(envFile) {
-  let text = '';
-  try { text = fs.readFileSync(envFile, 'utf8'); } catch (_) { return []; }
-  const byId = new Map();
-  for (const line of text.split(/\r?\n/)) {
-    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/);
-    if (!m) continue;
-    const k = m[1].match(KEY_RE);
-    if (!k) continue;
-    const id = k[1].toLowerCase();
-    if (!byId.has(id)) byId.set(id, { id });
-    byId.get(id)[k[2]] = db.parseEnvValue(m[2]);
+/**
+ * Conexiones "URL + token + interruptores" en un .env (0600) con el prefijo dado (FRAP_WP_, FRAP_AVE_…).
+ * La comparten la integración WordPress y la de Aveonline.
+ */
+function envStore(prefix, header) {
+  const keyRe = new RegExp(`^${prefix}([A-Z0-9_]+?)_(${FIELDS.join('|')})$`);
+  function load(envFile) {
+    let text = '';
+    try { text = fs.readFileSync(envFile, 'utf8'); } catch (_) { return []; }
+    const byId = new Map();
+    for (const line of text.split(/\r?\n/)) {
+      const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/);
+      if (!m) continue;
+      const k = m[1].match(keyRe);
+      if (!k) continue;
+      const id = k[1].toLowerCase();
+      if (!byId.has(id)) byId.set(id, { id });
+      byId.get(id)[k[2]] = db.parseEnvValue(m[2]);
+    }
+    return [...byId.values()].map((c) => ({
+      id: c.id,
+      name: c.NAME || c.id,
+      url: c.URL || '',
+      token: c.TOKEN || '',
+      enabled: !db.isOff(c.ENABLED),
+      ai: !db.isOff(c.AI),
+    }));
   }
-  return [...byId.values()].map((c) => ({
-    id: c.id,
-    name: c.NAME || c.id,
-    url: c.URL || '',
-    token: c.TOKEN || '',
-    enabled: !db.isOff(c.ENABLED),
-    ai: !db.isOff(c.AI),
-  }));
+  function save(envFile, sites) {
+    const lines = [...header, '# Contiene tokens: no lo subas a git ni lo compartas.', ''];
+    for (const c of sites) {
+      const p = `${prefix}${c.id.toUpperCase()}_`;
+      lines.push(`# --- ${c.name} — id: ${c.id}`);
+      lines.push(`${p}NAME=${db.quoteEnvValue(c.name)}`);
+      lines.push(`${p}URL=${db.quoteEnvValue(c.url)}`);
+      lines.push(`${p}TOKEN=${db.quoteEnvValue(c.token)}`);
+      lines.push(`${p}ENABLED=${c.enabled === false ? 0 : 1}`);
+      lines.push(`${p}AI=${c.ai === false ? 0 : 1}`);
+      lines.push('');
+    }
+    fs.mkdirSync(path.dirname(envFile), { recursive: true, mode: 0o700 });
+    const tmp = `${envFile}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, lines.join('\n'), { mode: 0o600 });
+    fs.renameSync(tmp, envFile);
+    fs.chmodSync(envFile, 0o600);
+  }
+  return { load, save };
 }
 
-function saveSites(envFile, sites) {
-  const lines = [
-    '# FRAP — integración WordPress (plugin frap-wordpress en cada sitio).',
-    '# Se gestiona desde FRAP (panel izquierdo → Integraciones → WordPress); se puede editar a mano.',
-    '# Los agentes (claude, codex, opencode) usan las que tienen ENABLED=1 y AI=1, con los permisos del token, a través de:',
-    `#   node ${CLI} <id> info`,
-    '# Contiene tokens: no lo subas a git ni lo compartas.',
-    '',
-  ];
-  for (const c of sites) {
-    const p = `FRAP_WP_${c.id.toUpperCase()}_`;
-    lines.push(`# --- ${c.name} — id: ${c.id}`);
-    lines.push(`${p}NAME=${db.quoteEnvValue(c.name)}`);
-    lines.push(`${p}URL=${db.quoteEnvValue(c.url)}`);
-    lines.push(`${p}TOKEN=${db.quoteEnvValue(c.token)}`);
-    lines.push(`${p}ENABLED=${c.enabled === false ? 0 : 1}`);
-    lines.push(`${p}AI=${c.ai === false ? 0 : 1}`);
-    lines.push('');
-  }
-  fs.mkdirSync(path.dirname(envFile), { recursive: true, mode: 0o700 });
-  const tmp = `${envFile}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, lines.join('\n'), { mode: 0o600 });
-  fs.renameSync(tmp, envFile);
-  fs.chmodSync(envFile, 0o600);
-}
+const wpStore = envStore('FRAP_WP_', [
+  '# FRAP — integración WordPress (plugin frap-wordpress en cada sitio).',
+  '# Se gestiona desde FRAP (panel izquierdo → Integraciones → WordPress); se puede editar a mano.',
+  '# Los agentes (claude, codex, opencode) usan las que tienen ENABLED=1 y AI=1, con los permisos del token, a través de:',
+  `#   node ${CLI} <id> info`,
+]);
+const loadSites = wpStore.load;
+const saveSites = wpStore.save;
 
 /** Sin token: lo que puede ver la UI. */
 function publicSite(c) {
@@ -99,8 +107,19 @@ function checkPath(p) {
  * Devuelve {status, data, total, totalPages, ms}. En sitios locales o de red privada acepta certificados propios.
  */
 function request(site, method, apiPath, { query = {}, body, timeoutMs = 30000 } = {}) {
-  const route = `/${NAMESPACE}/${checkPath(apiPath)}`;
-  const base = new URL(`${normalizeUrl(site.url)}/`);
+  return restRequest(site.url, `/${NAMESPACE}/${checkPath(apiPath)}`, {
+    method, query, body, timeoutMs,
+    headers: { 'X-Frap-Token': site.token },
+    notApi: 'La respuesta no es de la API de FRAP: ¿la URL es la del sitio y el plugin frap-wordpress está activo?',
+  });
+}
+
+/**
+ * Petición JSON a la API REST de un WordPress por ?rest_route= (funciona sin enlaces permanentes).
+ * `notApi`: el mensaje si responde HTML (URL equivocada o plugin inactivo). La usan WordPress y Aveonline.
+ */
+function restRequest(siteUrl, route, { method = 'GET', query = {}, body, timeoutMs = 30000, headers: extra = {}, notApi } = {}) {
+  const base = new URL(`${normalizeUrl(siteUrl)}/`);
   base.searchParams.set('rest_route', route);
   for (const [k, v] of Object.entries(query || {})) {
     if (v == null || k === 'rest_route') continue;
@@ -115,7 +134,7 @@ function request(site, method, apiPath, { query = {}, body, timeoutMs = 30000 } 
     const req = lib.request(base, {
       method: m,
       headers: {
-        'X-Frap-Token': site.token,
+        ...extra,
         Accept: 'application/json',
         'User-Agent': 'FRAP',
         ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': payload.length } : {}),
@@ -136,7 +155,7 @@ function request(site, method, apiPath, { query = {}, body, timeoutMs = 30000 } 
         try { data = text ? JSON.parse(text) : null; } catch (_) {
           // HTML u otra cosa: casi siempre el plugin no está instalado o la URL no es la del sitio
           const hint = res.statusCode === 404 || /<html/i.test(text)
-            ? 'La respuesta no es de la API de FRAP: ¿la URL es la del sitio y el plugin frap-wordpress está activo?'
+            ? notApi || 'La respuesta no es de la API REST de WordPress: ¿la URL es la del sitio?'
             : `Respuesta inválida (${res.statusCode})`;
           reject(Object.assign(new Error(hint), { status: res.statusCode }));
           return;
@@ -172,10 +191,6 @@ async function info(site) {
 }
 
 // ---------- skill frap-wordpress ----------
-const SKILL_DIRS = {
-  claude: () => path.join(os.homedir(), '.claude', 'skills', 'frap-wordpress'),
-  codex: () => path.join(os.homedir(), '.codex', 'skills', 'frap-wordpress'),
-};
 const SKILL_MARK = 'frap-wordpress (FRAP)';
 function skillText() {
   const cli = `node ${CLI}`;
@@ -221,35 +236,47 @@ un producto \`{"regular_price": "19900"}\`.
 - Si la conexión que necesitas está apagada o sin "IA", pídele al usuario que la active en FRAP: no edites \`wordpress.env\`.
 `;
 }
-function skillStatus() {
-  const out = {};
-  for (const [k, dir] of Object.entries(SKILL_DIRS)) {
-    const file = path.join(dir(), 'SKILL.md');
-    let txt = null;
-    try { txt = fs.readFileSync(file, 'utf8'); } catch (_) { /* no está */ }
-    out[k] = { installed: txt != null, current: txt === skillText(), file };
-  }
-  return out;
+/** Skill de una integración en claude y codex: {status, set}. Solo quita la que lleva la marca de FRAP. */
+function skillManager(name, mark, text) {
+  const dirs = {
+    claude: () => path.join(os.homedir(), '.claude', 'skills', name),
+    codex: () => path.join(os.homedir(), '.codex', 'skills', name),
+  };
+  const read = (file) => { try { return fs.readFileSync(file, 'utf8'); } catch (_) { return null; } };
+  return {
+    status() {
+      const out = {};
+      for (const [k, dir] of Object.entries(dirs)) {
+        const file = path.join(dir(), 'SKILL.md');
+        const txt = read(file);
+        out[k] = { installed: txt != null, current: txt === text(), file };
+      }
+      return out;
+    },
+    /** Instala/actualiza (on) o quita (off, solo si es la de FRAP). */
+    set(on) {
+      const changed = [];
+      for (const dir of Object.values(dirs)) {
+        const file = path.join(dir(), 'SKILL.md');
+        const txt = read(file);
+        if (on) {
+          if (txt !== text()) { fs.mkdirSync(dir(), { recursive: true }); fs.writeFileSync(file, text()); changed.push(file); }
+        } else if (txt != null && txt.includes(mark)) {
+          fs.rmSync(dir(), { recursive: true, force: true });
+          changed.push(file);
+        }
+      }
+      return { on: !!on, changed };
+    },
+  };
 }
-/** Instala/actualiza (on) o quita (off, solo si es la de FRAP) la skill en claude y codex. */
-function setSkill(on) {
-  const changed = [];
-  for (const dir of Object.values(SKILL_DIRS)) {
-    const file = path.join(dir(), 'SKILL.md');
-    let txt = null;
-    try { txt = fs.readFileSync(file, 'utf8'); } catch (_) { /* no está */ }
-    if (on) {
-      if (txt !== skillText()) { fs.mkdirSync(dir(), { recursive: true }); fs.writeFileSync(file, skillText()); changed.push(file); }
-    } else if (txt != null && txt.includes(SKILL_MARK)) {
-      fs.rmSync(dir(), { recursive: true, force: true });
-      changed.push(file);
-    }
-  }
-  return { on: !!on, changed };
-}
+const wpSkill = skillManager('frap-wordpress', SKILL_MARK, skillText);
+const skillStatus = () => wpSkill.status();
+const setSkill = (on) => wpSkill.set(on);
 
 module.exports = {
   NAMESPACE, CLI,
+  FIELDS, envStore, restRequest, skillManager,
   loadSites, saveSites, publicSite, normalizeUrl, checkPath, request, apiError, info,
   skillText, skillStatus, setSkill,
 };

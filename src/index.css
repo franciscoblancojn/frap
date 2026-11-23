@@ -113,6 +113,14 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .integ-ghead { display: flex; align-items: center; gap: 6px; padding: 4px 6px; cursor: pointer; user-select: none; font-weight: 600; }
 .integ-ghead:hover { background: var(--bg-hover); }
 .integ-logo { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: #21759b; color: #fff; font: 700 10px/1 var(--sans, sans-serif); }
+.integ-logo.ave { background: #e8501c; }
+.integ-group + .integ-group { margin-top: 6px; }
+/* pedidos de una tienda Aveonline (modal) */
+.ave-orders { max-height: 60vh; overflow: auto; }
+.ave-orow { display: grid; grid-template-columns: 70px 120px 90px minmax(120px, 1fr) 110px 120px 52px; gap: 8px; align-items: center; padding: 4px 6px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.ave-orow > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ave-ohead { position: sticky; top: 0; background: var(--bg-2); color: var(--fg-3); font-size: 11px; text-transform: uppercase; letter-spacing: .03em; z-index: 1; }
+@media (max-width: 700px) { .ave-orow { grid-template-columns: 60px 1fr 80px 52px; } .ave-orow > :nth-child(2), .ave-orow > :nth-child(4), .ave-orow > :nth-child(6) { display: none; } }
 .integ-count { font-size: 10.5px; padding: 0 6px; border-radius: 8px; background: var(--bg); color: var(--fg-2); font-weight: 400; }
 .integ-items { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
 .integ-site { padding: 5px 8px 6px; border-bottom: 1px solid var(--line); }
@@ -1205,3 +1213,9 @@ li.CodeMirror-hint-active { background: var(--accent); color: var(--bg); }
 .fp-addrow { margin-top: 6px; }
 .md-body li.md-task input:not(:disabled) { cursor: pointer; }
 .md-body li.md-task.done { color: var(--fg-2); }
+
+/* selector de carpetas: accesos a las carpetas permitidas (personal + extra como /var/www) y confirmación integrada */
+.picker-roots { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.picker-root { display: inline-flex; align-items: center; gap: 1px; }
+.picker-ask { border: 1px solid var(--warn); border-radius: var(--radius); padding: 8px 10px; margin: 6px 0; display: grid; gap: 4px; background: var(--bg-3); }
+.picker-ask-btns { display: flex; justify-content: flex-end; gap: 6px; }

@@ -208,6 +208,7 @@
     if (Bridge.ready) Bridge.call('state.set', { state }).catch(() => {});
   }, 300);
   function save() {
+    rememberActive();
     state.savedAt = Date.now();
     storeSet('frap.state', state);
     persistRemote();
@@ -422,7 +423,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -1034,13 +1035,46 @@
     renderAll();
     loadConfig(true);
   }
+  /** ¿La pestaña `sid` (terminal, vista o página) sigue abierta y es del proyecto `pid`? */
+  function sidOfProject(sid, pid) {
+    if (!sid) return false;
+    const t = terms.get(sid);
+    if (t) return (t.info.meta || {}).projectId === pid;
+    const v = viewBySid(sid);
+    if (v) return v.projectId === pid;
+    return isPageView(sid) && (state.openPages || []).includes(sid.slice(PAGE_PREFIX.length));
+  }
+  /** Ventana por defecto de un proyecto: la última que tenía abierta; si no, la pantalla dividida, su última terminal o su primera vista. */
+  function defaultSidFor(pid) {
+    const last = (state.ui.lastByProject || {})[pid];
+    if (sidOfProject(last, pid)) return last;
+    const prev = state.activeProject;
+    state.activeProject = pid; // splitGroup mira el proyecto activo
+    const group = splitGroup();
+    state.activeProject = prev;
+    const list = sessionsOf(pid);
+    const views = openViewsOf(pid);
+    return group.length ? group[0].sid : list.length ? list[list.length - 1].sid : views.length ? vSid(views[0]) : null;
+  }
+  /** Recuerda la ventana activa de cada proyecto y el proyecto y ventana de cada sección del panel izquierdo. */
+  function rememberActive() {
+    const pid = state.activeProject;
+    if (!pid || !state.ui || !Array.isArray(state.sections) || !state.sections.length) return;
+    if (state.activeSid && sidOfProject(state.activeSid, pid)) {
+      state.ui.lastByProject = { ...(state.ui.lastByProject || {}), [pid]: state.activeSid };
+    }
+    const sec = activeSection();
+    if (sec && sectionProjects(sec).some((p) => p.id === pid)) {
+      state.ui.lastBySection = { ...(state.ui.lastBySection || {}), [sec.id]: { project: pid, sid: state.activeSid || null } };
+    }
+    // limpia proyectos y secciones que ya no existen
+    for (const k of Object.keys(state.ui.lastByProject || {})) if (!project(k)) delete state.ui.lastByProject[k];
+    for (const k of Object.keys(state.ui.lastBySection || {})) if (!state.sections.some((x) => x.id === k)) delete state.ui.lastBySection[k];
+  }
   function selectProject(id) {
     if (state.activeProject === id) return;
     state.activeProject = id;
-    const list = sessionsOf(id);
-    const group = splitGroup();
-    const views = openViewsOf(id);
-    state.activeSid = group.length ? group[0].sid : list.length ? list[list.length - 1].sid : views.length ? vSid(views[0]) : null;
+    state.activeSid = defaultSidFor(id);
     save();
     renderAll();
     loadConfig();
@@ -1146,8 +1180,21 @@
   function selectSection(id) {
     if (state.ui.section === id) return;
     state.ui.section = id;
+    // vuelve al proyecto y la ventana que tenía abiertos esta sección (si no, el primer proyecto de la sección)
+    const sec = activeSection();
+    const inSec = sectionProjects(sec);
+    const rec = (state.ui.lastBySection || {})[sec.id];
+    const pid = rec && inSec.some((p) => p.id === rec.project) ? rec.project
+      : inSec.some((p) => p.id === state.activeProject) ? state.activeProject : inSec[0] ? inSec[0].id : null;
+    if (pid) {
+      state.activeProject = pid;
+      state.activeSid = rec && rec.project === pid && sidOfProject(rec.sid, pid) ? rec.sid : defaultSidFor(pid);
+    }
     save();
-    renderProjects();
+    renderAll();
+    loadConfig();
+    const t = activeTerm();
+    if (t) requestAnimationFrame(() => { fitTerm(t); t.term.focus(); });
   }
   function addToSection(s, pid) {
     if (s.id === 'all' || s.projects.includes(pid)) return false;
@@ -1906,6 +1953,42 @@
       const input = h('input', { value: current, spellcheck: 'false' });
       const list = h('div.picker-list');
       const hidden = h('input', { type: 'checkbox' });
+      const roots = h('div.picker-roots');
+      const ask = h('div.picker-ask.hidden');
+      // confirmación dentro del selector (otro modal lo cerraría)
+      const confirmHere = (title, text, okLabel) => new Promise((res) => {
+        const end = (v) => { ask.classList.add('hidden'); ask.replaceChildren(); res(v); };
+        ask.replaceChildren(h('div', h('b', title)), h('div.muted', text),
+          h('div.picker-ask-btns', h('button.mini', { onclick: () => end(false) }, 'Cancelar'), h('button.mini.primary', { onclick: () => end(true) }, okLabel)));
+        ask.classList.remove('hidden');
+      });
+      // accesos a las carpetas que FRAP puede abrir: la personal y las extra (p. ej. /var/www)
+      async function renderRoots() {
+        let r;
+        try { r = await Bridge.call('fs.roots'); } catch (_) { roots.replaceChildren(); return; }
+        roots.replaceChildren(
+          h('button.mini', { title: tilde(r.main), onclick: () => go(r.main) }, `🏠 ${tilde(r.main)}`),
+          ...r.extra.map((x) => h('span.picker-root',
+            h('button.mini', { title: x.exists ? x.path : `${x.path} (no existe)`, onclick: () => go(x.path) }, `📁 ${x.path}`),
+            x.source === 'file' ? h('button.icon.mini', { title: `Dejar de permitir ${x.path}`, onclick: async () => {
+              if (!(await confirmHere(`¿Dejar de permitir ${x.path}?`, 'FRAP ya no podrá abrir archivos ni carpetas de ahí (los proyectos que la usen dejarán de poder leerla).', 'Dejar de permitir'))) return;
+              try { await Bridge.call('fs.removeRoot', { path: x.path }); renderRoots(); if (current === x.path || current.startsWith(`${x.path}/`)) go(r.main); } catch (e) { toast(e.message, 'err'); }
+            } }, '✕') : null)),
+          h('button.mini', { title: 'Permitir una carpeta fuera de tu carpeta personal: escribe su ruta arriba (p. ej. /var/www)', onclick: () => {
+            const v = input.value.trim();
+            if (!v.startsWith('/') || v === r.main || v.startsWith(`${r.main}/`)) { input.value = '/var/www'; input.focus(); input.select(); toast('Escribe arriba la ruta de la carpeta (p. ej. /var/www) y pulsa Ir'); return; }
+            go(v);
+          } }, '＋ Permitir carpeta…'));
+      }
+      async function allowRoot(p) {
+        try {
+          const r = await Bridge.call('fs.addRoot', { path: p });
+          toast(r.already ? `${r.path} ya estaba permitida` : `FRAP ya puede abrir ${r.path}`, 'ok');
+          await renderRoots();
+          await go(r.path);
+          return true;
+        } catch (e) { toast(e.message, 'err'); return false; }
+      }
       async function go(p) {
         try {
           const res = await Bridge.call('fs.list', { path: p, hidden: hidden.checked });
@@ -1918,7 +2001,14 @@
             }, `📁 ${e.name}`)),
           ].filter(Boolean));
           list.scrollTop = 0;
-        } catch (e) { toast(e.message, 'err'); }
+        } catch (e) {
+          // fuera de las carpetas permitidas: ofrece permitirla (p. ej. /var/www)
+          if (/^Ruta fuera de/.test(e.message) && String(p).startsWith('/')) {
+            if (await confirmHere(`¿Permitir que FRAP abra ${p}?`, 'Está fuera de tu carpeta personal. Se agrega a las carpetas permitidas (se puede quitar con ✕ en los accesos de arriba). No se permiten carpetas del sistema.', 'Permitir')) await allowRoot(p);
+            return;
+          }
+          toast(e.message, 'err');
+        }
       }
       input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(input.value.trim()); });
       hidden.addEventListener('change', () => go(current));
@@ -1927,6 +2017,8 @@
         title: 'Elegir carpeta',
         body: [
           h('div.picker-path', input, h('button', { onclick: () => go(input.value.trim()) }, 'Ir')),
+          roots,
+          ask,
           h('label.muted', hidden, ' mostrar ocultas'),
           list,
         ],
@@ -1936,6 +2028,7 @@
         ],
         onClose: () => { resolve(null); },
       });
+      renderRoots();
       go(current);
     });
   }
@@ -7511,6 +7604,208 @@
       h('button', { class: `switch ${on ? 'on' : 'off'}`, role: 'switch', 'aria-checked': String(on), onclick: (e) => { e.preventDefault(); e.stopPropagation(); toggleWp(s, key); } }),
       key === 'ai' ? 'IA' : 'Activa');
   }
+  // ----- Aveonline: tiendas con el plugin de envíos Aveonline y su «Revisión por token» (solo lectura) -----
+  // Un token por tienda, de corta vida (10 min por defecto): «Pegar token» acepta el texto tal como se comparte
+  // ("pedido 16322 token … tienda http://…") y lo procesa el bridge. Los tokens viven en FRAP_HOME/aveonline.env.
+  let aveInfo = null; // respuesta de ave.list
+  let aveError = null;
+  const aveChecks = new Map(); // id → {ok, info?, error?, at, loading?}
+  let aveSkillSynced = null;
+  async function loadAve(checkAll) {
+    if (!Bridge.ready || !modOn('left.integrations')) { renderIntegrations(); return; }
+    try { aveInfo = await Bridge.call('ave.list'); aveError = null; } catch (e) { aveError = e.message; }
+    renderIntegrations();
+    if (checkAll && aveInfo) for (const s of aveInfo.sites) if (s.enabled && s.hasToken && !aveChecks.has(s.id)) checkAve(s, true);
+  }
+  async function syncAveSkill(force) {
+    if (!Bridge.ready) return;
+    const on = modOn('left.integrations');
+    if (!force && aveSkillSynced === on) return;
+    try {
+      const r = await Bridge.call('ave.setSkill', { on });
+      aveSkillSynced = on;
+      if (r.changed.length) toast(on ? 'Skill frap-aveonline lista en claude y codex' : 'Skill frap-aveonline quitada de claude y codex', 'ok');
+    } catch (e) { toast(`Skill frap-aveonline: ${e.message}`, 'err'); }
+  }
+  /** Segundos que le quedan al token según el reloj de la tienda cuando se probó. */
+  const aveSecs = (info, at) => Math.max(0, (info.expires || 0) - (info.now || 0) - Math.round((Date.now() - at) / 1000));
+  function aveLeft(info, at = Date.now()) {
+    const s = aveSecs(info, at);
+    if (!s) return 'vencido';
+    const hh = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60);
+    return hh ? `en ${hh} h ${mm} min` : mm ? `en ${mm} min` : `en ${s} s`;
+  }
+  async function checkAve(s, quiet) {
+    aveChecks.set(s.id, { ...(aveChecks.get(s.id) || {}), loading: true });
+    renderIntegrations();
+    try {
+      const info = await Bridge.call('ave.check', { id: s.id });
+      aveChecks.set(s.id, { ok: true, info, at: Date.now() });
+      if (!quiet) toast(`${s.name}: conectado (${info.ms} ms) · plugin ${info.version} · token vence ${aveLeft(info)}`, 'ok');
+    } catch (e) {
+      aveChecks.set(s.id, { ok: false, error: e.message, at: Date.now() });
+      if (!quiet) toast(`${s.name}: ${e.message}`, 'err');
+    }
+    renderIntegrations();
+  }
+  async function toggleAve(s, key) {
+    try {
+      await Bridge.call('ave.toggle', { id: s.id, [key]: !s[key] });
+      await loadAve();
+      if (key === 'enabled' && !s.enabled && s.hasToken) checkAve(s, true);
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  /** «Pegar token»: el texto que comparte la tienda o soporte. Con `s`, el token va a esa tienda. */
+  function pasteAveToken(s) {
+    const text = h('textarea.mono', { rows: '4', spellcheck: 'false', autocomplete: 'off', placeholder: 'pedido 16322 token 6dbc0f96… tienda https://www.mitienda.com/' });
+    const go = async () => {
+      if (!text.value.trim()) return;
+      try {
+        const r = await Bridge.call('ave.paste', { text: text.value, id: s ? s.id : undefined });
+        text.value = '';
+        modalClose(true);
+        aveChecks.delete(r.site.id);
+        await loadAve();
+        await checkAve(r.site, true);
+        const c = aveChecks.get(r.site.id);
+        const st = c && c.ok ? `token vence ${aveLeft(c.info, c.at)}` : c ? c.error : '';
+        toast(`${r.created ? 'Tienda agregada' : 'Token actualizado'}: ${r.site.name}${st ? ` · ${st}` : ''}${r.order ? ` · pedido ${r.order}` : ''}`, c && c.ok ? 'ok' : 'err');
+        if (r.order && c && c.ok) {
+          const cmd = `revisa el pedido ${r.order} de la tienda ${r.site.id} (Aveonline)`;
+          copyText(cmd);
+          toast(`Copiado para la IA: «${cmd}»`, 'ok');
+        }
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    text.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); go(); } });
+    openModal({
+      title: s ? `Pegar token · ${s.name}` : 'Pegar token de Aveonline',
+      body: [
+        h('p.muted', { style: 'margin:0 0 8px' }, 'Pega el texto con la tienda, el token y (opcional) el pedido, tal como lo compartes hoy. ',
+          s ? 'El token se guarda en esta tienda.' : 'Si la tienda ya está en FRAP se le cambia el token; si no, se agrega.',
+          ' El token se guarda en aveonline.env (0600) y no se muestra en la UI ni a la IA. En la tienda: Aveonline → Revisión por token.'),
+        text,
+      ],
+      foot: [h('span.muted', { style: 'font-size:11px' }, 'Ctrl+Enter'), h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: go }, 'Guardar token')],
+    });
+    requestAnimationFrame(() => text.focus());
+  }
+  function editAveSite(s) {
+    const name = h('input', { placeholder: 'Mi tienda', value: s ? s.name : '' });
+    const url = h('input.mono', { placeholder: 'https://www.mitienda.com', value: s ? s.url : '' });
+    const token = h('input.mono', { type: 'password', autocomplete: 'off', placeholder: s && s.hasToken ? `•••• ${s.tokenHint} (vacío = conservar el actual)` : '48 caracteres (Revisión por token)' });
+    const result = h('div.wp-test.muted');
+    const read = () => ({ id: s ? s.id : undefined, name: name.value.trim() || (url.value.trim() ? url.value.trim().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '') : ''), url: url.value.trim(), token: token.value.trim() || null });
+    const test = async () => {
+      result.className = 'wp-test muted';
+      result.textContent = 'Probando…';
+      try {
+        const i = await Bridge.call('ave.check', { site: read() });
+        result.className = 'wp-test ok';
+        result.replaceChildren(h('div', `✓ ${i.name || i.site} · plugin Aveonline ${i.version}${i.woocommerce ? ` · WooCommerce ${i.woocommerce}` : ''}`),
+          h('div', `Token: vence ${aveLeft(i)}`), i.legacy ? h('div.muted', 'Plugin anterior a 4.11.4: solo el log (sin pedidos ni tramas por pedido).') : null);
+      } catch (e) { result.className = 'wp-test err'; result.textContent = `✗ ${e.message}`; }
+    };
+    const doSave = async () => {
+      try {
+        const r = await Bridge.call('ave.save', { site: read() });
+        modalClose(true);
+        toast(`Tienda ${r.name} guardada`, 'ok');
+        aveChecks.delete(r.id);
+        await loadAve();
+        if (r.hasToken) checkAve(r, true);
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    openModal({
+      title: s ? `Aveonline · ${s.name}` : 'Nueva tienda Aveonline',
+      body: [
+        h('p.muted', { style: 'margin:0 0 8px' }, 'En la tienda: WordPress → Aveonline → Revisión por token → «Generar token» y «Guardar y activar» (10 min por defecto, máximo 24 h). Es solo lectura. Lo más rápido es «Pegar token» en la lista.'),
+        h('div.field', h('label', 'Nombre'), name),
+        h('div.field', h('label', 'URL de la tienda'), url),
+        h('div.field', h('label', 'Token'), token),
+        result,
+      ],
+      foot: [h('button', { onclick: test }, 'Probar'), h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
+    });
+    requestAnimationFrame(() => (s ? token : url).focus());
+  }
+  async function deleteAve(s) {
+    if (!(await confirmBox(`¿Eliminar la tienda «${s.name}»?`, 'El token se borra de FRAP (en la tienda sigue activo hasta que venza o lo revoquen).'))) return;
+    try { await Bridge.call('ave.delete', { id: s.id }); aveChecks.delete(s.id); toast('Tienda eliminada', 'ok'); loadAve(); } catch (e) { toast(e.message, 'err'); }
+  }
+  /** Últimos pedidos con Aveonline de la tienda: guía y si tienen tramas, con el comando para la IA. */
+  async function aveOrders(s) {
+    const list = h('div.ave-orders', h('p.muted', 'Cargando…'));
+    openModal({ title: `Pedidos · ${s.name}`, wide: true, body: [list], foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cerrar')] });
+    try {
+      const d = await Bridge.call('ave.orders', { id: s.id, query: { per_page: 30 } });
+      if (!d.orders.length) { list.replaceChildren(h('p.muted', 'Sin pedidos enviados con Aveonline.')); return; }
+      list.replaceChildren(
+        h('p.muted', { style: 'margin:0 0 6px' }, `${d.orders.length} pedido(s) · token vence ${aveLeft(d)} · «IA» copia la petición para pegarla en claude/codex (usa la skill frap-aveonline).`),
+        h('div.ave-orow.ave-ohead', h('span', 'Pedido'), h('span', 'Fecha'), h('span', 'Estado'), h('span', 'Envío'), h('span', 'Guía'), h('span', 'Tramas'), h('span')),
+        ...d.orders.map((o) => h('div.ave-orow',
+          h('span.mono', `#${o.number}`),
+          h('span.muted', o.created.slice(0, 16)),
+          h('span', o.status),
+          h('span', { title: o.city ? `${o.city}${o.state ? `, ${o.state}` : ''}` : '' }, o.shipping ? o.shipping.name : '—'),
+          h('span.mono', o.guia && o.guia.numguia ? String(o.guia.numguia) : '—'),
+          h('span', [o.tramas.cotizacion ? 'cotización' : '', o.tramas.guia ? 'guía' : ''].filter(Boolean).join(' + ') || '—'),
+          h('button.mini', { title: 'Copiar la petición para la IA', onclick: () => { const c = `revisa el pedido ${o.number} de la tienda ${s.id} (Aveonline)`; copyText(c); toast(`Copiado: ${c}`, 'ok'); } }, '⧉ IA'))));
+    } catch (e) { list.replaceChildren(h('pre.db-error', e.message)); }
+  }
+  function aveMenu(ev, s) {
+    popMenu(ev, [
+      { label: '📋 Pegar token nuevo', action: () => pasteAveToken(s) },
+      { label: '⟳ Probar conexión', action: () => checkAve(s) },
+      s.hasToken && { label: '☰ Últimos pedidos', action: () => aveOrders(s) },
+      { label: '✎ Editar', action: () => editAveSite(s) },
+      { label: '↗ Revisión por token en la tienda', hint: 'activar token', action: () => openPageTab({ url: `${s.url}/wp-admin/admin.php?page=revision_token` }) },
+      { label: '↗ Abrir la tienda', action: () => openPageTab({ url: s.url }) },
+      { label: '⧉ Copiar comando para la IA', hint: 'frap-ave', action: () => { const c = `node ${aveInfo.cli} ${s.id} info`; copyText(c); toast(`Copiado: ${c}`, 'ok'); } },
+      '-',
+      { label: '🗑 Eliminar tienda', danger: true, action: () => deleteAve(s) },
+    ]);
+  }
+  function aveSwitch(s, key) {
+    const on = !!s[key];
+    return h('label.wp-sw', { title: key === 'ai' ? 'Las IA la pueden consultar (skill frap-aveonline, solo lectura)' : 'Tienda activa' },
+      h('button', { class: `switch ${on ? 'on' : 'off'}`, role: 'switch', 'aria-checked': String(on), onclick: (e) => { e.preventDefault(); e.stopPropagation(); toggleAve(s, key); } }),
+      key === 'ai' ? 'IA' : 'Activa');
+  }
+  function aveGroup() {
+    const col = integCollapsed('aveonline');
+    const head = h('div.integ-ghead', { onclick: () => integToggle('aveonline') },
+      h('span.integ-caret', col ? '▸' : '▾'), h('span.integ-logo.ave', 'A'), h('span.grow', 'Aveonline'),
+      h('span.integ-count', aveInfo ? String(aveInfo.sites.length) : '…'),
+      h('button.icon.mini', { title: 'Pegar token (texto con tienda, token y pedido)', onclick: (e) => { e.stopPropagation(); pasteAveToken(null); } }, '📋'),
+      h('button.icon.mini', { title: 'Nueva tienda Aveonline', onclick: (e) => { e.stopPropagation(); editAveSite(null); } }, '＋'));
+    if (col) return h('div.integ-group', head);
+    if (aveError) return h('div.integ-group', head, h('div.integ-empty', aveError));
+    if (!aveInfo) { loadAve(true); return h('div.integ-group', head, h('div.integ-empty', 'Cargando…')); }
+    const sites = aveInfo.sites;
+    return h('div.integ-group', head, sites.length ? h('div.integ-items', sites.map((s) => {
+      const c = aveChecks.get(s.id);
+      const expired = c && c.ok && !aveSecs(c.info, c.at);
+      const st = !s.enabled || !s.hasToken ? 'off' : !c || c.loading ? 'wait' : c.ok && !expired ? 'ok' : 'err';
+      const title = !s.enabled ? 'Apagada' : !s.hasToken ? 'Sin token: «Pegar token nuevo»' : !c ? 'Sin probar' : c.loading ? 'Probando…'
+        : c.ok ? `Plugin Aveonline ${c.info.version} · token vence ${aveLeft(c.info, c.at)}${c.info.legacy ? '\nPlugin anterior a 4.11.4: solo log' : ''}` : c.error;
+      let host = s.url;
+      try { host = new URL(s.url).host; } catch (_) { /* se deja la URL */ }
+      const sub = !s.hasToken ? ' · sin token' : c && c.ok && s.enabled ? ` · ${expired ? 'token vencido' : `vence ${aveLeft(c.info, c.at)}`}` : c && !c.ok && s.enabled && !c.loading ? ' · token vencido o inválido' : '';
+      return h(`div.integ-site${s.enabled ? '' : '.off'}`, { title, oncontextmenu: (e) => aveMenu(e, s) },
+        h('div.integ-row',
+          h(`span.integ-dot.${st}`),
+          h('span.integ-name', s.name),
+          h('span.grow'),
+          h('button.icon.mini', { title: 'Pegar token nuevo', onclick: (e) => { e.stopPropagation(); pasteAveToken(s); } }, '📋'),
+          h('button.icon.mini', { title: 'Opciones', onclick: (e) => aveMenu(e, s) }, '⋯')),
+        h('div.integ-sub.muted', host, sub),
+        h('div.integ-sws', aveSwitch(s, 'enabled'), aveSwitch(s, 'ai')));
+    })) : h('div.integ-empty', 'Sin tiendas. Pulsa 📋 y pega el texto con la tienda y el token de la «Revisión por token».'));
+  }
+  // los tokens de Aveonline duran minutos: el «vence en…» se refresca solo
+  setInterval(() => { if ([...aveChecks.values()].some((c) => c.ok) && !integCollapsed('all') && !integCollapsed('aveonline')) renderIntegrations(); }, 30000);
+
   function integCollapsed(k) { return (state.ui.integCollapsed || []).includes(k); }
   function integToggle(k) {
     const set = new Set(state.ui.integCollapsed || []);
@@ -7531,7 +7826,7 @@
     if (all) { root.replaceChildren(head); return; }
     let body;
     if (!Bridge.ready) body = h('div.integ-empty', 'Bridge desconectado.');
-    else if (wpError) body = h('div.integ-empty', wpError);
+    else if (wpError) body = h('div', h('div.integ-empty', wpError), aveGroup());
     else if (!wpInfo) { body = h('div.integ-empty', 'Cargando…'); loadWp(true); }
     else {
       const sites = wpInfo.sites;
@@ -7557,6 +7852,7 @@
             h('div.integ-sub.muted', host, c && c.ok && s.enabled ? ` · vence ${wpLeft(c.info, c.at)}` : c && !c.ok && s.enabled && !c.loading ? ` · ${c.error}` : ''),
             h('div.integ-sws', wpSwitch(s, 'enabled'), wpSwitch(s, 'ai')));
         })) : h('div.integ-empty', 'Sin sitios. Pulsa ＋ y pega la URL y el token que crea el plugin frap-wordpress.'));
+      body = h('div', body, aveGroup());
     }
     root.replaceChildren(head, body);
   }
@@ -8040,6 +8336,7 @@
     syncIssuesSkill();
     syncScriptsModule();
     syncWpSkill();
+    syncAveSkill();
   }
 
   /** Modal de Módulos: tres columnas (izquierdo, central, derecho) con un switch por módulo. */
@@ -8236,7 +8533,7 @@
   }
 
   async function openExport() {
-    if (Bridge.ready) await Promise.all([dbInfo ? null : loadDbs(), sshInfo ? null : loadSsh(), wpInfo ? null : loadWp()]);
+    if (Bridge.ready) await Promise.all([dbInfo ? null : loadDbs(), sshInfo ? null : loadSsh(), wpInfo ? null : loadWp(), aveInfo ? null : loadAve()]);
     const projects = checkGroup('Proyectos y terminales', state.projects.map((p) => ({
       value: p.id, label: p.name, sub: p.folders.map(tilde).join(', '),
       children: sessionsOf(p.id).filter((t) => termKind(t) !== 'action').map((t) => ({ value: t.sid, label: termTitle(t), sub: termKind(t) })),
@@ -8248,6 +8545,8 @@
     const sshs = checkGroup('SSH', ((sshInfo && sshInfo.hosts) || []).map((c) => ({ value: c.id, label: c.name, sub: sshTarget(c) })));
     const wps = checkGroup('Integraciones · WordPress', ((wpInfo && wpInfo.sites) || []).map((c) => ({ value: c.id, label: c.name, sub: c.url })),
       { note: 'URL, interruptores Activa / IA y, con la clave de abajo, el token cifrado.' });
+    const aves = checkGroup('Integraciones · Aveonline', ((aveInfo && aveInfo.sites) || []).map((c) => ({ value: c.id, label: c.name, sub: c.url })),
+      { note: 'URL e interruptores; el token (dura minutos) solo cifrado con la clave. Lo normal es pegar uno nuevo al importar.' });
     const withPw = h('input', { type: 'checkbox' });
     withPw.checked = true;
     const pass1 = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'clave para cifrar (mín. 6)' });
@@ -8255,7 +8554,7 @@
     const passRow = h('div.field-row', h('span.grow', pass1), h('span.grow', pass2));
     withPw.addEventListener('change', () => passRow.classList.toggle('hidden', !withPw.checked));
     const credsBox = h('div.xp-group',
-      h('label.xp-head', withPw, h('span', 'Incluir contraseñas de BD y SSH y tokens de WordPress, cifrados')),
+      h('label.xp-head', withPw, h('span', 'Incluir contraseñas de BD y SSH y tokens de WordPress y Aveonline, cifrados')),
       h('div.muted.xp-note', 'Se cifran con esta clave (AES-256-GCM); te la pedirá al importar. Sin ellos, tendrás que escribirlos de nuevo.'),
       passRow);
 
@@ -8263,6 +8562,7 @@
       const selDb = dbs.selected().map((x) => x.value);
       const selSsh = sshs.selected().map((x) => x.value);
       const selWp = wps.selected().map((x) => x.value);
+      const selAve = aves.selected().map((x) => x.value);
       const out = { format: EXPORT_FORMAT, version: 1, exportedAt: new Date().toISOString(), from: (Bridge.info && Bridge.info.hostname) || '' };
       out.projects = projects.selected().map(({ value, children }) => {
         const p = project(value);
@@ -8276,7 +8576,7 @@
       });
       out.config = {};
       for (const { value } of config.selected()) out.config[value] = pickConfig(state, value);
-      if (selDb.length || selSsh.length || selWp.length) {
+      if (selDb.length || selSsh.length || selWp.length || selAve.length) {
         if (!Bridge.ready) { toast('Bridge desconectado: no se pueden exportar BD, SSH ni integraciones', 'err'); return; }
         let passphrase = '';
         if (withPw.checked) {
@@ -8284,7 +8584,7 @@
           if (pass1.value !== pass2.value) { toast('Las claves no coinciden', 'err'); pass2.focus(); return; }
           passphrase = pass1.value;
         }
-        try { Object.assign(out, await Bridge.call('export.creds', { db: selDb, ssh: selSsh, wp: selWp, passphrase })); } catch (e) { toast(e.message, 'err'); return; }
+        try { Object.assign(out, await Bridge.call('export.creds', { db: selDb, ssh: selSsh, wp: selWp, ave: selAve, passphrase })); } catch (e) { toast(e.message, 'err'); return; }
       }
       const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -8295,13 +8595,13 @@
       setTimeout(() => URL.revokeObjectURL(url), 5000);
       modalClose(true);
       const nTerms = out.projects.reduce((n, p) => n + p.terminals.length, 0);
-      toast(`Exportado: ${out.projects.length} proyecto(s), ${nTerms} terminal(es), ${Object.keys(out.config).length} sección(es) de configuración, ${(out.db || []).length} BD, ${(out.ssh || []).length} SSH, ${((out.integrations || {}).wordpress || []).length} WordPress${out.secrets ? ' (contraseñas y tokens cifrados)' : ''}`, 'ok');
+      toast(`Exportado: ${out.projects.length} proyecto(s), ${nTerms} terminal(es), ${Object.keys(out.config).length} sección(es) de configuración, ${(out.db || []).length} BD, ${(out.ssh || []).length} SSH, ${((out.integrations || {}).wordpress || []).length} WordPress, ${((out.integrations || {}).aveonline || []).length} Aveonline${out.secrets ? ' (contraseñas y tokens cifrados)' : ''}`, 'ok');
     };
     openModal({
       title: 'Exportar',
       wide: true,
       body: h('div.xp-cols',
-        h('div.xp-col', h('h4', 'Panel izquierdo'), projects.el, wps.el),
+        h('div.xp-col', h('h4', 'Panel izquierdo'), projects.el, wps.el, aves.el),
         h('div.xp-col', h('h4', 'Panel derecho'), config.el, dbs.el, sshs.el, credsBox)),
       foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doExport }, '⇩ Exportar')],
     });
@@ -8335,6 +8635,9 @@
     const inWp = ((data.integrations || {}).wordpress || []).filter((c) => c && c.id);
     const wps = checkGroup('Integraciones · WordPress', inWp.map((c) => ({ value: c.id, label: c.name, sub: c.url })),
       { note: data.secrets ? 'El token viene cifrado: escribe la clave abajo.' : 'Sin token en el archivo: se conserva el que ya tengas o lo agregas en Editar.' });
+    const inAve = ((data.integrations || {}).aveonline || []).filter((c) => c && c.id);
+    const aves = checkGroup('Integraciones · Aveonline', inAve.map((c) => ({ value: c.id, label: c.name, sub: c.url })),
+      { note: 'Los tokens de Aveonline duran minutos: lo normal es pegar uno nuevo (📋) después de importar.' });
     const openTerms = h('input', { type: 'checkbox' });
     openTerms.checked = true;
     const resume = h('input', { type: 'checkbox' });
@@ -8353,19 +8656,22 @@
       const selDb = new Set(dbs.selected().map((x) => x.value));
       const selSsh = new Set(sshs.selected().map((x) => x.value));
       const selWp = new Set(wps.selected().map((x) => x.value));
+      const selAve = new Set(aves.selected().map((x) => x.value));
       const report = [];
-      if (selDb.size || selSsh.size || selWp.size) {
+      if (selDb.size || selSsh.size || selWp.size || selAve.size) {
         if (!Bridge.ready) { toast('Bridge desconectado: no se pueden importar BD, SSH ni integraciones', 'err'); return; }
         try {
           const r = await Bridge.call('import.creds', {
             db: (data.db || []).filter((c) => selDb.has(c.id)),
             ssh: (data.ssh || []).filter((c) => selSsh.has(c.id)),
             wp: inWp.filter((c) => selWp.has(c.id)),
+            ave: inAve.filter((c) => selAve.has(c.id)),
             secrets: data.secrets, passphrase: pass.value,
           });
           if (r.db) report.push(`${r.db} BD`);
           if (r.ssh) report.push(`${r.ssh} SSH`);
           if (r.wp) { report.push(`${r.wp} WordPress`); wpChecks.clear(); }
+          if (r.ave) { report.push(`${r.ave} Aveonline`); aveChecks.clear(); }
           if (r.errors.length) toast(r.errors.join('\n'), 'err');
         } catch (e) { toast(e.message, 'err'); pass.focus(); return; }
       }
@@ -8411,6 +8717,7 @@
       renderRight();
       loadDbs();
       loadWp(true);
+      loadAve(true);
       await loadSsh();
       toast(`Importado de ${fileName}: ${report.join(', ') || 'nada'}`, 'ok');
       if (openTerms.checked) await reopenTerminals(chosen, resume.checked);
@@ -8421,7 +8728,7 @@
       body: [
         h('p.muted', { style: 'margin:0' }, `Exportado ${data.exportedAt ? new Date(data.exportedAt).toLocaleString() : ''}${data.from ? ' desde ' + data.from : ''}. Lo que ya existe con el mismo id se reemplaza.`),
         h('div.xp-cols',
-          h('div.xp-col', h('h4', 'Panel izquierdo'), projects.el, termOpts, wps.el),
+          h('div.xp-col', h('h4', 'Panel izquierdo'), projects.el, termOpts, wps.el, aves.el),
           h('div.xp-col', h('h4', 'Panel derecho'), config.el, dbs.el, sshs.el, secretsBox)),
       ],
       foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doImport }, '⇧ Importar')],
@@ -8497,6 +8804,8 @@
     syncScriptsModule(true);
     syncWpSkill(true);
     loadWp(true);
+    syncAveSkill(true);
+    loadAve(true);
     loadIssues();
     loadScripts();
     loadTunnels(state.ui.rtab === 'tunnels');

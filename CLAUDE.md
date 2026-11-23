@@ -9,7 +9,7 @@ FRAP es una alternativa ligera a Warp que corre en el navegador: 3 paneles (proy
    - Las librerías y recursos de terceros van en `src/vendor/`: xterm.js 5.5.0, addon-fit 0.10.0, `codemirror/` (CodeMirror 5.65.18 concatenado, editor de la vista Código; ver su README) y `icons/` (logos de claude, codex y opencode, con su origen en `icons/README.md`).
 2. **Cero dependencias npm** en runtime y en tests. El bridge usa solo la librería estándar de Node 18+ y Python 3.
 3. **Nunca `innerHTML`** en `src/index.js`: se muestra contenido de archivos del usuario. Usa `h()` (crea nodos con `textContent`).
-4. **Seguridad del bridge**: escucha solo en `127.0.0.1`, exige token y rechaza Origins `http(s)` (salvo los de `FRAP_ALLOW_ORIGINS`). `fs.*` queda limitado a `FRAP_FS_ROOT` (por defecto `$HOME`) y `proc.kill` solo a descendientes de sesiones FRAP. No relajes esto.
+4. **Seguridad del bridge**: escucha solo en `127.0.0.1`, exige token y rechaza Origins `http(s)` (salvo los de `FRAP_ALLOW_ORIGINS`). `fs.*` queda limitado a `FRAP_FS_ROOT` (por defecto `$HOME`) más las carpetas extra que el usuario permite (`FRAP_FS_EXTRA` o `FRAP_HOME/fs-roots`, p. ej. `/var/www`; `checkExtraRoot` rechaza `/`, carpetas del sistema y genéricas como `/var` o `/usr`), y `proc.kill` solo a descendientes de sesiones FRAP. No relajes esto: cualquier cambio en las raíces necesita test.
 5. **Git**: `git.run` solo ejecuta el binario `git` con la lista blanca `GIT_ALLOWED`. No agregues subcomandos ni opciones que ejecuten código (`config`, `-c`, `--upload-pack`, `--exec`) sin un test que lo cubra.
 6. **Bases de datos**:
    - Las contraseñas solo viven en `FRAP_HOME/databases.env` (0600): nunca en el estado de la UI, en localStorage ni en las respuestas del bridge (usa `publicConn`).
@@ -17,7 +17,8 @@ FRAP es una alternativa ligera a Warp que corre en el navegador: 3 paneles (proy
    - No debilites `assertReadOnly` ni las capas del motor: cualquier cambio necesita un test en `tests/db.test.js`.
 7. **SSH**: contraseñas solo en `FRAP_HOME/ssh.env` (0600) y se entregan a `ssh` por askpass, nunca en argv ni en el entorno de la terminal. Host y usuario se validan (nada que empiece por `-`) y van tras `--`. `frap-ssh.js` solo ve servidores con `ENABLED=1` y `AI=1`. Cambios aquí necesitan test en `tests/ssh.test.js`.
 8. **WordPress**: los tokens solo viven en `FRAP_HOME/wordpress.env` (0600): nunca en la UI (usa `publicSite`) ni en la salida de `frap-wp.js`, que solo ve sitios con `ENABLED=1` y `AI=1`. Los permisos los decide el token en el sitio (plugin `frap-wordpress`, por defecto solo lectura). El plugin y el cliente (`bridge/wordpress.js`) cambian juntos; el plugin tiene su propio `AGENTS.md` y `npm run check`.
-9. La UI está en español.
+9. **Aveonline**: los tokens de la revisión por token solo viven en `FRAP_HOME/aveonline.env` (0600): nunca en la UI (usa `publicSite`; `ave.paste` no los devuelve) ni en la salida de `frap-ave.js`, que es de solo lectura y solo ve tiendas con `ENABLED=1` y `AI=1`. El plugin Aveonline es otro repo: no se toca sin pedirlo.
+10. La UI está en español.
 
 ## Estructura
 
@@ -43,6 +44,8 @@ bridge/scripts.js      módulo interno "Scripts": local/scripts/<carpeta>/, inte
 bridge/frap-scripts.js CLI para agentes (skill frap-scripts): new / run (respeta «IA») / list
 bridge/wordpress.js    integración WordPress: conexiones (URL + token) en wordpress.env, cliente de la API del plugin, skill frap-wordpress
 bridge/frap-wp.js      CLI para agentes (skill frap-wordpress): info / get / create / update / delete en sitios con ENABLED=1 y AI=1
+bridge/aveonline.js    integración Aveonline: tiendas (URL + token de la revisión por token) en aveonline.env, pegar token, cliente, skill frap-aveonline
+bridge/frap-ave.js     CLI para agentes (skill frap-aveonline, solo lectura): info / pedidos / pedido / log en tiendas con ENABLED=1 y AI=1
 integrations/wordpress/frap-wordpress/  plugin de WordPress (PHP) del lado del sitio: se publica en su propio repo con git subtree (ver su README)
 local/                 datos locales de FRAP (issues…): ignorada en git, nunca se sube
 tests/bridge.test.js   tests de integración del bridge (node:test)

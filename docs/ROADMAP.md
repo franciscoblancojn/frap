@@ -9,6 +9,8 @@
 - [x] Terminales persistentes: sobreviven a recargar la página y se re-adjuntan con su scrollback
 - [x] Shell y SSH: botones arriba a la derecha para limpiar (también vacía el historial guardado: no vuelve al recargar ni al reiniciar el bridge) y copiar todo el contenido de la terminal
 - [x] Terminales: el nombre que pone el usuario (doble clic) ya no lo pisa el título que cambian claude/codex; ese título queda en el tooltip. Nombre vacío = vuelve al título automático
+- [x] Cada sección del panel izquierdo recuerda su proyecto y ventana abierta (y cada proyecto su última ventana): al cambiar de sección vuelve a ellas
+- [x] Carpetas fuera de la carpeta personal (p. ej. /var/www): el selector ofrece permitirlas y muestra accesos a cada una; `FRAP_FS_EXTRA` o `FRAP_HOME/fs-roots`; nunca carpetas del sistema
 - [x] Panel derecho:
   - [x] Procesos: árbol por terminal con CPU, memoria y tiempo, agentes resaltados, matar proceso
   - [x] Prompts estándar: clic para ejecutar en la terminal activa, insertar sin Enter, variables, importar y exportar
@@ -41,6 +43,7 @@
 - [x] Módulo interno "Gestión de issues": issues en `local/issues/<ID>/` (fuera de git) como el harness `_linear`, skill `frap-issues` para claude/codex (se instala/quita con el módulo), pestaña Issues y zip de la carpeta local en exportar/importar
 - [x] Prioridad de issues con la escala y el formato de Linear (también para issues locales sin tracker, `LOCAL-N`): secciones plegables por prioridad, cambio desde la tarjeta, `frap-issues priority` y criterios en la skill
 - [x] Módulo Integraciones (panel izquierdo) con WordPress: plugin `frap-wordpress` (tokens de 24 h por defecto con permisos por recurso, solo lectura por defecto, API `frap/v1`, publicación en repo propio con git subtree), conexiones con interruptores Activa/IA, CLI `frap-wp` y skill `frap-wordpress`
+- [x] Integraciones · Aveonline: tiendas con la revisión por token del plugin de envíos (solo lectura), «Pegar token» con el texto tal como se comparte, vencimiento en vivo, últimos pedidos, CLI `frap-ave` (info, pedidos, pedido con tramas, log) y skill `frap-aveonline`, export/import con token cifrado. En el plugin: rutas `/review/info` y `/review/orders`
 - [x] Módulos (Ajustes → Módulos): activar o desactivar cada lanzador, pestaña del panel derecho, la voz, la pantalla dividida y las secciones, agrupados por panel; todo activado por defecto y se exporta/importa
 - [x] Vista previa de archivos en el editor y en Notas: botón para Markdown, CSV, SVG y HTML (sandbox con recursos incrustados); imágenes, video, audio y PDF se abren directo en su visor
 - [x] Secciones en el panel izquierdo (como WhatsApp): "Todas" fija y secciones propias con ícono, título, descripción y vista (solo ícono, solo título o ambos); una carpeta puede estar en varias, se asignan arrastrando o con casillas, y cada chip muestra los avisos de sus carpetas

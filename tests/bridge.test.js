@@ -213,6 +213,44 @@ test('open.folder: carpeta con xdg-open; archivo seleccionado por D-Bus o, si fa
   fs.rmSync(path.join(fake, 'xdg-open'));
 });
 
+test('fs.addRoot / removeRoot: carpetas extra permitidas (p. ej. /var/www), nunca del sistema', async (t) => {
+  const extra = fs.mkdtempSync(path.join(os.tmpdir(), 'frap-extra-'));
+  t.after(() => fs.rmSync(extra, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(extra, 'sitio'));
+  fs.writeFileSync(path.join(extra, 'sitio', 'index.php'), '<?php echo 1;');
+  const f = path.join(extra, 'sitio', 'index.php');
+  await assert.rejects(client.call('fs.read', { path: f }), /fuera/);
+  // carpetas del sistema o genéricas: no
+  for (const bad of ['/', '/etc', '/etc/nginx', '/var', '/usr/share', '/proc/1', 'relativa/x', '/tmp']) {
+    await assert.rejects(client.call('fs.addRoot', { path: bad }), /No se permite|absoluta/, bad);
+  }
+  await assert.rejects(client.call('fs.addRoot', { path: path.join(extra, 'no-existe') }), /No existe/);
+  // permitir: ya se puede leer, escribir y listar; la carpeta extra es una raíz (sin parent, no se mueve ni se borra)
+  const r = await client.call('fs.addRoot', { path: `${extra}/` });
+  assert.equal(r.path, extra);
+  assert.ok(r.roots.includes(extra));
+  assert.equal((await client.call('fs.read', { path: f })).content, '<?php echo 1;');
+  await client.call('fs.write', { path: path.join(extra, 'sitio', 'nuevo.txt'), content: 'x' });
+  const ls = await client.call('fs.list', { path: extra });
+  assert.equal(ls.parent, null);
+  assert.ok(ls.entries.some((e) => e.name === 'sitio'));
+  assert.equal((await client.call('fs.list', { path: path.join(extra, 'sitio') })).parent, extra);
+  await assert.rejects(client.call('fs.trash', { path: extra }), /raíz/);
+  await assert.rejects(client.call('fs.rename', { from: extra, to: path.join(root, 'movida') }), /raíz/);
+  // fuera de la carpeta extra sigue prohibido (también subiendo con ..)
+  await assert.rejects(client.call('fs.read', { path: `${extra}/../../etc/hostname` }), /fuera/);
+  const roots = await client.call('fs.roots');
+  assert.deepEqual(roots.extra.map((x) => [x.path, x.source, x.exists]), [[extra, 'file', true]]);
+  assert.match(fs.readFileSync(roots.file, 'utf8'), new RegExp(extra.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal(fs.statSync(roots.file).mode & 0o777, 0o600);
+  // dentro de $HOME ya está permitida
+  assert.equal((await client.call('fs.addRoot', { path: root })).already, true);
+  // quitar: vuelve a estar prohibida
+  await client.call('fs.removeRoot', { path: extra });
+  await assert.rejects(client.call('fs.read', { path: f }), /fuera/);
+  await assert.rejects(client.call('fs.removeRoot', { path: extra }), /No es una carpeta extra/);
+});
+
 test('fs: escribir/leer dentro de la raíz, rechazar fuera', async () => {
   const f = path.join(root, 'proj', 'nota.md');
   await client.call('fs.write', { path: f, content: 'hola' });
@@ -1107,6 +1145,121 @@ test('scripts.*: crear, listar, interruptores Usuario/IA, comando, CLI frap-scri
   await client.call('scripts.list');
   assert.ok(!('tema-x/1-algo.py' in JSON.parse(fs.readFileSync(path.join(sdir, '.frap-scripts.json'), 'utf8')).scripts));
   void execFileSync;
+});
+
+test('ave.*: tiendas Aveonline (revisión por token), pegar token, interruptores, CLI frap-ave, skill y export', async (t) => {
+  const http = require('http');
+  const { execFile } = require('child_process');
+  const TOKEN_A = 'a1'.repeat(24);
+  const TOKEN_B = 'b2'.repeat(24);
+  let current = TOKEN_A;
+  const seen = [];
+  const orders = [{ id: 547, number: '547', status: 'processing', created: '2026-11-23 17:42:23', city: 'Marinilla', shipping: { method_id: 'wc_aveonline_shipping', name: 'COORDINADORA', total: '16550' }, aveonline: true, tramas: { cotizacion: true, guia: true }, guia: { numguia: '86732804177', mensaje: 'Guia generada' } }];
+  const srv = http.createServer((req, res) => {
+    const u = new URL(req.url, 'http://x');
+    const route = u.searchParams.get('rest_route');
+    seen.push({ path: u.pathname, route, query: Object.fromEntries(u.searchParams), token: req.headers['x-avshme-token'] });
+    const json = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
+    if (u.pathname.startsWith('/html')) { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<html>otra cosa</html>'); return; }
+    if (req.headers['x-avshme-token'] !== current) return json(401, { code: 'avshme_review_denied', message: 'Token inválido o vencido.' });
+    const legacy = u.pathname.startsWith('/legacy');
+    const base = { site: 'http://x', version: legacy ? '4.11.2' : '4.11.5', now: 1000, expires: 1000 + 7 * 60 + 5 };
+    if (route === '/aveonline/v1/review/info' && !legacy) return json(200, { ...base, name: 'Tienda Ave', wordpress: '7.1', woocommerce: '10.4.3', types: { GENERARGUIA2: 5 } });
+    if (route === '/aveonline/v1/review/log') return json(200, { ...base, types: { GENERARGUIA2: 1 }, log: { GENERARGUIA2: [{ token: '***', ok: 1 }] } });
+    if (route === '/aveonline/v1/review/orders' && !legacy) return json(200, { ...base, page: 1, per_page: 20, orders });
+    if (route === '/aveonline/v1/review/order/547' && !legacy) return json(200, { ...base, order_id: 547, tramas: { cotizacion: [{ send: { token: '***' }, response: { status: 'ok' } }], guia: [] } });
+    return json(404, { code: 'rest_no_route', message: 'No se ha encontrado ninguna ruta que coincida con la URL y el método de la solicitud.' });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  const envFile = path.join(root, 'cfg', 'aveonline.env');
+
+  // pegar el texto tal como se comparte: crea la tienda, con el pedido aparte; el token no vuelve a la UI
+  await assert.rejects(client.call('ave.paste', { text: `pedido 1 tienda ${base}` }), /No encontré el token/);
+  await assert.rejects(client.call('ave.paste', { text: `token ${TOKEN_A}` }), /No encontré la URL/);
+  let p = await client.call('ave.paste', { text: `pedido 547 token  ${TOKEN_A} tienda ${base}/` });
+  assert.equal(p.created, true);
+  assert.equal(p.order, '547');
+  assert.equal(p.site.id, 'tienda');
+  assert.equal(p.site.url, base);
+  assert.equal(p.site.hasToken, true);
+  assert.ok(!JSON.stringify(p).includes(TOKEN_A), 'ave.paste no devuelve el token');
+  assert.equal(fs.statSync(envFile).mode & 0o777, 0o600);
+  assert.match(fs.readFileSync(envFile, 'utf8'), new RegExp(`FRAP_AVE_TIENDA_TOKEN="?${TOKEN_A}"?`));
+  // renombrar y luego pegar un token nuevo: misma tienda (por URL), token cambiado
+  await client.call('ave.save', { site: { id: 'tienda', name: 'Tienda Ave', url: base, token: '' } });
+  current = TOKEN_B;
+  await assert.rejects(client.call('ave.check', { id: 'tienda' }), /vencido.*Revisión por token/);
+  p = await client.call('ave.paste', { text: `revisa con esto pedido 548 token ${TOKEN_B} tienda ${base}` });
+  assert.equal(p.created, false);
+  assert.equal(p.site.name, 'Tienda Ave');
+  assert.equal((await client.call('ave.list')).sites.length, 1);
+  assert.ok(!JSON.stringify(await client.call('ave.list')).includes(TOKEN_B), 'ave.list no expone el token');
+  // con id: el token va a esa tienda aunque el texto no traiga URL
+  current = TOKEN_A;
+  await client.call('ave.paste', { id: 'tienda', text: `token ${TOKEN_A}` });
+
+  const info = await client.call('ave.check', { id: 'tienda' });
+  assert.equal(info.version, '4.11.5');
+  assert.equal(info.legacy, false);
+  assert.equal(seen.at(-1).route, '/aveonline/v1/review/info');
+  assert.equal(seen.at(-1).token, TOKEN_A);
+  // plugin viejo (sin /review/info): cae a /review/log
+  const old = await client.call('ave.check', { site: { name: 'Vieja', url: `${base}/legacy`, token: TOKEN_A } });
+  assert.equal(old.legacy, true);
+  assert.equal(old.version, '4.11.2');
+  await assert.rejects(client.call('ave.check', { site: { name: 'Html', url: `${base}/html`, token: TOKEN_A } }), /revisión por token de Aveonline/);
+  const od = await client.call('ave.orders', { id: 'tienda', query: { per_page: 5, status: 'processing', evil: 'x' } });
+  assert.equal(od.orders[0].number, '547');
+  assert.equal(seen.at(-1).query.per_page, '5');
+  assert.equal(seen.at(-1).query.evil, undefined);
+
+  // CLI: solo tiendas Activas, con IA y token; nunca imprime el token
+  const cli = (...args) => new Promise((resolve) => execFile(process.execPath, [path.join(__dirname, '..', 'bridge', 'frap-ave.js'), ...args], { env: { ...process.env, FRAP_HOME: path.join(root, 'cfg') } }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stdout, stderr })));
+  let r = await cli('list');
+  assert.match(r.stdout, /^tienda\tTienda Ave\thttp:\/\/127\.0\.0\.1:\d+$/m);
+  r = await cli('tienda', 'info');
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /Plugin Aveonline 4\.11\.5/);
+  assert.match(r.stdout, /vence en 7 min 5 s/);
+  assert.match(r.stdout, /GENERARGUIA2 \(5\)/);
+  r = await cli('tienda', 'pedidos', 'per_page=5');
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^547\t.*COORDINADORA\tguía 86732804177\tcotización\+guía/m);
+  r = await cli('tienda', 'pedido', '547');
+  assert.equal(JSON.parse(r.stdout).order_id, 547);
+  r = await cli('tienda', 'log', 'GENERARGUIA2');
+  assert.equal(seen.at(-1).query.type, 'GENERARGUIA2');
+  assert.deepEqual(JSON.parse(r.stdout), { GENERARGUIA2: [{ token: '***', ok: 1 }] });
+  r = await cli('tienda', 'pedido', '../x');
+  assert.match(r.stderr, /necesita el número/);
+  r = await cli('tienda', 'pedidos', 'rest_route=/wp/v2/users');
+  assert.match(r.stderr, /Parámetro inválido/);
+  for (const out of [r.stdout, r.stderr]) assert.ok(!out.includes(TOKEN_A));
+  await client.call('ave.toggle', { id: 'tienda', ai: false });
+  r = await cli('tienda', 'info');
+  assert.match(r.stderr, /Uso por IA/);
+  await client.call('ave.toggle', { id: 'tienda', ai: true });
+
+  // export/import: el token solo cifrado
+  const plain = await client.call('export.creds', { ave: ['tienda'] });
+  assert.equal(plain.integrations.aveonline[0].url, base);
+  assert.ok(!JSON.stringify(plain).includes(TOKEN_A));
+  const sealed = await client.call('export.creds', { ave: ['tienda'], passphrase: 'clave-larga' });
+  assert.ok(!JSON.stringify(sealed).includes(TOKEN_A));
+  await client.call('ave.delete', { id: 'tienda' });
+  const imp = await client.call('import.creds', { ave: sealed.integrations.aveonline, secrets: sealed.secrets, passphrase: 'clave-larga' });
+  assert.equal(imp.ave, 1);
+  assert.match(fs.readFileSync(envFile, 'utf8'), new RegExp(TOKEN_A));
+
+  // skill
+  const skill = path.join(root, '.claude', 'skills', 'frap-aveonline', 'SKILL.md');
+  assert.equal((await client.call('ave.setSkill', { on: true })).changed.length, 2);
+  assert.match(fs.readFileSync(skill, 'utf8'), /frap-ave\.js <id> pedido <número>/);
+  await client.call('ave.setSkill', { on: false });
+  assert.ok(!fs.existsSync(skill));
+  await client.call('ave.delete', { id: 'tienda' });
 });
 
 test('wp.*: conexiones WordPress (plugin frap-wordpress), interruptores Activa/IA, CLI frap-wp y skill', async (t) => {

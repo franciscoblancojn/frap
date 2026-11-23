@@ -24,6 +24,7 @@ const issues = require('./issues');
 const tunnels = require('./tunnels');
 const scripts = require('./scripts');
 const wordpress = require('./wordpress');
+const aveonline = require('./aveonline');
 
 const VERSION = '1.3.0';
 const STARTED_AT = Date.now();
@@ -73,12 +74,50 @@ function expand(p) {
   if (p.startsWith('~/')) return path.join(HOME, p.slice(2));
   return path.resolve(p);
 }
+// Carpetas permitidas para fs.*: FS_ROOT ($HOME) y, además, las extra de FRAP_FS_EXTRA (separadas por ":") y
+// del archivo FRAP_HOME/fs-roots (una por línea; lo edita la UI con fs.addRoot / fs.removeRoot), p. ej. /var/www.
+// Nunca "/", carpetas del sistema ni carpetas genéricas (/var, /usr, /opt…): solo carpetas de proyectos.
+const FS_ROOTS_FILE = path.join(FRAP_HOME, 'fs-roots');
+const FS_FORBIDDEN_UNDER = ['/proc', '/sys', '/dev', '/boot', '/etc', '/root', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32', '/usr', '/run', '/snap'];
+const FS_FORBIDDEN_EXACT = ['/', '/var', '/opt', '/home', '/tmp', '/srv', '/mnt', '/media'];
+/** Valida una carpeta extra: absoluta y que no sea del sistema. Devuelve la ruta normalizada o lanza. */
+function checkExtraRoot(p) {
+  const raw = String(p || '').trim();
+  if (!raw.startsWith('/') && !raw.startsWith('~')) throw new Error('La carpeta debe ser una ruta absoluta (p. ej. /var/www)');
+  const abs = expand(raw).replace(/\/+$/, '') || '/';
+  const under = (r, base) => r === base || r.startsWith(base + '/');
+  if (FS_FORBIDDEN_EXACT.includes(abs) || FS_FORBIDDEN_UNDER.some((b) => under(abs, b))) throw new Error(`No se permite ${abs}: elige la carpeta de tus proyectos (p. ej. /var/www)`);
+  let real = abs;
+  try { real = fs.realpathSync(abs); } catch (_) { /* aún no existe: se valida la ruta tal cual */ }
+  if (real !== abs && (FS_FORBIDDEN_EXACT.includes(real) || FS_FORBIDDEN_UNDER.some((b) => under(real, b)))) throw new Error(`No se permite ${abs} (apunta a ${real})`);
+  return abs;
+}
+function readExtraRoots() {
+  const out = [];
+  const add = (p, source) => {
+    try { const r = checkExtraRoot(p); if (r !== FS_ROOT && !out.some((x) => x.path === r)) out.push({ path: r, source }); } catch (_) { /* inválida: se ignora */ }
+  };
+  for (const p of (process.env.FRAP_FS_EXTRA || '').split(':')) if (p.trim()) add(p, 'env');
+  let text = '';
+  try { text = fs.readFileSync(FS_ROOTS_FILE, 'utf8'); } catch (_) { /* sin archivo */ }
+  for (const line of text.split(/\r?\n/)) if (line.trim() && !line.trim().startsWith('#')) add(line, 'file');
+  return out;
+}
+let fsExtra = readExtraRoots();
+const fsRoots = () => [FS_ROOT, ...fsExtra.map((x) => x.path)];
+const inAnyRoot = (abs, roots = fsRoots()) => roots.some((r) => abs === r || abs.startsWith(r === '/' ? '/' : r + path.sep));
 function safePath(p) {
   const abs = expand(p);
-  if (abs !== FS_ROOT && !abs.startsWith(FS_ROOT + path.sep)) {
-    throw new Error(`Ruta fuera de ${FS_ROOT}: ${abs}`);
+  if (!inAnyRoot(abs)) {
+    throw new Error(`Ruta fuera de ${fsRoots().join(', ')}: ${abs}`);
   }
   return abs;
+}
+function saveExtraRoots() {
+  const lines = ['# Carpetas extra que FRAP puede abrir (además de tu carpeta personal). Una por línea.', ...fsExtra.filter((x) => x.source === 'file').map((x) => x.path), ''];
+  const tmp = `${FS_ROOTS_FILE}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, lines.join('\n'), { mode: 0o600 });
+  fs.renameSync(tmp, FS_ROOTS_FILE);
 }
 function exists(p) {
   try { fs.accessSync(p); return true; } catch (_) { return false; }
@@ -509,11 +548,11 @@ function dbConns() { return db.loadConnections(DB_ENV); }
 const WP_ENV = path.join(FRAP_HOME, 'wordpress.env');
 function wpSites() { return wordpress.loadSites(WP_ENV); }
 /** Valida y normaliza una conexión de la UI. Token vacío o null al editar = conservar el guardado. */
-function wpNormalize(input, existing, { allowNoToken = false } = {}) {
+function wpNormalize(input, existing, { allowNoToken = false, tokenHelp = 'créalo en WordPress → FRAP → Tokens' } = {}) {
   const name = String(input.name || '').trim();
   if (!name) throw new Error('El nombre es obligatorio');
   const token = input.token == null || String(input.token).trim() === '' ? (existing ? existing.token : '') : String(input.token).trim();
-  if (!token && !allowNoToken) throw new Error('El token es obligatorio (créalo en WordPress → FRAP → Tokens)');
+  if (!token && !allowNoToken) throw new Error(`El token es obligatorio (${tokenHelp})`);
   if (token && (/\s/.test(token) || token.length > 200)) throw new Error('Token inválido');
   return {
     id: existing ? existing.id : '',
@@ -524,6 +563,11 @@ function wpNormalize(input, existing, { allowNoToken = false } = {}) {
     ai: input.ai !== undefined ? input.ai !== false : existing ? existing.ai !== false : true,
   };
 }
+// ---------- integración Aveonline (revisión por token del plugin de envíos) ----------
+const AVE_ENV = path.join(FRAP_HOME, 'aveonline.env');
+function aveSites() { return aveonline.loadSites(AVE_ENV); }
+const AVE_TOKEN_HELP = 'actívalo en la tienda: Aveonline → Revisión por token';
+function aveNormalize(input, existing, opts = {}) { return wpNormalize(input, existing, { tokenHelp: AVE_TOKEN_HELP, ...opts }); }
 function dbConn(id) {
   const c = dbConns().find((x) => x.id === id);
   if (!c) throw new Error(`Conexión no encontrada: ${id}`);
@@ -751,16 +795,16 @@ async function sftpRun(id, lines, { timeoutMs, tid } = {}) {
 /** Ruta local para una transferencia: dentro de FRAP_FS_ROOT también tras resolver enlaces simbólicos. */
 function sftpLocal(p, { mustExist }) {
   const abs = safePath(p);
-  const realRoot = fs.realpathSync(FS_ROOT);
-  const inRoot = (r) => r === realRoot || r.startsWith(realRoot + path.sep);
+  const realRoots = fsRoots().map((r) => { try { return fs.realpathSync(r); } catch (_) { return r; } });
+  const inRoot = (r) => inAnyRoot(r, realRoots);
   let st = null;
   try { st = fs.lstatSync(abs); } catch (_) { /* no existe */ }
   if (mustExist) {
     if (!st) throw new Error(`No existe: ${abs}`);
-    if (!inRoot(fs.realpathSync(abs))) throw new Error(`Ruta fuera de ${FS_ROOT}: ${abs}`);
+    if (!inRoot(fs.realpathSync(abs))) throw new Error(`Ruta fuera de las carpetas permitidas: ${abs}`);
   } else {
     if (st && st.isSymbolicLink()) throw new Error(`El destino es un enlace simbólico: ${abs}`);
-    if (!inRoot(fs.realpathSync(path.dirname(abs)))) throw new Error(`Ruta fuera de ${FS_ROOT}: ${abs}`);
+    if (!inRoot(fs.realpathSync(path.dirname(abs)))) throw new Error(`Ruta fuera de las carpetas permitidas: ${abs}`);
   }
   return { abs, dir: st ? st.isDirectory() : false };
 }
@@ -864,7 +908,7 @@ Reglas:
 // ---------- operaciones RPC ----------
 const ops = {
   hello: () => ({
-    version: VERSION, home: HOME, fsRoot: FS_ROOT, shell: process.env.SHELL || '/bin/bash',
+    version: VERSION, home: HOME, fsRoot: FS_ROOT, fsRoots: fsRoots(), shell: process.env.SHELL || '/bin/bash',
     platform: process.platform, hostname: os.hostname(),
     tools: { claude: which('claude'), codex: which('codex'), opencode: which('opencode') },
     // la UI lo compara con lo que necesita para detectar un bridge viejo que sigue corriendo
@@ -948,7 +992,7 @@ const ops = {
       })
       .filter((e) => !dirsOnly || e.dir)
       .sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
-    return { path: dir, parent: dir === FS_ROOT ? null : path.dirname(dir), entries: ents };
+    return { path: dir, parent: fsRoots().includes(dir) ? null : path.dirname(dir), entries: ents };
   },
   /** Lee un archivo (≤ 2 MB). encoding 'base64': binarios (la vista previa de HTML incrusta así sus imágenes). */
   'fs.read': ({ path: p, encoding }) => {
@@ -967,6 +1011,30 @@ const ops = {
     return { path: f, mtime: fs.statSync(f).mtimeMs };
   },
   'fs.exists': ({ path: p }) => exists(safePath(p)),
+  /** Carpetas que FRAP puede abrir: {main, extra: [{path, source: env|file, exists}], file} */
+  'fs.roots': () => ({ main: FS_ROOT, extra: fsExtra.map((x) => ({ ...x, exists: exists(x.path) })), file: FS_ROOTS_FILE }),
+  /** Permite una carpeta extra (p. ej. /var/www). Debe existir y no ser del sistema. */
+  'fs.addRoot': ({ path: p }) => {
+    const r = checkExtraRoot(p);
+    let st = null;
+    try { st = fs.statSync(r); } catch (_) { /* no existe */ }
+    if (!st || !st.isDirectory()) throw new Error(`No existe la carpeta ${r}`);
+    if (inAnyRoot(r)) return { path: r, already: true, roots: fsRoots() };
+    fsExtra = [...fsExtra.filter((x) => !(x.path.startsWith(r + '/'))), { path: r, source: 'file' }];
+    saveExtraRoots();
+    fsExtra = readExtraRoots();
+    return { path: r, already: false, roots: fsRoots() };
+  },
+  'fs.removeRoot': ({ path: p }) => {
+    const r = String(p || '').replace(/\/+$/, '');
+    const x = fsExtra.find((e) => e.path === r);
+    if (!x) throw new Error(`No es una carpeta extra: ${r}`);
+    if (x.source !== 'file') throw new Error(`${r} viene de FRAP_FS_EXTRA: quítala de esa variable`);
+    fsExtra = fsExtra.filter((e) => e !== x);
+    saveExtraRoots();
+    fsExtra = readExtraRoots();
+    return { roots: fsRoots() };
+  },
   /** mtime/tamaño de varias rutas (el editor vigila así los archivos abiertos). [{path, exists, mtime, size, dir}] */
   'fs.stat': ({ paths }) => {
     if (!Array.isArray(paths) || paths.length > 500) throw new Error('paths debe ser una lista (máx. 500)');
@@ -986,7 +1054,7 @@ const ops = {
   'fs.rename': ({ from, to }) => {
     const a = safePath(from);
     const b = safePath(to);
-    if (a === FS_ROOT) throw new Error('No se puede mover la carpeta raíz');
+    if (fsRoots().includes(a)) throw new Error('No se puede mover una carpeta raíz');
     if (!exists(a)) throw new Error(`No existe: ${a}`);
     if (exists(b)) throw new Error(`Ya existe: ${b}`);
     fs.mkdirSync(path.dirname(b), { recursive: true });
@@ -996,7 +1064,7 @@ const ops = {
   /** Manda un archivo/carpeta a la papelera (no borra: se puede recuperar). */
   'fs.trash': ({ path: p }) => {
     const a = safePath(p);
-    if (a === FS_ROOT) throw new Error('No se puede borrar la carpeta raíz');
+    if (fsRoots().includes(a)) throw new Error('No se puede borrar una carpeta raíz');
     if (!exists(a)) throw new Error(`No existe: ${a}`);
     return { path: a, trashed: moveToTrash(a) };
   },
@@ -1286,6 +1354,80 @@ const ops = {
   'wp.skill': () => wordpress.skillStatus(),
   /** on=true la instala/actualiza; on=false la quita (módulo Integraciones apagado). {on, changed} */
   'wp.setSkill': ({ on }) => wordpress.setSkill(!!on),
+  // ----- integración Aveonline (revisión por token, solo lectura): URL + token por tienda en FRAP_HOME/aveonline.env -----
+  /** {envFile, cli, skill, sites: [{id, name, url, enabled, ai, hasToken, tokenHint}]} (sin tokens) */
+  'ave.list': () => ({ envFile: AVE_ENV, cli: aveonline.CLI, skill: aveonline.skillStatus(), sites: aveSites().map(aveonline.publicSite) }),
+  /** Crea o edita. `token: null` (o vacío al editar) = conservar el guardado. */
+  'ave.save': ({ site }) => {
+    const sites = aveSites();
+    const existing = site && site.id ? sites.find((c) => c.id === site.id) : null;
+    if (site && site.id && !existing) throw new Error(`Tienda no encontrada: ${site.id}`);
+    const c = aveNormalize(site || {}, existing);
+    if (existing) sites[sites.indexOf(existing)] = c;
+    else { c.id = db.slugify(c.name, new Set(sites.map((x) => x.id))); sites.push(c); }
+    aveonline.saveSites(AVE_ENV, sites);
+    return aveonline.publicSite(c);
+  },
+  /**
+   * «Pegar token»: texto como "pedido 16322 token … tienda http://…". Si la tienda (por URL, o `id`) ya existe le
+   * cambia el token; si no, la crea con el nombre del dominio. El token nunca vuelve a la UI.
+   * → {site, created, order}
+   */
+  'ave.paste': ({ text, id }) => {
+    const parsed = aveonline.parsePaste(text);
+    if (!parsed.token) throw new Error('No encontré el token en el texto (48 caracteres hex, después de "token")');
+    const sites = aveSites();
+    const existing = id ? sites.find((c) => c.id === id) : parsed.url ? sites.find((c) => aveonline.normalizeUrl(c.url) === parsed.url) : null;
+    if (id && !existing) throw new Error(`Tienda no encontrada: ${id}`);
+    if (!existing && !parsed.url) throw new Error('No encontré la URL de la tienda en el texto (o elige la tienda a la que va el token)');
+    let c;
+    if (existing) {
+      c = aveNormalize({ ...existing, token: parsed.token }, existing);
+      sites[sites.indexOf(existing)] = c;
+    } else {
+      const host = new URL(parsed.url).hostname.replace(/^www\./, '');
+      c = aveNormalize({ name: host, url: parsed.url, token: parsed.token }, null);
+      const label = host.split('.')[0];
+      c.id = db.slugify(/^\d+$/.test(label) || !label ? 'tienda' : label, new Set(sites.map((x) => x.id))); // chp.com.co → chp; una IP → tienda
+      sites.push(c);
+    }
+    aveonline.saveSites(AVE_ENV, sites);
+    return { site: aveonline.publicSite(c), created: !existing, order: parsed.order || null };
+  },
+  /** Interruptores: `enabled` (activa) y/o `ai` (usable por agentes con frap-ave). */
+  'ave.toggle': ({ id, enabled, ai }) => {
+    const sites = aveSites();
+    const c = sites.find((x) => x.id === id);
+    if (!c) throw new Error(`Tienda no encontrada: ${id}`);
+    if (enabled !== undefined) c.enabled = !!enabled;
+    if (ai !== undefined) c.ai = !!ai;
+    aveonline.saveSites(AVE_ENV, sites);
+    return aveonline.publicSite(c);
+  },
+  'ave.delete': ({ id }) => {
+    const sites = aveSites();
+    if (!sites.some((c) => c.id === id)) throw new Error(`Tienda no encontrada: ${id}`);
+    aveonline.saveSites(AVE_ENV, sites.filter((c) => c.id !== id));
+    return true;
+  },
+  /** GET /review/info: de una tienda guardada (`id`) o de una sin guardar (`site`, para "Probar" en el formulario). */
+  'ave.check': ({ id, site }) => {
+    const existing = id ? aveSites().find((c) => c.id === id) : site && site.id ? aveSites().find((c) => c.id === site.id) : null;
+    if (id && !existing) throw new Error(`Tienda no encontrada: ${id}`);
+    const c = site ? aveNormalize(site, existing) : existing;
+    if (!c.token) throw new Error('La tienda no tiene token');
+    return aveonline.info(c);
+  },
+  /** Últimos pedidos de una tienda guardada (vista rápida en la UI; solo lectura). */
+  'ave.orders': ({ id, query = {} }) => {
+    const c = aveSites().find((x) => x.id === id);
+    if (!c) throw new Error(`Tienda no encontrada: ${id}`);
+    const q = {};
+    for (const k of ['per_page', 'page', 'status', 'aveonline']) if (query[k] != null && /^[\w-]{1,30}$/.test(String(query[k]))) q[k] = String(query[k]);
+    return aveonline.request(c, 'orders', { query: q }).then((r) => { if (r.status !== 200) throw aveonline.apiError(r); return r.data; });
+  },
+  'ave.skill': () => aveonline.skillStatus(),
+  'ave.setSkill': ({ on }) => aveonline.setSkill(!!on),
   'scripts.list': () => scripts.listScripts(),
   /** Cambia los interruptores de un script. {path, user?, ai?} → {path, user, ai} */
   'scripts.set': ({ path: p, user, ai }) => scripts.setFlags(p, { user, ai }),
@@ -1345,18 +1487,21 @@ const ops = {
    * Exporta conexiones de BD y servidores SSH elegidos. Sin `passphrase` no salen contraseñas;
    * con ella, van en `secrets` cifradas.
    */
-  'export.creds': ({ db: dbIds = [], ssh: sshIds = [], wp: wpIds = [], passphrase } = {}) => {
+  'export.creds': ({ db: dbIds = [], ssh: sshIds = [], wp: wpIds = [], ave: aveIds = [], passphrase } = {}) => {
     const strip = (c) => { const { password, ...rest } = c; return rest; };
     const conns = dbConns().filter((c) => dbIds.includes(c.id));
     const hosts = sshHosts().filter((c) => sshIds.includes(c.id));
     const sites = wpSites().filter((c) => wpIds.includes(c.id));
-    const out = { db: conns.map(strip), ssh: hosts.map(strip), integrations: { wordpress: sites.map(({ token, ...rest }) => rest) } };
+    const stores = aveSites().filter((c) => aveIds.includes(c.id));
+    const noToken = ({ token, ...rest }) => rest;
+    const out = { db: conns.map(strip), ssh: hosts.map(strip), integrations: { wordpress: sites.map(noToken), aveonline: stores.map(noToken) } };
     if (passphrase) {
       if (String(passphrase).length < 6) throw new Error('La clave de cifrado debe tener al menos 6 caracteres');
       out.secrets = sealSecrets({
         db: Object.fromEntries(conns.filter((c) => c.password).map((c) => [c.id, c.password])),
         ssh: Object.fromEntries(hosts.filter((c) => c.password).map((c) => [c.id, c.password])),
         wp: Object.fromEntries(sites.filter((c) => c.token).map((c) => [c.id, c.token])),
+        ave: Object.fromEntries(stores.filter((c) => c.token).map((c) => [c.id, c.token])),
       }, passphrase);
     }
     return out;
@@ -1365,9 +1510,9 @@ const ops = {
    * Importa conexiones y servidores (mismo id = se reemplaza). Si traen `secrets`, hace falta
    * `passphrase`; sin ella se importan sin contraseña (o se conserva la que ya existía).
    */
-  'import.creds': ({ db: inDb = [], ssh: inSsh = [], wp: inWp = [], secrets, passphrase } = {}) => {
+  'import.creds': ({ db: inDb = [], ssh: inSsh = [], wp: inWp = [], ave: inAve = [], secrets, passphrase } = {}) => {
     const pw = secrets && passphrase != null && passphrase !== '' ? openSecrets(secrets, passphrase) : { db: {}, ssh: {} };
-    const result = { db: 0, ssh: 0, wp: 0, errors: [] };
+    const result = { db: 0, ssh: 0, wp: 0, ave: 0, errors: [] };
     const conns = dbConns();
     for (const raw of inDb) {
       try {
@@ -1408,6 +1553,20 @@ const ops = {
       } catch (e) { result.errors.push(`WordPress ${raw.name || raw.id}: ${e.message}`); }
     }
     if (inWp.length) wordpress.saveSites(WP_ENV, sites);
+    // Aveonline: igual que WordPress (sus tokens duran poco: lo normal es pegar uno nuevo tras importar)
+    const stores = aveSites();
+    for (const raw of inAve) {
+      try {
+        const id = db.slugify(String(raw.id || raw.name || ''), new Set()).slice(0, 60);
+        const existing = stores.find((c) => c.id === id);
+        const token = Object.prototype.hasOwnProperty.call(pw.ave || {}, raw.id) ? pw.ave[raw.id] : null;
+        const c = aveNormalize({ ...raw, token }, existing || { id, token: '' }, { allowNoToken: true });
+        c.id = id;
+        if (existing) stores[stores.indexOf(existing)] = c; else stores.push(c);
+        result.ave++;
+      } catch (e) { result.errors.push(`Aveonline ${raw.name || raw.id}: ${e.message}`); }
+    }
+    if (inAve.length) aveonline.saveSites(AVE_ENV, stores);
     return result;
   },
   /**
