@@ -872,6 +872,8 @@ textarea.prompt-body { min-height: 180px; font: 12.5px/1.5 var(--mono); resize: 
 .code-node.active .code-fname { color: var(--fg); }
 .code-node.err { color: var(--err); cursor: default; }
 .code-root { font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: .03em; padding-top: 4px; padding-bottom: 4px; }
+.code-root.code-ext { text-transform: none; font-weight: 500; color: var(--fg-2); font-style: italic; border-top: 1px dashed var(--line); }
+.code-root.code-ext .code-fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .code-twisty { width: 12px; flex: none; color: var(--fg-3); font-size: 10px; text-align: center; }
 .code-fname { overflow: hidden; text-overflow: ellipsis; }
 .code-hint { padding: 8px 10px; margin: 0; font-size: 12px; }

@@ -3663,6 +3663,18 @@
     P.dirs.set(dir, { entries, at: Date.now() });
     return entries;
   }
+  /** Raíces del árbol: las carpetas del proyecto y, aparte, la carpeta de cada archivo abierto que quede fuera de ellas. */
+  function codeTreeRoots() {
+    const roots = codeRoots();
+    const inside = (f) => roots.some((r) => f === r || f.startsWith(`${r}/`));
+    const ext = [];
+    for (const g of state.code.groups || []) for (const f of g.tabs) {
+      if (inside(f) || !f.includes('/')) continue;
+      const d = f.slice(0, f.lastIndexOf('/')) || '/';
+      if (!ext.includes(d)) ext.push(d);
+    }
+    return { roots, ext };
+  }
   let codeTreeSeq = 0;
   async function codeRenderTree() {
     const P = codePane;
@@ -3687,15 +3699,16 @@
       if (!entries.length) out.push(h('div.code-node.muted', { style: `padding-left:${20 + depth * 12}px` }, '(vacía)'));
       return out;
     };
-    const roots = codeRoots();
+    const { roots, ext } = codeTreeRoots();
     const parts = [];
-    for (const r of roots) {
+    for (const r of [...roots, ...ext]) {
       const open = !expanded.has(`!${r}`); // las raíces empiezan abiertas ("!ruta" = contraída)
-      parts.push(h('div.code-node.dir.code-root', {
-        title: tilde(r), dataset: { path: r },
+      const isExt = !roots.includes(r);
+      parts.push(h(`div.code-node.dir.code-root${isExt ? '.code-ext' : ''}`, {
+        title: isExt ? `Fuera de las carpetas del proyecto: ${tilde(r)}` : tilde(r), dataset: { path: r },
         onclick: () => codeToggleDir(`!${r}`),
         oncontextmenu: (ev) => codeTreeMenu(ev, r, true, true),
-      }, h('span.code-twisty', open ? '▾' : '▸'), h('span.code-fname', basename(r) || r)));
+      }, h('span.code-twisty', open ? '▾' : '▸'), h('span.code-fname', isExt ? `↗ ${tilde(r)}` : (basename(r) || r))));
       if (open) parts.push(...await build(r, 1));
     }
     if (seq !== codeTreeSeq || codePane !== P) return;
@@ -3710,22 +3723,25 @@
     codeRenderTree();
   }
   /** Expande el árbol hasta el archivo y lo deja visible. */
-  async function codeReveal(file) {
+  async function codeReveal(file, quiet) {
     if (!file || !codePane) return;
-    const r = codeRoots().find((x) => file.startsWith(`${x}/`));
-    if (!r) { toast('El archivo no está dentro de las carpetas del proyecto', 'err'); return; }
+    const { roots, ext } = codeTreeRoots();
+    const r = [...roots, ...ext].sort((a, b) => b.length - a.length).find((x) => file.startsWith(`${x}/`));
+    if (!r) { if (!quiet) toast('El archivo no está dentro de las carpetas del proyecto', 'err'); return; }
     const c = state.code;
     const add = new Set(c.expanded);
     add.delete(`!${r}`);
     let d = file.slice(0, file.lastIndexOf('/'));
     while (d.length > r.length) { add.add(d); d = d.slice(0, d.lastIndexOf('/')); }
     c.expanded = [...add];
-    if (c.side !== 'tree') c.side = 'tree';
+    if (!quiet && c.side !== 'tree') c.side = 'tree';
     save();
-    codeRenderSide();
+    if (!quiet) codeRenderSide();
+    if (c.side !== 'tree') return;
     await codeRenderTree();
+    if (!codePane) return;
     const el = [...codePane.treeEl.querySelectorAll('.code-node')].find((n) => n.dataset.path === file);
-    if (el) el.scrollIntoView({ block: 'center' });
+    if (el) el.scrollIntoView({ block: quiet ? 'nearest' : 'center' });
   }
   function codeTreeMenu(ev, abs, isDir, isRoot) {
     const dir = isDir ? abs : abs.slice(0, abs.lastIndexOf('/'));
@@ -4018,7 +4034,7 @@
     codeShowActive(gi);
     if (opts.line) codeGoTo(gi, opts.line, opts.col, opts.len);
     codeRenderStatus();
-    if (state.code.side === 'tree') codeMarkTreeActive();
+    if (state.code.side === 'tree') { codeMarkTreeActive(); codeReveal(file, true); } // despliega las carpetas hasta el archivo
     requestAnimationFrame(() => codeFocusEditor(gi));
   }
   function codeGoTo(gi, line, col, len) {
@@ -4143,7 +4159,7 @@
           return h(`div.ed-tab${file === g.active ? '.active' : ''}${dirty ? '.dirty' : ''}${f && f.conflict ? '.conflict' : ''}`, {
             title: `${tilde(file)}${dirty ? ' (sin guardar)' : ''}`,
             draggable: 'true',
-            onclick: () => { g.active = file; state.code.focus = gi; save(); codeShowActive(gi); codeRenderTabsOnly(); codeRenderFocus(); codeRenderStatus(); codeMarkTreeActive(); codeFocusEditor(gi); },
+            onclick: () => { g.active = file; state.code.focus = gi; save(); codeShowActive(gi); codeRenderTabsOnly(); codeRenderFocus(); codeRenderStatus(); codeMarkTreeActive(); if (state.code.side === 'tree') codeReveal(file, true); codeFocusEditor(gi); },
             onauxclick: (e) => { if (e.button === 1) codeCloseTab(gi, file); },
             oncontextmenu: (e) => codeTabMenu(e, gi, file),
             ondragstart: (e) => { P.dragTab = { gi, file }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', file); },
