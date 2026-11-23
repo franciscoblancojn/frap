@@ -552,12 +552,26 @@
     t.term.focus();
   }
 
+  /** Repinta todas las filas de una terminal (xterm a veces no dibuja lo que llegó mientras estaba oculta o al
+   * re-adjuntar: el texto estaba, pero solo aparecía al seleccionarlo). */
+  function termRepaint(t) {
+    if (!t || !t.term || !t.pane.offsetWidth) return;
+    try { t.term.refresh(0, t.term.rows - 1); } catch (_) { /* aún sin renderer */ }
+  }
+  /** Las apps de pantalla completa (claude, codex…) solo se redibujan con SIGWINCH: un cambio de tamaño de ida y vuelta. */
+  function termNudge(t) {
+    if (!t || t.info.alive === false || !t.term.rows || t.term.rows < 3) return;
+    const { cols, rows } = t.term;
+    Bridge.send('session.resize', { sid: t.sid, cols, rows: rows - 1 });
+    setTimeout(() => { Bridge.send('session.resize', { sid: t.sid, cols, rows }); t.lastSize = `${cols}x${rows}`; }, 120);
+  }
+
   async function attach(t) {
     t.attaching = true;
     try {
       const res = await Bridge.call('session.attach', { sid: t.sid });
       t.term.reset();
-      if (res.buffer) t.term.write(res.buffer);
+      if (res.buffer) t.term.write(res.buffer, () => requestAnimationFrame(() => termRepaint(t)));
       t.info = { ...t.info, ...res };
       if (res.buffer) actionScan(t, res.buffer, true);
       if (!res.alive) t.term.write('\r\n\x1b[2m[proceso terminado]\x1b[0m\r\n');
@@ -566,6 +580,8 @@
     }
     t.attaching = false;
     sendResize(t);
+    // tras re-adjuntar (recargar la página o el bridge): que las apps de pantalla completa se redibujen enteras
+    if (t.info.alive !== false) setTimeout(() => { termNudge(t); setTimeout(() => termRepaint(t), 400); }, 300);
   }
 
   function fitTerm(t) {
@@ -580,6 +596,9 @@
     Bridge.send('session.resize', { sid: t.sid, cols, rows });
   }
   const fitAll = debounce(() => terms.forEach(fitTerm), 60);
+  // la fuente monoespaciada carga tarde y la pestaña del navegador puede volver de segundo plano: repintar
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => terms.forEach((t) => { fitTerm(t); termRepaint(t); }));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) requestAnimationFrame(() => terms.forEach(termRepaint)); });
   new ResizeObserver(() => { fitAll(); codeRefreshSoon(); }).observe($('#term-host'));
   const codeRefreshSoon = debounce(() => codeRefreshEditors(), 80);
 
@@ -1781,6 +1800,7 @@
     if (!group.some((t) => t.sid === state.activeSid)) group = [];
     const rects = splitRects(group.length);
     const refit = [];
+    const shown = [];
     for (const t of terms.values()) {
       const slot = group.indexOf(t);
       const r = slot >= 0 ? rects[slot] : null;
@@ -1794,9 +1814,12 @@
       }
       t.pane.classList.toggle('split', !!r);
       t.pane.classList.toggle('focused', !!r && t.sid === state.activeSid);
-      t.pane.style.visibility = r || t.sid === state.activeSid ? 'visible' : 'hidden';
+      const vis = r || t.sid === state.activeSid ? 'visible' : 'hidden';
+      if (vis === 'visible' && t.pane.style.visibility !== 'visible') shown.push(t); // vuelve a verse: repintar
+      t.pane.style.visibility = vis;
     }
     if (refit.length && !splitDragging) requestAnimationFrame(() => refit.forEach(fitTerm));
+    if (shown.length) requestAnimationFrame(() => shown.forEach((t) => { fitTerm(t); termRepaint(t); }));
     renderSplitHandles(group.length);
     renderSplitBtn();
     const pg = isPageView(state.activeSid) ? pageById(state.activeSid.slice(PAGE_PREFIX.length)) : null;
@@ -7590,15 +7613,16 @@
   function issueCard(i) {
     const open = issuesOpen === i.id;
     const pr = issuePrio(i.priority);
+    const toggle = () => { issuesOpen = open ? null : i.id; renderRight(); }; // cabecera, título y estado abren/cierran las opciones
     return h(`div.iss-card${open ? '.open' : ''}${i.closed ? '.closed' : ''}`,
-      h('div.iss-head', { onclick: () => { issuesOpen = open ? null : i.id; renderRight(); } },
+      h('div.iss-head', { onclick: toggle },
         h('button.iss-prio', { title: `Prioridad: ${pr.label} (${pr.en}) · clic para cambiarla`, onclick: (e) => issuePrioMenu(e, i) }, pr.icon),
         h('span.iss-id', i.id),
         i.pending && !i.closed ? h('span.iss-pend', { title: `${i.pending} comentario(s)/cambio(s) por enviar a Linear` }, `📤 ${i.pending}`) : null,
         h('span.grow'),
         h('span.muted.iss-date', i.updated ? new Date(i.updated).toLocaleDateString([], { day: '2-digit', month: 'short' }) : '')),
-      h('div.iss-title', i.title || h('span.muted', '(sin título)')),
-      i.estado ? h('div.iss-estado.muted', i.estado) : null,
+      h('div.iss-title', { onclick: toggle, title: open ? 'Clic: ocultar opciones' : 'Clic: ver opciones' }, i.title || h('span.muted', '(sin título)')),
+      i.estado ? h('div.iss-estado.muted', { onclick: toggle }, i.estado) : null,
       open ? h('div.iss-acts',
         h('div.iss-files', ['status.md', 'issue.md', 'changelog.md', 'final.md'].filter((x) => i.files.includes(x)).map((x) => h('button.mini', { title: tilde(issueFile(i, x)), onclick: () => openInFrap(issueFile(i, x)) }, x))),
         h('div.iss-files',

@@ -1150,8 +1150,8 @@ li.CodeMirror-hint-active { background: var(--accent); color: var(--bg); }
 .iss-card.closed .iss-id { color: var(--fg-2); }
 .iss-pend { font-size: 10.5px; padding: 0 5px; border-radius: 8px; background: color-mix(in srgb, var(--warn) 20%, var(--bg)); color: var(--warn); }
 .iss-date { font-size: 11px; }
-.iss-title { margin-top: 2px; font-size: 12.5px; line-height: 1.35; }
-.iss-estado { margin-top: 3px; font-size: 11px; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.iss-title { margin-top: 2px; font-size: 12.5px; line-height: 1.35; cursor: pointer; }
+.iss-estado { cursor: pointer; margin-top: 3px; font-size: 11px; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .iss-card.open .iss-estado { display: block; }
 .iss-acts { margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 5px; }
 .iss-files { display: flex; flex-wrap: wrap; gap: 4px; }

@@ -9,6 +9,7 @@
 - [x] Terminales persistentes: sobreviven a recargar la página y se re-adjuntan con su scrollback
 - [x] Shell y SSH: botones arriba a la derecha para limpiar (también vacía el historial guardado: no vuelve al recargar ni al reiniciar el bridge) y copiar todo el contenido de la terminal
 - [x] Cerrar una terminal (✕) la cierra de verdad aunque el programa capture SIGHUP (claude): escalada a SIGTERM/SIGKILL de toda su sesión; ya no reaparece al recargar
+- [x] Terminales: se repintan al volver a mostrarse, tras re-adjuntar (recargar la página o el bridge), al cargar la fuente y al volver a la pestaña; al re-adjuntar se manda un SIGWINCH (tamaño de ida y vuelta) para que claude/codex se redibujen enteras
 - [x] Terminales: el nombre que pone el usuario (doble clic) ya no lo pisa el título que cambian claude/codex; ese título queda en el tooltip. Nombre vacío = vuelve al título automático
 - [x] Cada sección del panel izquierdo recuerda su proyecto y ventana abierta (y cada proyecto su última ventana): al cambiar de sección vuelve a ellas
 - [x] Barra de secciones en una sola fila con scroll (rueda del ratón) y un ＋ fijo a la derecha con menú: abrir carpeta (nuevo proyecto) o crear sección. Sin el ＋ de la cabecera
