@@ -7230,6 +7230,7 @@
     const d = Math.floor(s / 86400), hh = Math.floor((s % 86400) / 3600), mm = Math.floor((s % 3600) / 60);
     return `en ${d ? `${d} d ` : ''}${d || hh ? `${hh} h ` : ''}${mm} min`;
   }
+  const WP_PLUGIN_ZIP = 'https://github.com/franciscoblancojn/frap-wordpress/archive/refs/heads/master.zip';
   const WP_ACT = { read: 'ver', create: 'crear', update: 'editar', delete: 'eliminar' };
   /** Resumen de permisos: "Entradas: ver, editar · Páginas: ver…". */
   function wpPermSummary(info) {
@@ -7271,7 +7272,7 @@
     openModal({
       title: s ? `WordPress · ${s.name}` : 'Nueva conexión WordPress',
       body: [
-        h('p.muted', { style: 'margin:0 0 8px' }, 'En el sitio instala el plugin frap-wordpress y crea un token en WordPress → FRAP → Tokens (24 h por defecto, solo lectura salvo que le des más permisos).'),
+        h('p.muted', { style: 'margin:0 0 8px' }, h('a', { href: WP_PLUGIN_ZIP, target: '_blank' }, '⬇ Descargar el plugin frap-wordpress'), ' · Instálalo en el sitio y crea un token en WordPress → FRAP → Tokens (24 h por defecto, solo lectura salvo que le des más permisos).'),
         h('div.field', h('label', 'Nombre'), name),
         h('div.field', h('label', 'URL del sitio'), url),
         h('div.field', h('label', 'Token'), token),
@@ -7331,6 +7332,7 @@
         h('div.integ-ghead', { onclick: () => integToggle('wordpress') },
           h('span.integ-caret', col ? '▸' : '▾'), h('span.integ-logo', 'W'), h('span.grow', 'WordPress'),
           h('span.integ-count', String(sites.length)),
+          h('button.icon.mini', { title: 'Descargar el plugin frap-wordpress (.zip para subir en WordPress → Plugins → Añadir nuevo → Subir plugin)', onclick: (e) => { e.stopPropagation(); window.open(WP_PLUGIN_ZIP, '_blank'); } }, '⬇'),
           h('button.icon.mini', { title: 'Nueva conexión WordPress', onclick: (e) => { e.stopPropagation(); editWpSite(null); } }, '＋')),
         col ? null : sites.length ? h('div.integ-items', sites.map((s) => {
           const c = wpChecks.get(s.id);
