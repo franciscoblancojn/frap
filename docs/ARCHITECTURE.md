@@ -90,7 +90,7 @@ navegador (file://src/index.html)                     máquina local
     - `GET /info` devuelve el sitio, las versiones, el vencimiento y los permisos.
     - `/<recurso>[/<id>[/variations[/<id>]]]` se traduce con `rest_do_request` a `/wp/v2/…` o `/wc/v3/…`. Se ejecuta como el administrador que creó el token, después de comprobar el permiso: GET = ver, POST sin id = crear, POST/PUT/PATCH con id = editar, DELETE = eliminar.
     - Todo queda en «Actividad» (`FWUSystemLog`).
-  - **Repo propio:** el código vive en FRAP y se publica con `git subtree split` (`scripts/publish.sh`, `npm run push-v`) en `franciscoblancojn/frap-wordpress` (`FRAPWP_REMOTE` lo cambia). Su workflow arma la release que lee `FWUUpdate`. El token de GitHub de `FWUUpdate` va en `wp-config.php` (`FRAPWP_GITHUB_TOKEN`), no en el código.
+  - **Repo propio:** el código vive en FRAP y se publica con `git subtree split` (`scripts/publish.sh`, `npm run push-v`) en `franciscoblancojn/frap-wordpress` (`FRAPWP_REMOTE` lo cambia). Su workflow arma la release que lee `FWUUpdate`. El token de GitHub de `FWUUpdate` va en `index.php` (`token_array_split`, solo lectura a repos públicos), como en los demás plugins del autor.
 - **En FRAP** (`bridge/wordpress.js`): conexiones `FRAP_WP_<ID>_{NAME,URL,TOKEN,ENABLED,AI}` en `FRAP_HOME/wordpress.env` (0600).
   - `publicSite` quita el token (la UI solo ve `hasToken` y los últimos 4 caracteres).
   - Las peticiones usan `?rest_route=`, así funcionan sin enlaces permanentes. En hosts locales o de red privada (`isPrivateHost`) aceptan certificados propios.
