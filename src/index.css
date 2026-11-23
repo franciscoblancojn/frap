@@ -145,11 +145,15 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 /* ---------- secciones del panel izquierdo (chips arriba de las carpetas) ---------- */
 .sections {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 5px;
   padding: 7px 8px;
   border-bottom: 1px solid var(--line);
 }
+/* chips en una sola fila con scroll horizontal (rueda del ratón); el ＋ queda fijo a la derecha */
+.sec-scroll { display: flex; gap: 5px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.sec-scroll::-webkit-scrollbar { display: none; }
+.sec-scroll .sec-chip { flex: none; max-width: 160px; }
 .sec-chip {
   display: inline-flex;
   align-items: center;
@@ -175,7 +179,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .sec-badge { min-width: 16px; padding: 0 4px; border-radius: 8px; font-size: 10px; line-height: 15px; font-weight: 700; text-align: center; color: var(--bg); }
 .sec-badge.waiting { background: var(--warn, #e0af68); }
 .sec-badge.done { background: var(--ok, #9ece6a); }
-.sec-add { padding: 3px 8px; color: var(--fg-3, var(--fg-2)); border-style: dashed; }
+.sec-add { flex: none; padding: 3px 8px; color: var(--fg-3, var(--fg-2)); border-style: dashed; }
 .sec-projs { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 6px; }
 .sec-proj { display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; }
 .sec-proj .muted { margin-left: auto; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }

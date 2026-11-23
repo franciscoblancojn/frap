@@ -1383,7 +1383,39 @@
       showTitle ? h('span.sec-title', s.title) : null,
       notices.length ? h(`span.sec-badge.${waiting ? 'waiting' : 'done'}`, String(notices.length)) : null);
     });
-    bar.replaceChildren(...chips, h('button.sec-chip.sec-add', { title: 'Nueva sección', onclick: () => editSection(null) }, '＋'));
+    const old = bar.querySelector('.sec-scroll');
+    const keepLeft = old ? old.scrollLeft : 0;
+    const prevActive = bar.dataset.active || '';
+    const scroller = h('div.sec-scroll', ...chips);
+    bar.replaceChildren(scroller, sectionAddBtn(true));
+    scroller.scrollLeft = keepLeft;
+    // si cambió la sección activa, que quede a la vista
+    bar.dataset.active = cur.id;
+    const act = scroller.querySelector('.sec-chip.active');
+    if (act && prevActive !== cur.id) requestAnimationFrame(() => act.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+  }
+  // rueda del ratón sobre las secciones: scroll horizontal
+  $('#sections').addEventListener('wheel', (e) => {
+    const sc = e.currentTarget.querySelector('.sec-scroll');
+    if (!sc || sc.scrollWidth <= sc.clientWidth) return;
+    const d = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+    if (!d) return;
+    e.preventDefault();
+    sc.scrollLeft += e.deltaMode === 1 ? d * 30 : d;
+  }, { passive: false });
+  /** ＋ fijo a la derecha de la barra de secciones: abrir carpeta (nuevo proyecto) o crear sección. */
+  function sectionAddBtn(withSections) {
+    return h('button.sec-chip.sec-add', {
+      title: withSections ? 'Abrir carpeta o crear sección' : 'Abrir carpeta (nuevo proyecto)',
+      onclick: (e) => {
+        if (!withSections) { newProject(); return; }
+        const r = e.currentTarget.getBoundingClientRect();
+        popMenu({ clientX: r.left, clientY: r.bottom + 4, preventDefault() {}, stopPropagation() {} }, [
+          { label: '📂 Abrir carpeta', hint: 'nuevo proyecto', action: newProject },
+          { label: '🗂️ Crear sección de carpetas', action: () => editSection(null) },
+        ]);
+      },
+    }, '＋');
   }
 
   // ---------- reordenar arrastrando (asa ⠿) ----------
@@ -1505,8 +1537,8 @@
     hideProjectTip();
     ensureSections();
     const secOn = modOn('left.sections');
-    $('#sections').classList.toggle('hidden', !secOn);
     if (secOn) renderSections();
+    else $('#sections').replaceChildren(h('span.grow'), sectionAddBtn(false)); // sin secciones: solo el ＋ (abrir carpeta)
     const root = $('#projects');
     root.replaceChildren();
     const sec = secOn ? activeSection() : state.sections[0]; // apagadas: "Todas"
@@ -8526,7 +8558,7 @@
   // ======================================================================
   // Arranque
   // ======================================================================
-  $('#btn-new-project').onclick = newProject;
+  // (el ＋ para abrir carpeta está en la barra de secciones)
   // ======================================================================
   // Exportar / importar (botón ⇅ del panel izquierdo)
   // ======================================================================

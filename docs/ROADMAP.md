@@ -10,6 +10,7 @@
 - [x] Shell y SSH: botones arriba a la derecha para limpiar (también vacía el historial guardado: no vuelve al recargar ni al reiniciar el bridge) y copiar todo el contenido de la terminal
 - [x] Terminales: el nombre que pone el usuario (doble clic) ya no lo pisa el título que cambian claude/codex; ese título queda en el tooltip. Nombre vacío = vuelve al título automático
 - [x] Cada sección del panel izquierdo recuerda su proyecto y ventana abierta (y cada proyecto su última ventana): al cambiar de sección vuelve a ellas
+- [x] Barra de secciones en una sola fila con scroll (rueda del ratón) y un ＋ fijo a la derecha con menú: abrir carpeta (nuevo proyecto) o crear sección. Sin el ＋ de la cabecera
 - [x] Carpetas fuera de la carpeta personal (p. ej. /var/www): el selector ofrece permitirlas y muestra accesos a cada una; `FRAP_FS_EXTRA` o `FRAP_HOME/fs-roots`; nunca carpetas del sistema
 - [x] Editor: una ruta de carpeta (clic en la terminal, o «Ver sus archivos» en el árbol) se abre como pestaña 📁 con su contenido (miniaturas de imágenes, ↑, terminal, explorador); si está fuera del proyecto, aparece como raíz aparte en el árbol
 - [x] Panel derecho:
