@@ -673,7 +673,11 @@
     const orphanActive = at && termKind(at) !== 'action' && !project((at.info.meta || {}).projectId);
     return orphanActive || !project() ? orphanSessions() : sessionsOf(state.activeProject);
   }
-  const termTitle = (t) => t.liveTitle || (t.info.meta || {}).title || t.sid;
+  // Nombre de la terminal. Si el usuario la renombró (meta.named), manda su nombre: claude/codex cambian el título
+  // de la terminal (tema de la conversación, ✳ mientras trabaja) y antes lo pisaban. Sin nombre propio, el título vivo.
+  const termTitle = (t) => { const m = t.info.meta || {}; return (m.named && m.title) || t.liveTitle || m.title || t.sid; };
+  /** Tooltip con el título que pone el programa (claude…) cuando no es el que se muestra. */
+  const termLiveHint = (t) => (t.liveTitle && t.liveTitle !== termTitle(t) ? `Título de la terminal: ${t.liveTitle}\n` : '');
   const termKind = (t) => (t.info.meta || {}).kind || 'shell';
 
   function activeTerm() { return terms.get(state.activeSid) || null; }
@@ -713,7 +717,7 @@
         cwd: opts.cwd || p.folders[0],
         cols: 120, rows: 32,
         init: opts.init != null ? opts.init : buildLaunch(kind, p),
-        meta: { projectId: p.id, kind, title: opts.title || (n > 1 ? `${kind} ${n}` : kind) },
+        meta: { projectId: p.id, kind, title: opts.title || (n > 1 ? `${kind} ${n}` : kind), ...(opts.named && opts.title ? { named: true } : {}) },
       });
       ensureTerm(info);
       activate(info.sid);
@@ -729,7 +733,7 @@
     if (meta.sshId) { if (p) state.activeProject = p.id; await connectSsh(meta.sshId); return; }
     if (!p) { renderAll(); return; }
     state.activeProject = p.id;
-    await launch(meta.kind || 'shell', { title: meta.title, cwd: meta.cwd });
+    await launch(meta.kind || 'shell', { title: meta.title, cwd: meta.cwd, named: meta.named });
   }
 
   async function closeTerm(sid) {
@@ -752,11 +756,12 @@
   async function renameTerm(sid) {
     const t = terms.get(sid);
     if (!t) return;
-    const name = await askText('Renombrar terminal', 'Nombre', (t.info.meta || {}).title || '');
-    if (!name) return;
-    t.liveTitle = '';
+    const m = t.info.meta || {};
+    const name = await askText('Renombrar terminal', 'Nombre (déjalo vacío para volver al título automático de la terminal)', m.named ? m.title : termTitle(t));
+    if (name == null) return; // cancelado
     try {
-      const info = await Bridge.call('session.meta', { sid, meta: { title: name } });
+      // con nombre: queda fijo aunque claude/codex cambien el título. Vacío: vuelve al título automático
+      const info = await Bridge.call('session.meta', { sid, meta: name ? { title: name, named: true } : { named: false } });
       t.info.meta = info.meta;
     } catch (e) { toast(e.message, 'err'); }
     renderAll();
@@ -1056,7 +1061,7 @@
       class: `term-item${t.sid === state.activeSid ? ' active' : ''}${grouped ? ' grouped' : ''}`,
       dataset: pid ? { sid: t.sid, drag: 'item', key: t.sid, pid } : { sid: t.sid },
       ...(pid ? dragEvents() : {}),
-      title: (t.info.meta || {}).cwd || '',
+      title: `${termLiveHint(t)}${(t.info.meta || {}).cwd || ''}\nDoble clic: renombrar`,
       onclick: () => activate(t.sid),
       ondblclick: () => renameTerm(t.sid),
     },
@@ -1531,7 +1536,7 @@
       const slot = slots.get(t.sid);
       tabs.append(h(`div.tab${t.sid === state.activeSid ? '.active' : ''}${slot != null ? '.grouped' : ''}`, {
         dataset: { sid: t.sid },
-        title: `${(t.info.meta || {}).cwd || ''}\nDoble clic: renombrar`,
+        title: `${termLiveHint(t)}${(t.info.meta || {}).cwd || ''}\nDoble clic: renombrar`,
         onclick: () => activate(t.sid),
         ondblclick: () => renameTerm(t.sid),
         onauxclick: (e) => { if (e.button === 1) closeTerm(t.sid); },
@@ -1749,7 +1754,7 @@
       .filter((t) => termKind(t) !== 'action' && t.info.alive !== false)
       .map((t) => {
         const m = t.info.meta || {};
-        return { sid: t.sid, projectId: m.projectId, kind: termKind(t), title: m.title || termKind(t), cwd: m.cwd || '', ...(m.sshId ? { sshId: m.sshId } : {}) };
+        return { sid: t.sid, projectId: m.projectId, kind: termKind(t), title: m.title || termKind(t), cwd: m.cwd || '', ...(m.named ? { named: true } : {}), ...(m.sshId ? { sshId: m.sshId } : {}) };
       });
   }
   function snapshotTerms() {
@@ -8249,7 +8254,7 @@
           id: p.id, name: p.name, folders: p.folders.slice(),
           terminals: children.map((sid) => terms.get(sid)).filter(Boolean).map((t) => {
             const m = t.info.meta || {};
-            return { kind: termKind(t), title: termTitle(t), cwd: m.cwd || p.folders[0], ...(m.sshId ? { sshId: m.sshId } : {}) };
+            return { kind: termKind(t), title: termTitle(t), cwd: m.cwd || p.folders[0], ...(m.named ? { named: true } : {}), ...(m.sshId ? { sshId: m.sshId } : {}) };
           }),
         };
       });
@@ -8422,7 +8427,7 @@
         let init;
         if (resume && t.kind === 'codex') init = `${(state.settings.launchers.codex || { cmd: 'codex' }).cmd} resume --last`;
         else if (resume && RESUME[t.kind]) init = buildLaunch(t.kind, proj) + RESUME[t.kind];
-        await launch(['shell', 'claude', 'codex', 'opencode'].includes(t.kind) ? t.kind : 'shell', { title: t.title, cwd: t.cwd, init });
+        await launch(['shell', 'claude', 'codex', 'opencode'].includes(t.kind) ? t.kind : 'shell', { title: t.title, cwd: t.cwd, init, named: t.named });
       }
     }
     if (prev && project(prev)) state.activeProject = prev;

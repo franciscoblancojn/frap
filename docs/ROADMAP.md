@@ -8,6 +8,7 @@
 - [x] Panel central: pestañas y lanzadores shell/claude/codex/opencode (`--add-dir` para las carpetas extra)
 - [x] Terminales persistentes: sobreviven a recargar la página y se re-adjuntan con su scrollback
 - [x] Shell y SSH: botones arriba a la derecha para limpiar (también vacía el historial guardado: no vuelve al recargar ni al reiniciar el bridge) y copiar todo el contenido de la terminal
+- [x] Terminales: el nombre que pone el usuario (doble clic) ya no lo pisa el título que cambian claude/codex; ese título queda en el tooltip. Nombre vacío = vuelve al título automático
 - [x] Panel derecho:
   - [x] Procesos: árbol por terminal con CPU, memoria y tiempo, agentes resaltados, matar proceso
   - [x] Prompts estándar: clic para ejecutar en la terminal activa, insertar sin Enter, variables, importar y exportar
