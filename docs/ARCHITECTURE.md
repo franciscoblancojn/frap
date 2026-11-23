@@ -263,7 +263,7 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | op | args | devuelve |
 |---|---|---|
 | `hello` | — | `{version, home, fsRoot, shell, platform, hostname, tools:{claude,codex,opencode}}` |
-| `sessions.list` | — | `[{sid, pid, meta, created, lastOutput, alive, exitCode}]` |
+| `sessions.list` | — | `[{sid, pid, meta, created, lastOutput, alive, exitCode}]` (sin las que se están cerrando). `meta.agent = {tool: 'claude', session}`: la conversación de claude que corre en esa terminal, leída cada 15 s de `~/.claude/sessions/<pid>.json`; al reabrir terminales se retoma con `claude --resume <session>` |
 | `session.create` | `{cwd, cols, rows, meta, init?, cmd?}` | info de la sesión |
 | `session.attach` | `{sid}` | info + `buffer` (scrollback) |
 | `session.input` | `{sid, data}` | — |

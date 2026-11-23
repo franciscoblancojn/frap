@@ -1872,7 +1872,7 @@
       .filter((t) => termKind(t) !== 'action' && t.info.alive !== false)
       .map((t) => {
         const m = t.info.meta || {};
-        return { sid: t.sid, projectId: m.projectId, kind: termKind(t), title: m.title || termKind(t), cwd: m.cwd || '', ...(m.named ? { named: true } : {}), ...(m.sshId ? { sshId: m.sshId } : {}) };
+        return { sid: t.sid, projectId: m.projectId, kind: termKind(t), title: m.title || termKind(t), cwd: m.cwd || '', ...(m.named ? { named: true } : {}), ...(m.sshId ? { sshId: m.sshId } : {}), ...(m.agent && m.agent.session ? { agent: m.agent } : {}) };
       });
   }
   function snapshotTerms() {
@@ -1914,7 +1914,7 @@
         body: [
           h('p.muted', { style: 'margin:0' }, 'Las terminales viven mientras el equipo está encendido: al apagarlo o reiniciarlo se cierran. ¿Reabrirlas en sus carpetas?'),
           cg.el,
-          h('label.xp-item', resume, h('span', 'Retomar la última conversación'), h('span.muted', 'claude --continue · codex resume --last · opencode --continue')),
+          h('label.xp-item', resume, h('span', 'Retomar la conversación de cada terminal'), h('span.muted', 'claude --resume <la de esa terminal> · codex resume --last · opencode --continue')),
         ],
         foot: [
           h('button', { title: 'No volver a ofrecerlas', onclick: () => finish(null) }, 'Descartar'),
@@ -8732,7 +8732,7 @@
           id: p.id, name: p.name, folders: p.folders.slice(),
           terminals: children.map((sid) => terms.get(sid)).filter(Boolean).map((t) => {
             const m = t.info.meta || {};
-            return { kind: termKind(t), title: termTitle(t), cwd: m.cwd || p.folders[0], ...(m.named ? { named: true } : {}), ...(m.sshId ? { sshId: m.sshId } : {}) };
+            return { kind: termKind(t), title: termTitle(t), cwd: m.cwd || p.folders[0], ...(m.named ? { named: true } : {}), ...(m.sshId ? { sshId: m.sshId } : {}), ...(m.agent && m.agent.session ? { agent: m.agent } : {}) };
           }),
         };
       });
@@ -8807,7 +8807,7 @@
     const pass = h('input', { type: 'password', autocomplete: 'off', placeholder: 'clave con la que se exportó' });
     const termOpts = h('div.xp-group',
       h('label.xp-head', openTerms, h('span', 'Abrir las terminales al importar')),
-      h('label.xp-item', resume, h('span', 'Retomar la última conversación'), h('span.muted', 'claude --continue · codex resume --last · opencode --continue')),
+      h('label.xp-item', resume, h('span', 'Retomar la conversación de cada terminal'), h('span.muted', 'claude --resume <la de esa terminal> · codex resume --last · opencode --continue')),
       h('div.muted.xp-note', 'Las conversaciones viven en cada equipo (~/.claude, ~/.codex…): en otro equipo, la IA empieza de cero si no tiene historial en esa carpeta.'));
     const secretsBox = data.secrets ? h('div.xp-group',
       h('div.xp-head', h('span', '🔒 Contraseñas y tokens cifrados')),
@@ -8910,7 +8910,10 @@
         }
         const proj = project(p.id);
         let init;
-        if (resume && t.kind === 'codex') init = `${(state.settings.launchers.codex || { cmd: 'codex' }).cmd} resume --last`;
+        const claudeId = t.agent && t.agent.tool === 'claude' && /^[0-9a-f-]{36}$/i.test(t.agent.session || '') ? t.agent.session : null;
+        // cada terminal retoma SU conversación de claude (con --continue todas abrían la última de la carpeta)
+        if (resume && claudeId) init = `${t.kind === 'claude' ? buildLaunch('claude', proj) : (state.settings.launchers.claude || { cmd: 'claude' }).cmd} --resume ${claudeId}`;
+        else if (resume && t.kind === 'codex') init = `${(state.settings.launchers.codex || { cmd: 'codex' }).cmd} resume --last`;
         else if (resume && RESUME[t.kind]) init = buildLaunch(t.kind, proj) + RESUME[t.kind];
         await launch(['shell', 'claude', 'codex', 'opencode'].includes(t.kind) ? t.kind : 'shell', { title: t.title, cwd: t.cwd, init, named: t.named });
       }

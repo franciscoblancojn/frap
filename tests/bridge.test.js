@@ -110,7 +110,7 @@ test.before(async () => {
       ...process.env,
       FRAP_PORT: '0', FRAP_TOKEN: TOKEN, HOME: root, CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', FRAP_HOME: path.join(root, 'cfg'),
       FRAP_TEST_SFTP_SERVER: SFTP_SERVER || '', FRAP_TEST_SFTP_LOG: path.join(root, 'sftp.log'),
-      FRAP_FS_ROOT: root, FRAP_LOCAL: path.join(root, 'local'), FRAP_QUIET: '1', FRAP_KILL_GRACE_MS: '800', SHELL: '/bin/sh', PATH: `${path.join(root, 'fakebin')}${path.delimiter}${process.env.PATH}`,
+      FRAP_FS_ROOT: root, FRAP_LOCAL: path.join(root, 'local'), FRAP_QUIET: '1', FRAP_KILL_GRACE_MS: '800', FRAP_AGENT_SCAN_MS: '300', SHELL: '/bin/sh', PATH: `${path.join(root, 'fakebin')}${path.delimiter}${process.env.PATH}`,
       GIT_AUTHOR_NAME: 'FRAP Test', GIT_AUTHOR_EMAIL: 'test@frap.local', GIT_COMMITTER_NAME: 'FRAP Test', GIT_COMMITTER_EMAIL: 'test@frap.local',
     },
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
@@ -195,6 +195,23 @@ test('session.kill cierra aunque el programa capture SIGHUP (como claude): deja 
   await client.waitFor((e) => e.ev === 'exit' && e.sid === s.sid, 8000);
   for (let i = 0; i < 20 && running(); i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(running(), false, 'no queda el programa huérfano');
+});
+
+test('cada terminal recuerda SU conversación de claude (~/.claude/sessions/<pid>.json) para retomarla con --resume', async () => {
+  // claude falso: escribe su archivo de sesión como Claude Code y se queda vivo
+  const fake = path.join(root, 'fake-claude.js');
+  fs.writeFileSync(fake, `const fs=require('fs'),p=require('path');const d=p.join(process.env.HOME,'.claude','sessions');fs.mkdirSync(d,{recursive:true});
+fs.writeFileSync(p.join(d,process.pid+'.json'),JSON.stringify({pid:process.pid,sessionId:process.argv[2],cwd:process.cwd(),kind:'interactive'}));
+setInterval(()=>{},1000);`);
+  const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+  const made = [];
+  for (const id of ids) made.push(await client.call('session.create', { cwd: root, cmd: [process.execPath, fake, id], meta: { kind: 'claude', projectId: 'p1' } }));
+  const agentOf = async (sid) => { const x = (await client.call('sessions.list')).find((y) => y.sid === sid); return x && x.meta.agent; };
+  for (let i = 0; i < 40; i++) { if ((await agentOf(made[0].sid)) && (await agentOf(made[1].sid))) break; await new Promise((r) => setTimeout(r, 150)); }
+  assert.deepEqual(await agentOf(made[0].sid), { tool: 'claude', session: ids[0] });
+  assert.deepEqual(await agentOf(made[1].sid), { tool: 'claude', session: ids[1] }, 'misma carpeta, conversación distinta');
+  for (const m of made) await client.call('session.kill', { sid: m.sid });
+  for (const m of made) await client.waitFor((e) => e.ev === 'exit' && e.sid === m.sid, 8000);
 });
 
 test('init escribe el comando inicial en la shell', async () => {

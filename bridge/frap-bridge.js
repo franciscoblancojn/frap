@@ -349,6 +349,37 @@ function readNotice(sid) {
   broadcast({ ev: 'notice', sid, notice: s.notice });
 }
 const noticeTimers = new Map();
+// ---------- conversación de claude de cada terminal ----------
+// Claude Code escribe ~/.claude/sessions/<pid>.json con el sessionId de cada proceso. Se busca el claude que corre
+// dentro de cada terminal y se guarda en su meta (`agent: {tool, session}`): al reabrir las terminales tras reiniciar
+// el equipo, cada una retoma SU conversación con `claude --resume <id>` (con --continue todas abrían la última de la carpeta).
+const CLAUDE_SESSIONS_DIR = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(HOME, '.claude'), 'sessions');
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function claudeSessionOf(pid) {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(CLAUDE_SESSIONS_DIR, `${pid}.json`), 'utf8'));
+    return m && Number(m.pid) === Number(pid) && UUID_RE.test(String(m.sessionId || '')) ? String(m.sessionId) : null;
+  } catch (_) { return null; }
+}
+async function scanAgentSessions() {
+  const live = [...sessions.values()].filter((s) => s.alive && !s.closing);
+  if (!live.length) return;
+  const rows = await psTable();
+  let changed = false;
+  for (const s of live) {
+    let id = null;
+    for (const r of descendants(rows, s.pid)) { id = claudeSessionOf(r.pid); if (id) break; }
+    if (!id) continue; // sin claude ahora: se conserva la última conocida (sirve para retomarla)
+    const cur = s.meta.agent;
+    if (cur && cur.tool === 'claude' && cur.session === id) continue;
+    s.meta.agent = { tool: 'claude', session: id };
+    saveMeta(s);
+    changed = true;
+  }
+  if (changed) broadcast({ ev: 'sessions' });
+}
+setInterval(() => { scanAgentSessions().catch(() => {}); }, Number(process.env.FRAP_AGENT_SCAN_MS) || 15000).unref();
+
 function watchNotices() {
   try {
     fs.watch(SOCK_DIR, (_ev, file) => {
@@ -1830,7 +1861,7 @@ process.on('SIGTERM', shutdown);
 
 // primero se reconecta a las terminales que siguen vivas; luego acepta a la UI
 let recovered = 0;
-rediscoverSessions().then((n) => { recovered = n; }, () => {}).then(watchNotices).then(() => server.listen(PORT, HOST, () => {
+rediscoverSessions().then((n) => { recovered = n; }, () => {}).then(() => scanAgentSessions().catch(() => {})).then(watchNotices).then(() => server.listen(PORT, HOST, () => {
   const page = path.resolve(__dirname, '..', 'src', 'index.html');
   const url = `file://${page}#port=${PORT}&token=${TOKEN}`;
   if (process.env.FRAP_QUIET !== '1') {
