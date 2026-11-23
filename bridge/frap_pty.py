@@ -7,7 +7,7 @@ Se ejecuta DESLIGADO del bridge: si el bridge se reinicia o se cae, la sesión s
 El bridge se conecta (y reconecta) por un socket Unix. Protocolo de tramas:
     tipo (1 byte) + longitud (4 bytes big-endian) + datos
   helper -> bridge:  B = historial al conectar · O = salida · X = terminó (código ASCII)
-  bridge -> helper:  I = entrada · R = "filas columnas" · K = terminar la sesión
+  bridge -> helper:  I = entrada · R = "filas columnas" · K = terminar la sesión · C = vaciar el historial
 Solo hay un cliente a la vez: una conexión nueva reemplaza a la anterior.
 Al terminar escribe el código en <sock>.exit y borra el socket.
 """
@@ -165,6 +165,8 @@ def main():
                             pass
                 elif kind == b"K":
                     terminate()
+                elif kind == b"C":
+                    backlog.clear()  # botón "limpiar" de la terminal: el historial no vuelve al reconectar
 
     try:
         _, status = os.waitpid(pid, 0)

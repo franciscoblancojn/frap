@@ -340,6 +340,11 @@ body.split-dragging-col, body.split-dragging-col * { cursor: col-resize !importa
 .term-item.grouped.active { box-shadow: inset 2px 0 var(--accent); }
 .term-item.active .slot, .tab.active .slot { background: var(--accent); color: var(--bg); }
 .term-pane .xterm { height: 100%; }
+/* botones de shell/ssh arriba a la derecha (limpiar, copiar todo): discretos hasta pasar el ratón */
+.term-tools { position: absolute; top: 6px; right: 16px; z-index: 6; display: flex; gap: 4px; opacity: .35; transition: opacity .12s; }
+.term-pane:hover .term-tools { opacity: 1; }
+.term-tool { display: flex; align-items: center; justify-content: center; width: 26px; height: 24px; padding: 0; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); color: var(--fg-2); }
+.term-tool:hover { color: var(--fg); border-color: var(--accent); }
 .empty, .offline {
   position: absolute;
   inset: 0;

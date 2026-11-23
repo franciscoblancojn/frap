@@ -422,7 +422,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -488,6 +488,12 @@
     term.registerLinkProvider(pathLinkProvider(() => t));
     t = { sid: info.sid, info, term, fit, pane, attaching: true, lastOut: info.lastOutput || 0, liveTitle: '' };
     terms.set(info.sid, t);
+    if (['shell', 'ssh'].includes(termKind(t))) {
+      // arriba a la derecha: limpiar y copiar todo (solo shell y ssh; en las IA la pantalla la maneja la propia app)
+      pane.append(h('div.term-tools',
+        h('button.icon.term-tool', { title: 'Limpiar la terminal (borra también el historial guardado)', onmousedown: (e) => e.preventDefault(), onclick: () => termClear(t) }, termToolIcon('clear')),
+        h('button.icon.term-tool', { title: 'Copiar todo el contenido de la terminal', onmousedown: (e) => e.preventDefault(), onclick: () => termCopyAll(t) }, termToolIcon('copy'))));
+    }
 
     const focusSplit = () => { if (t.sid !== state.activeSid && pane.classList.contains('split')) activate(t.sid); };
     pane.addEventListener('mousedown', focusSplit);
@@ -508,6 +514,41 @@
     fitTerm(t);
     attach(t);
     return t;
+  }
+
+  /** Íconos SVG de los botones de la terminal (sin innerHTML: nodos creados uno a uno). */
+  function termToolIcon(name) {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    for (const [k, v] of Object.entries({ viewBox: '0 0 24 24', width: '14', height: '14', fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })) svg.setAttribute(k, v);
+    const shapes = name === 'copy'
+      ? [['rect', { x: '9', y: '9', width: '12', height: '12', rx: '2' }], ['path', { d: 'M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1' }]]
+      : [['path', { d: 'M3 6h18' }], ['path', { d: 'M8 6V4h8v2' }], ['path', { d: 'M19 6l-1 14H6L5 6' }], ['path', { d: 'M10 11v6M14 11v6' }]];
+    for (const [tag, attrs] of shapes) { const el = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); svg.append(el); }
+    return svg;
+  }
+  /** Limpia la pantalla y el historial (también el del bridge y la sesión: no vuelve al recargar). */
+  function termClear(t) {
+    t.term.clear();
+    Bridge.call('session.clear', { sid: t.sid }).catch((e) => toast(e.message, 'err'));
+    t.term.focus();
+  }
+  /** Copia todo lo que hay en la terminal (historial + pantalla), sin las líneas vacías del final. */
+  function termCopyAll(t) {
+    const b = t.term.buffer.active;
+    const lines = [];
+    for (let i = 0; i < b.length; i++) {
+      const line = b.getLine(i);
+      if (!line) continue;
+      const text = line.translateToString(true);
+      if (line.isWrapped && lines.length) lines[lines.length - 1] += text; else lines.push(text);
+    }
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    const text = lines.join('\n');
+    if (!text) { toast('La terminal está vacía'); return; }
+    copyText(text);
+    toast(`Copiadas ${lines.length} línea${lines.length === 1 ? '' : 's'} de la terminal`, 'ok');
+    t.term.focus();
   }
 
   async function attach(t) {

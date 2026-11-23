@@ -511,6 +511,20 @@ test('persistencia: las terminales sobreviven a reiniciar el bridge (historial, 
     assert.match(att.buffer, /antes-21/, 'el historial se conserva');
     c.send('session.input', { sid: s.sid, data: 'echo despues-$((40+2))\r' });
     await c.waitOutput(s.sid, /despues-42/);
+    // botón limpiar: el historial se vacía en el bridge y en la sesión (no vuelve al reiniciar el bridge)
+    assert.equal(await c.call('session.clear', { sid: s.sid }), true);
+    assert.doesNotMatch((await c.call('session.attach', { sid: s.sid })).buffer, /antes-21|despues-42/);
+    c.send('session.input', { sid: s.sid, data: 'echo tras-$((1+2))-limpiar\r' });
+    await c.waitOutput(s.sid, /tras-3-limpiar/);
+    await assert.rejects(c.call('session.clear', { sid: 'no-existe' }));
+  } finally {
+    await stop(b);
+  }
+  ({ b, c } = await start());
+  try {
+    const att = await c.call('session.attach', { sid: s.sid });
+    assert.match(att.buffer, /tras-3-limpiar/, 'lo nuevo sí se conserva');
+    assert.doesNotMatch(att.buffer, /antes-21|despues-42/, 'lo limpiado no vuelve tras reiniciar el bridge');
     await c.call('session.kill', { sid: s.sid });
     const ex = await c.waitFor((e) => e.ev === 'exit' && e.sid === s.sid);
     assert.equal(typeof ex.code, 'number');

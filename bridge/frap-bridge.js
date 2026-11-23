@@ -881,6 +881,15 @@ const ops = {
     return { ...sessionInfo(s), buffer: all.slice(0, Math.max(0, all.length - s.pending.length)) };
   },
   'session.input': ({ sid, data }) => { write(getSession(sid), String(data)); return true; },
+  // Botón "limpiar" de la terminal: vacía el historial del bridge y el de la sesión (frap_pty.py), para que la
+  // salida borrada no vuelva al recargar la UI ni al reiniciar el bridge. Lo que aún no se emitió (`pending`) se queda.
+  'session.clear': ({ sid }) => {
+    const s = getSession(sid);
+    s.chunks = s.pending ? [s.pending] : [];
+    s.size = s.pending.length;
+    if (s.sock && !s.sock.destroyed) s.sock.write(frame('C'));
+    return true;
+  },
   'session.resize': ({ sid, cols, rows }) => {
     const s = getSession(sid);
     if (s.alive && s.sock && !s.sock.destroyed) s.sock.write(frame('R', `${rows | 0} ${cols | 0}`));

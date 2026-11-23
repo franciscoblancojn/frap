@@ -256,6 +256,7 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `session.create` | `{cwd, cols, rows, meta, init?, cmd?}` | info de la sesión |
 | `session.attach` | `{sid}` | info + `buffer` (scrollback) |
 | `session.input` | `{sid, data}` | — |
+| `session.clear` | `{sid}` | `true` (vacía el historial del bridge y el de `frap_pty.py`: botón limpiar de shell/ssh) |
 | `session.resize` | `{sid, cols, rows}` | — |
 | `session.meta` | `{sid, meta}` | info (mezcla la meta) |
 | `session.seen` | `{sid}` | `true`; borra el aviso (`notice`) de la sesión |

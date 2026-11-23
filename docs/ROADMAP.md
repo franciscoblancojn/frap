@@ -7,6 +7,7 @@
 - [x] Panel izquierdo: proyectos con varias carpetas, terminales por proyecto, crear, renombrar y eliminar
 - [x] Panel central: pestañas y lanzadores shell/claude/codex/opencode (`--add-dir` para las carpetas extra)
 - [x] Terminales persistentes: sobreviven a recargar la página y se re-adjuntan con su scrollback
+- [x] Shell y SSH: botones arriba a la derecha para limpiar (también vacía el historial guardado: no vuelve al recargar ni al reiniciar el bridge) y copiar todo el contenido de la terminal
 - [x] Panel derecho:
   - [x] Procesos: árbol por terminal con CPU, memoria y tiempo, agentes resaltados, matar proceso
   - [x] Prompts estándar: clic para ejecutar en la terminal activa, insertar sin Enter, variables, importar y exportar
