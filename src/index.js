@@ -3821,10 +3821,11 @@
   /** Raíces del árbol: las carpetas del proyecto y, aparte, la carpeta de cada archivo abierto que quede fuera de ellas. */
   function codeTreeRoots() {
     const roots = codeRoots();
-    const inside = (f) => roots.some((r) => f === r || f.startsWith(`${r}/`));
-    const ext = [];
+    const inside = (f, list) => list.some((r) => f === r || f.startsWith(`${r}/`));
+    // carpetas abiertas desde fuera del proyecto (clic en una ruta de la terminal): se quitan con clic derecho
+    const ext = (state.code.extDirs || []).filter((d) => !inside(d, roots));
     for (const g of state.code.groups || []) for (const f of g.tabs) {
-      if (inside(f) || !f.includes('/')) continue;
+      if (inside(f, roots) || inside(f, ext) || !f.includes('/')) continue;
       const d = f.slice(0, f.lastIndexOf('/')) || '/';
       if (!ext.includes(d)) ext.push(d);
     }
@@ -3862,7 +3863,7 @@
       parts.push(h(`div.code-node.dir.code-root${isExt ? '.code-ext' : ''}`, {
         title: isExt ? `Fuera de las carpetas del proyecto: ${tilde(r)}` : tilde(r), dataset: { path: r },
         onclick: () => codeToggleDir(`!${r}`),
-        oncontextmenu: (ev) => codeTreeMenu(ev, r, true, true),
+        oncontextmenu: (ev) => codeTreeMenu(ev, r, true, true, isExt),
       }, h('span.code-twisty', open ? '▾' : '▸'), h('span.code-fname', isExt ? `↗ ${tilde(r)}` : (basename(r) || r))));
       if (open) parts.push(...await build(r, 1));
     }
@@ -3898,10 +3899,13 @@
     const el = [...codePane.treeEl.querySelectorAll('.code-node')].find((n) => n.dataset.path === file);
     if (el) el.scrollIntoView({ block: quiet ? 'nearest' : 'center' });
   }
-  function codeTreeMenu(ev, abs, isDir, isRoot) {
+  function codeTreeMenu(ev, abs, isDir, isRoot, isExt) {
     const dir = isDir ? abs : abs.slice(0, abs.lastIndexOf('/'));
     popMenu(ev, [
+      isExt && (state.code.extDirs || []).includes(abs) && { label: 'Quitar del árbol', hint: 'fuera del proyecto', action: () => { state.code.extDirs = state.code.extDirs.filter((d) => d !== abs); save(); codeRenderTree(); } },
+      isExt && '-',
       !isDir && { label: 'Abrir', action: () => codeOpenFile(abs) },
+      isDir && { label: 'Ver sus archivos en el editor', action: () => codeOpenDir(abs) },
       !isDir && state.code.groups.length < CODE_MAX_GROUPS && { label: 'Abrir a la derecha', action: () => codeOpenFile(abs, { group: state.code.groups.length }) },
       { label: 'Nuevo archivo…', action: () => codeNewFile(dir) },
       { label: 'Nueva carpeta…', action: () => codeNewDir(dir) },
@@ -4116,7 +4120,7 @@
     const P = codePane;
     let f = P.files.get(file);
     if (f && f.loading) return f.promise; // ya se está cargando: se espera esa misma carga
-    if (f && !force && (f.master || f.error || f.binary || f.media)) return Promise.resolve(f);
+    if (f && !force && (f.master || f.error || f.binary || f.media || f.dirList)) return Promise.resolve(f);
     if (!f) { f = {}; P.files.set(file, f); }
     f.loading = true;
     f.promise = codeLoadNow(P, file, f);
@@ -4126,6 +4130,7 @@
   const codeTemplates = new Map();
   async function codeLoadNow(P, file, f) {
     if (!Bridge.ready) { P.files.delete(file); f.loading = false; return f; } // al conectar se vuelve a pintar (ver Bridge.on('open'))
+    if (f.isDir) return codeLoadDir(f, file);
     f.media = mediaKind(file); // imagen, video, audio o PDF: se ven directo del disco, no se cargan como texto
     if (f.media) { f.loading = false; f.exists = true; return f; }
     try {
@@ -4150,9 +4155,68 @@
         if (tpl) f.master.setValue(tpl);
         return f;
       }
+      if (/EISDIR|illegal operation on a directory/i.test(e.message)) return codeLoadDir(f, file); // es una carpeta: vista de sus archivos
       Object.assign(f, { loading: false, error: /ENOENT|no such file/i.test(e.message) ? 'El archivo no existe (¿lo borraron o renombraron?)' : e.message });
     }
     return f;
+  }
+  /** Pestaña de carpeta: su contenido (se abre al hacer clic en una ruta de carpeta o desde el árbol). */
+  async function codeLoadDir(f, dir) {
+    try {
+      const r = await Bridge.call('fs.list', { path: dir, dirsOnly: false, hidden: !!state.code.hidden, details: true });
+      Object.assign(f, { isDir: true, dirList: r.entries.filter((e) => !(e.dir && e.name === '.git')), dirParent: r.parent, loading: false, error: null, exists: true, media: null, binary: false });
+      if (codePane) requestAnimationFrame(() => codePane && codeRenderTabsOnly()); // la pestaña pasa a mostrar 📁
+    } catch (e) {
+      Object.assign(f, { dirList: null, loading: false, error: /ENOENT|no such file/i.test(e.message) ? 'La carpeta no existe (¿la borraron o renombraron?)' : e.message });
+    }
+    return f;
+  }
+  /** En una pestaña de carpeta, entra en otra carpeta (la misma pestaña pasa a mostrarla). */
+  async function codeDirNavigate(gi, from, to) {
+    const g = state.code.groups[gi];
+    if (!g) return;
+    to = String(to).replace(/\/+$/, '') || '/';
+    const i = g.tabs.indexOf(from);
+    if (g.tabs.includes(to)) { if (i >= 0) g.tabs.splice(i, 1); }
+    else if (i >= 0) g.tabs[i] = to; else g.tabs.push(to);
+    g.active = to;
+    if (!state.code.groups.some((x) => x.tabs.includes(from))) codePane.files.delete(from);
+    codePane.files.set(to, { isDir: true });
+    save();
+    codeRenderGroups();
+    await codeLoad(to, true);
+    codeShowActive(gi);
+    codeRenderTabsOnly();
+    if (state.code.side === 'tree') { codeMarkTreeActive(); codeRevealDir(to, true); }
+  }
+  function renderDirView(gi, dir, f) {
+    const items = f.dirList;
+    const fmt = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+    const open = (e) => { const abs = `${dir === '/' ? '' : dir}/${e.name}`; if (e.dir) codeDirNavigate(gi, dir, abs); else codeOpenFile(abs, { group: gi }); };
+    const imgs = items.filter((e) => !e.dir && mediaKind(e.name) === 'image').length;
+    return h('div.code-dir',
+      h('div.code-dir-head',
+        f.dirParent ? h('button.icon.mini', { title: 'Carpeta de arriba', onclick: () => codeDirNavigate(gi, dir, f.dirParent) }, '↑') : null,
+        h('span.code-dir-path.mono', { title: dir }, `📁 ${tilde(dir)}`),
+        h('span.muted', `${items.filter((e) => e.dir).length} carpeta(s) · ${items.filter((e) => !e.dir).length} archivo(s)${imgs ? ` · ${imgs} imagen(es)` : ''}`),
+        h('span.grow'),
+        h('button.icon.mini', { title: 'Recargar', onclick: async () => { await codeLoad(dir, true); codeShowActive(gi); } }, '⟳'),
+        h('button.mini', { title: 'Abrir una terminal en esta carpeta', onclick: () => launch('shell', { cwd: dir, title: basename(dir) }) }, '>_ Terminal'),
+        h('button.mini', { title: 'Abrir en el explorador de archivos', onclick: () => openInFileManager(dir) }, '↗ Explorador')),
+      items.length ? h('div.code-dir-list', items.map((e) => {
+        const abs = `${dir === '/' ? '' : dir}/${e.name}`;
+        const img = !e.dir && mediaKind(e.name) === 'image';
+        return h('div.code-dir-item', {
+          title: `${tilde(abs)}${e.dir ? '' : ` · ${fmt(e.size || 0)}`}\nClic: abrir`,
+          onclick: () => open(e),
+          oncontextmenu: (ev) => codeTreeMenu(ev, abs, e.dir),
+        },
+        img ? h('img.code-dir-thumb', { src: fileUrl(abs), alt: '', loading: 'lazy', onerror: (ev) => ev.target.replaceWith(h('span.code-dir-ico', '🖼️')) })
+          : h('span.code-dir-ico', e.dir ? '📁' : e.link ? '🔗' : '📄'),
+        h('span.code-dir-name', e.name),
+        h('span.muted.code-dir-size', e.dir ? '' : fmt(e.size || 0)),
+        h('span.muted.code-dir-date', e.mtime ? new Date(e.mtime).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : ''));
+      })) : h('p.muted', { style: 'padding:12px' }, 'Carpeta vacía.'));
   }
   /** Reemplaza el texto de un documento conservando cursor y scroll de cada grupo. */
   function codeReplaceText(file, f, text) {
@@ -4320,7 +4384,7 @@
             ondragstart: (e) => { P.dragTab = { gi, file }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', file); },
             ondragend: () => { P.dragTab = null; },
           },
-          h('span.code-tname', basename(file)),
+          h('span.code-tname', `${f && f.isDir ? '📁 ' : ''}${basename(file) || file}`),
           dup ? h('span.muted.code-tdir', basename(file.slice(0, file.lastIndexOf('/')))) : null,
           h('span.x', { title: dirty ? 'Sin guardar · cerrar' : 'Cerrar (clic central también)', onclick: (e) => { e.stopPropagation(); codeCloseTab(gi, file); } }, dirty ? '●' : '✕'));
         }),
@@ -4375,12 +4439,18 @@
       return;
     }
     if (!Bridge.ready && (!f || f.loading)) { showMsg(h('p.muted', 'Esperando al bridge…')); return; }
-    if (!f || f.loading) {
+    if (!f || f.loading || (f.isDir && !f.dirList && !f.error)) {
       showMsg(h('p.muted', 'Cargando…'));
       codeLoad(file).then(() => { const gg = state.code.groups[gi]; if (codePane === P && gg && gg.active === file) codeShowActive(gi); });
       return;
     }
     if (f.error) { showMsg(h('p', f.error), h('p.muted.mono', tilde(file)), h('button', { onclick: async () => { f.error = null; await codeLoad(file, true); codeShowActive(gi); } }, 'Reintentar')); return; }
+    if (f.dirList) {
+      G.preview = h('div.code-preview.code-dirwrap', renderDirView(gi, file, f));
+      G.bodyEl.append(G.preview);
+      if (G.cm) G.cm.getWrapperElement().classList.add('hidden');
+      return;
+    }
     if (f.media) {
       G.preview = h('div.code-preview.code-media', renderMedia(file, f.media));
       G.bodyEl.append(G.preview);
@@ -4776,23 +4846,42 @@
     state.activeProject = target.id;
     openCodeView();
     ensureCodePane();
-    if (isDir) { await codeRevealDir(file); return; }
+    if (isDir) {
+      const dir = String(file).replace(/\/+$/, '') || '/';
+      await codeRevealDir(dir);
+      await codeOpenDir(dir);
+      return;
+    }
     await codeOpenFile(file, { line, col, ...extra });
   }
-  async function codeRevealDir(dir) {
-    const r = codeRoots().find((x) => dir === x || dir.startsWith(`${x}/`));
-    if (!r) { toast('La carpeta no está dentro del proyecto', 'err'); return; }
+  /** Abre una carpeta como pestaña del editor (vista de sus archivos). */
+  async function codeOpenDir(dir) {
+    const f0 = codePane.files.get(dir);
+    if (!f0 || !f0.isDir) codePane.files.set(dir, { isDir: true });
+    await codeOpenFile(dir);
+  }
+  async function codeRevealDir(dir, quiet) {
+    dir = String(dir).replace(/\/+$/, '') || '/';
+    let { roots, ext } = codeTreeRoots();
+    if (![...roots, ...ext].some((x) => dir === x || dir.startsWith(`${x}/`))) {
+      // fuera del proyecto: se muestra como raíz aparte en el árbol (↗ ruta)
+      state.code.extDirs = [...(state.code.extDirs || []).filter((d) => !d.startsWith(`${dir}/`)), dir];
+      ({ roots, ext } = codeTreeRoots());
+    }
+    const r = [...roots, ...ext].sort((a, b) => b.length - a.length).find((x) => dir === x || dir.startsWith(`${x}/`));
+    if (!r) { toast('No se pudo mostrar la carpeta', 'err'); return; }
     const add = new Set(state.code.expanded);
     add.delete(`!${r}`);
     let d = dir;
     while (d.length > r.length) { add.add(d); d = d.slice(0, d.lastIndexOf('/')); }
     state.code.expanded = [...add];
-    state.code.side = 'tree';
+    if (!quiet) state.code.side = 'tree';
     save();
-    codeRenderSide();
+    if (!quiet) codeRenderSide();
+    if (state.code.side !== 'tree') return;
     await codeRenderTree();
     const el = [...codePane.treeEl.querySelectorAll('.code-node')].find((n) => n.dataset.path === dir);
-    if (el) el.scrollIntoView({ block: 'center' });
+    if (el) el.scrollIntoView({ block: quiet ? 'nearest' : 'center' });
   }
 
   /** ¿Hay cambios sin guardar en el editor de una vista? (para avisar al cerrarla). */

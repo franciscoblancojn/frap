@@ -1219,3 +1219,17 @@ li.CodeMirror-hint-active { background: var(--accent); color: var(--bg); }
 .picker-root { display: inline-flex; align-items: center; gap: 1px; }
 .picker-ask { border: 1px solid var(--warn); border-radius: var(--radius); padding: 8px 10px; margin: 6px 0; display: grid; gap: 4px; background: var(--bg-3); }
 .picker-ask-btns { display: flex; justify-content: flex-end; gap: 6px; }
+
+/* pestaña de carpeta en el editor: su contenido, con miniaturas de las imágenes */
+.code-dirwrap { overflow: auto; }
+.code-dir { display: flex; flex-direction: column; min-height: 100%; }
+.code-dir-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg-2); border-bottom: 1px solid var(--line); font-size: 12px; flex-wrap: wrap; }
+.code-dir-path { font-weight: 600; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+.code-dir-list { display: flex; flex-direction: column; padding: 4px 0; }
+.code-dir-item { display: grid; grid-template-columns: 36px minmax(0, 1fr) 80px 130px; gap: 10px; align-items: center; padding: 4px 12px; cursor: pointer; font-size: 13px; }
+.code-dir-item:hover { background: var(--bg-hover); }
+.code-dir-ico { font-size: 18px; text-align: center; }
+.code-dir-thumb { width: 36px; height: 28px; object-fit: cover; border-radius: 3px; border: 1px solid var(--line); background: var(--bg-3); }
+.code-dir-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.code-dir-size, .code-dir-date { font-size: 11px; text-align: right; white-space: nowrap; }
+@media (max-width: 700px) { .code-dir-item { grid-template-columns: 30px minmax(0, 1fr) 70px; } .code-dir-date { display: none; } }
