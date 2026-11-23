@@ -97,6 +97,7 @@ navegador (file://src/index.html)                     máquina local
 - **Interruptores** Activa / IA, como en las bases de datos. `bridge/frap-wp.js` (skill `frap-wordpress`) solo ve los sitios activos y con IA, y nunca imprime el token.
   - La skill se instala y se quita con el módulo.
   - Antes de crear, editar o eliminar, la IA muestra el cambio y espera el visto bueno.
+- **Exportar / importar (.json):** grupo «Integraciones · WordPress» en la columna del panel izquierdo. Viajan URL e interruptores; el token, solo cifrado con la clave de la exportación (`secrets.wp`).
 - **UI:** cada sitio muestra un punto de estado (probado al conectar), el host, el vencimiento del token, los interruptores y un menú: probar, editar o cambiar el token, abrir los tokens en WordPress, abrir el sitio, copiar el comando para la IA y eliminar.
 
 ## Gestión de issues (módulo interno)
@@ -329,8 +330,8 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `issues.setSkill` | `{on}` | instala/actualiza (`on`) o quita la skill `frap-issues` en `~/.claude/skills` y `~/.codex/skills`. `{on, changed}` |
 | `local.export` | — | carpeta `local/` como .zip en base64 (entradas `local/…`, máx. 200 MB). `{data, files, bytes}` |
 | `local.import` | `{data, overwrite?}` | restaura un .zip en `local/` (rutas saneadas; sin `overwrite` no pisa). `{written, skipped, rejected}` |
-| `export.creds` | `{db: ids, ssh: ids, passphrase?}` | `{db, ssh, secrets?}` sin contraseñas; con `passphrase` (≥6) van en `secrets` cifradas (scrypt + AES-256-GCM) |
-| `import.creds` | `{db, ssh, secrets?, passphrase?}` | `{db, ssh, errors}`; mismo id se reemplaza; clave incorrecta → error; sin clave conserva la contraseña existente |
+| `export.creds` | `{db: ids, ssh: ids, wp: ids, passphrase?}` | `{db, ssh, integrations: {wordpress}, secrets?}` sin contraseñas ni tokens; con `passphrase` (≥6) van en `secrets` cifrados (scrypt + AES-256-GCM) |
+| `import.creds` | `{db, ssh, wp, secrets?, passphrase?}` | `{db, ssh, wp, errors}`; mismo id se reemplaza; clave incorrecta → error; sin clave conserva la contraseña o el token existente (un sitio WordPress nuevo queda sin token) |
 | `db.installSkill` | `{tools}` | escribe `~/.claude/skills/frap-db/SKILL.md` y `~/.codex/skills/frap-db/SKILL.md` |
 
 ## Dónde se busca la configuración (`config.scan`)

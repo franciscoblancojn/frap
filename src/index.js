@@ -8028,7 +8028,7 @@
   }
 
   async function openExport() {
-    if (Bridge.ready) await Promise.all([dbInfo ? null : loadDbs(), sshInfo ? null : loadSsh()]);
+    if (Bridge.ready) await Promise.all([dbInfo ? null : loadDbs(), sshInfo ? null : loadSsh(), wpInfo ? null : loadWp()]);
     const projects = checkGroup('Proyectos y terminales', state.projects.map((p) => ({
       value: p.id, label: p.name, sub: p.folders.map(tilde).join(', '),
       children: sessionsOf(p.id).filter((t) => termKind(t) !== 'action').map((t) => ({ value: t.sid, label: termTitle(t), sub: termKind(t) })),
@@ -8038,6 +8038,8 @@
     })));
     const dbs = checkGroup('Bases de datos', ((dbInfo && dbInfo.conns) || []).map((c) => ({ value: c.id, label: c.name, sub: dbTarget(c) })));
     const sshs = checkGroup('SSH', ((sshInfo && sshInfo.hosts) || []).map((c) => ({ value: c.id, label: c.name, sub: sshTarget(c) })));
+    const wps = checkGroup('Integraciones · WordPress', ((wpInfo && wpInfo.sites) || []).map((c) => ({ value: c.id, label: c.name, sub: c.url })),
+      { note: 'URL, interruptores Activa / IA y, con la clave de abajo, el token cifrado.' });
     const withPw = h('input', { type: 'checkbox' });
     withPw.checked = true;
     const pass1 = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'clave para cifrar (mín. 6)' });
@@ -8045,13 +8047,14 @@
     const passRow = h('div.field-row', h('span.grow', pass1), h('span.grow', pass2));
     withPw.addEventListener('change', () => passRow.classList.toggle('hidden', !withPw.checked));
     const credsBox = h('div.xp-group',
-      h('label.xp-head', withPw, h('span', 'Incluir contraseñas de BD y SSH, cifradas')),
-      h('div.muted.xp-note', 'Se cifran con esta clave (AES-256-GCM); te la pedirá al importar. Sin contraseñas, tendrás que escribirlas de nuevo.'),
+      h('label.xp-head', withPw, h('span', 'Incluir contraseñas de BD y SSH y tokens de WordPress, cifrados')),
+      h('div.muted.xp-note', 'Se cifran con esta clave (AES-256-GCM); te la pedirá al importar. Sin ellos, tendrás que escribirlos de nuevo.'),
       passRow);
 
     const doExport = async () => {
       const selDb = dbs.selected().map((x) => x.value);
       const selSsh = sshs.selected().map((x) => x.value);
+      const selWp = wps.selected().map((x) => x.value);
       const out = { format: EXPORT_FORMAT, version: 1, exportedAt: new Date().toISOString(), from: (Bridge.info && Bridge.info.hostname) || '' };
       out.projects = projects.selected().map(({ value, children }) => {
         const p = project(value);
@@ -8065,15 +8068,15 @@
       });
       out.config = {};
       for (const { value } of config.selected()) out.config[value] = pickConfig(state, value);
-      if (selDb.length || selSsh.length) {
-        if (!Bridge.ready) { toast('Bridge desconectado: no se pueden exportar BD ni SSH', 'err'); return; }
+      if (selDb.length || selSsh.length || selWp.length) {
+        if (!Bridge.ready) { toast('Bridge desconectado: no se pueden exportar BD, SSH ni integraciones', 'err'); return; }
         let passphrase = '';
         if (withPw.checked) {
           if (pass1.value.length < 6) { toast('La clave de cifrado debe tener al menos 6 caracteres', 'err'); pass1.focus(); return; }
           if (pass1.value !== pass2.value) { toast('Las claves no coinciden', 'err'); pass2.focus(); return; }
           passphrase = pass1.value;
         }
-        try { Object.assign(out, await Bridge.call('export.creds', { db: selDb, ssh: selSsh, passphrase })); } catch (e) { toast(e.message, 'err'); return; }
+        try { Object.assign(out, await Bridge.call('export.creds', { db: selDb, ssh: selSsh, wp: selWp, passphrase })); } catch (e) { toast(e.message, 'err'); return; }
       }
       const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -8084,13 +8087,13 @@
       setTimeout(() => URL.revokeObjectURL(url), 5000);
       modalClose(true);
       const nTerms = out.projects.reduce((n, p) => n + p.terminals.length, 0);
-      toast(`Exportado: ${out.projects.length} proyecto(s), ${nTerms} terminal(es), ${Object.keys(out.config).length} sección(es) de configuración, ${(out.db || []).length} BD, ${(out.ssh || []).length} SSH${out.secrets ? ' (contraseñas cifradas)' : ''}`, 'ok');
+      toast(`Exportado: ${out.projects.length} proyecto(s), ${nTerms} terminal(es), ${Object.keys(out.config).length} sección(es) de configuración, ${(out.db || []).length} BD, ${(out.ssh || []).length} SSH, ${((out.integrations || {}).wordpress || []).length} WordPress${out.secrets ? ' (contraseñas y tokens cifrados)' : ''}`, 'ok');
     };
     openModal({
       title: 'Exportar',
       wide: true,
       body: h('div.xp-cols',
-        h('div.xp-col', h('h4', 'Panel izquierdo'), projects.el),
+        h('div.xp-col', h('h4', 'Panel izquierdo'), projects.el, wps.el),
         h('div.xp-col', h('h4', 'Panel derecho'), config.el, dbs.el, sshs.el, credsBox)),
       foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doExport }, '⇩ Exportar')],
     });
@@ -8121,6 +8124,9 @@
     })));
     const dbs = checkGroup('Bases de datos', (data.db || []).map((c) => ({ value: c.id, label: c.name, sub: c.engine === 'sqlite' ? c.database : `${c.user}@${c.host}` })));
     const sshs = checkGroup('SSH', (data.ssh || []).map((c) => ({ value: c.id, label: c.name, sub: `${c.user}@${c.host}` })));
+    const inWp = ((data.integrations || {}).wordpress || []).filter((c) => c && c.id);
+    const wps = checkGroup('Integraciones · WordPress', inWp.map((c) => ({ value: c.id, label: c.name, sub: c.url })),
+      { note: data.secrets ? 'El token viene cifrado: escribe la clave abajo.' : 'Sin token en el archivo: se conserva el que ya tengas o lo agregas en Editar.' });
     const openTerms = h('input', { type: 'checkbox' });
     openTerms.checked = true;
     const resume = h('input', { type: 'checkbox' });
@@ -8131,24 +8137,27 @@
       h('label.xp-item', resume, h('span', 'Retomar la última conversación'), h('span.muted', 'claude --continue · codex resume --last · opencode --continue')),
       h('div.muted.xp-note', 'Las conversaciones viven en cada equipo (~/.claude, ~/.codex…): en otro equipo, la IA empieza de cero si no tiene historial en esa carpeta.'));
     const secretsBox = data.secrets ? h('div.xp-group',
-      h('div.xp-head', h('span', '🔒 Contraseñas cifradas')),
+      h('div.xp-head', h('span', '🔒 Contraseñas y tokens cifrados')),
       h('div.muted.xp-note', 'Escribe la clave de la exportación. Si la dejas vacía, se importan sin contraseña.'),
       pass) : null;
 
     const doImport = async () => {
       const selDb = new Set(dbs.selected().map((x) => x.value));
       const selSsh = new Set(sshs.selected().map((x) => x.value));
+      const selWp = new Set(wps.selected().map((x) => x.value));
       const report = [];
-      if (selDb.size || selSsh.size) {
-        if (!Bridge.ready) { toast('Bridge desconectado: no se pueden importar BD ni SSH', 'err'); return; }
+      if (selDb.size || selSsh.size || selWp.size) {
+        if (!Bridge.ready) { toast('Bridge desconectado: no se pueden importar BD, SSH ni integraciones', 'err'); return; }
         try {
           const r = await Bridge.call('import.creds', {
             db: (data.db || []).filter((c) => selDb.has(c.id)),
             ssh: (data.ssh || []).filter((c) => selSsh.has(c.id)),
+            wp: inWp.filter((c) => selWp.has(c.id)),
             secrets: data.secrets, passphrase: pass.value,
           });
           if (r.db) report.push(`${r.db} BD`);
           if (r.ssh) report.push(`${r.ssh} SSH`);
+          if (r.wp) { report.push(`${r.wp} WordPress`); wpChecks.clear(); }
           if (r.errors.length) toast(r.errors.join('\n'), 'err');
         } catch (e) { toast(e.message, 'err'); pass.focus(); return; }
       }
@@ -8193,6 +8202,7 @@
       renderAll();
       renderRight();
       loadDbs();
+      loadWp(true);
       await loadSsh();
       toast(`Importado de ${fileName}: ${report.join(', ') || 'nada'}`, 'ok');
       if (openTerms.checked) await reopenTerminals(chosen, resume.checked);
@@ -8203,7 +8213,7 @@
       body: [
         h('p.muted', { style: 'margin:0' }, `Exportado ${data.exportedAt ? new Date(data.exportedAt).toLocaleString() : ''}${data.from ? ' desde ' + data.from : ''}. Lo que ya existe con el mismo id se reemplaza.`),
         h('div.xp-cols',
-          h('div.xp-col', h('h4', 'Panel izquierdo'), projects.el, termOpts),
+          h('div.xp-col', h('h4', 'Panel izquierdo'), projects.el, termOpts, wps.el),
           h('div.xp-col', h('h4', 'Panel derecho'), config.el, dbs.el, sshs.el, secretsBox)),
       ],
       foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doImport }, '⇧ Importar')],

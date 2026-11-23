@@ -1206,3 +1206,36 @@ test('isPrivateHost: locales y redes privadas sí; dominios que empiezan por fc/
   for (const h of ['localhost', 'wordpress.local', 'app.test', '127.0.0.1', '10.1.2.3', '172.20.0.1', '192.168.1.5', '::1', 'fd00::1', '[fd00::1]', 'fe80::1']) assert.equal(isPrivateHost(h), true, h);
   for (const h of ['example.com', 'fcbarcelona.com', 'fdsite.co', 'fe80.example.com', '8.8.8.8', '172.32.0.1']) assert.equal(isPrivateHost(h), false, h);
 });
+
+test('export.creds / import.creds: integraciones WordPress con el token cifrado (o sin token)', async () => {
+  const TOK = 'frapwp_' + 'c'.repeat(48);
+  const envFile = path.join(root, 'cfg', 'wordpress.env');
+  await client.call('wp.save', { site: { name: 'Exportable', url: 'https://tienda.example.com', token: TOK, ai: false } });
+  // sin clave: sin token
+  const plain = await client.call('export.creds', { wp: ['exportable'] });
+  assert.deepEqual(plain.integrations.wordpress, [{ id: 'exportable', name: 'Exportable', url: 'https://tienda.example.com', enabled: true, ai: false }]);
+  assert.ok(!JSON.stringify(plain).includes(TOK));
+  assert.equal(plain.secrets, undefined);
+  // con clave: token cifrado
+  const sealed = await client.call('export.creds', { wp: ['exportable'], passphrase: 'clave-segura' });
+  assert.ok(sealed.secrets && !JSON.stringify(sealed).includes(TOK), 'el token va cifrado');
+  await client.call('wp.delete', { id: 'exportable' });
+  await assert.rejects(client.call('import.creds', { wp: sealed.integrations.wordpress, secrets: sealed.secrets, passphrase: 'otra' }), /Clave incorrecta/);
+  const r = await client.call('import.creds', { wp: sealed.integrations.wordpress, secrets: sealed.secrets, passphrase: 'clave-segura' });
+  assert.equal(r.wp, 1);
+  assert.deepEqual(r.errors, []);
+  assert.match(fs.readFileSync(envFile, 'utf8'), new RegExp(`FRAP_WP_EXPORTABLE_TOKEN="${TOK}"`));
+  const site = (await client.call('wp.list')).sites.find((s) => s.id === 'exportable');
+  assert.equal(site.ai, false);
+  assert.equal(site.hasToken, true);
+  // reimportar sin clave conserva el token que ya había
+  await client.call('import.creds', { wp: [{ ...plain.integrations.wordpress[0], name: 'Renombrada' }] });
+  assert.match(fs.readFileSync(envFile, 'utf8'), new RegExp(`FRAP_WP_EXPORTABLE_TOKEN="${TOK}"`));
+  assert.equal((await client.call('wp.list')).sites.find((s) => s.id === 'exportable').name, 'Renombrada');
+  // sitio nuevo sin clave: queda sin token (se agrega en Editar)
+  await client.call('wp.delete', { id: 'exportable' });
+  await client.call('import.creds', { wp: plain.integrations.wordpress });
+  assert.equal((await client.call('wp.list')).sites.find((s) => s.id === 'exportable').hasToken, false);
+  await assert.rejects(client.call('wp.check', { id: 'exportable' }), /no tiene token/);
+  await client.call('wp.delete', { id: 'exportable' });
+});

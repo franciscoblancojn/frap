@@ -509,12 +509,12 @@ function dbConns() { return db.loadConnections(DB_ENV); }
 const WP_ENV = path.join(FRAP_HOME, 'wordpress.env');
 function wpSites() { return wordpress.loadSites(WP_ENV); }
 /** Valida y normaliza una conexión de la UI. Token vacío o null al editar = conservar el guardado. */
-function wpNormalize(input, existing) {
+function wpNormalize(input, existing, { allowNoToken = false } = {}) {
   const name = String(input.name || '').trim();
   if (!name) throw new Error('El nombre es obligatorio');
   const token = input.token == null || String(input.token).trim() === '' ? (existing ? existing.token : '') : String(input.token).trim();
-  if (!token) throw new Error('El token es obligatorio (créalo en WordPress → FRAP → Tokens)');
-  if (/\s/.test(token) || token.length > 200) throw new Error('Token inválido');
+  if (!token && !allowNoToken) throw new Error('El token es obligatorio (créalo en WordPress → FRAP → Tokens)');
+  if (token && (/\s/.test(token) || token.length > 200)) throw new Error('Token inválido');
   return {
     id: existing ? existing.id : '',
     name,
@@ -1336,16 +1336,18 @@ const ops = {
    * Exporta conexiones de BD y servidores SSH elegidos. Sin `passphrase` no salen contraseñas;
    * con ella, van en `secrets` cifradas.
    */
-  'export.creds': ({ db: dbIds = [], ssh: sshIds = [], passphrase } = {}) => {
+  'export.creds': ({ db: dbIds = [], ssh: sshIds = [], wp: wpIds = [], passphrase } = {}) => {
     const strip = (c) => { const { password, ...rest } = c; return rest; };
     const conns = dbConns().filter((c) => dbIds.includes(c.id));
     const hosts = sshHosts().filter((c) => sshIds.includes(c.id));
-    const out = { db: conns.map(strip), ssh: hosts.map(strip) };
+    const sites = wpSites().filter((c) => wpIds.includes(c.id));
+    const out = { db: conns.map(strip), ssh: hosts.map(strip), integrations: { wordpress: sites.map(({ token, ...rest }) => rest) } };
     if (passphrase) {
       if (String(passphrase).length < 6) throw new Error('La clave de cifrado debe tener al menos 6 caracteres');
       out.secrets = sealSecrets({
         db: Object.fromEntries(conns.filter((c) => c.password).map((c) => [c.id, c.password])),
         ssh: Object.fromEntries(hosts.filter((c) => c.password).map((c) => [c.id, c.password])),
+        wp: Object.fromEntries(sites.filter((c) => c.token).map((c) => [c.id, c.token])),
       }, passphrase);
     }
     return out;
@@ -1354,9 +1356,9 @@ const ops = {
    * Importa conexiones y servidores (mismo id = se reemplaza). Si traen `secrets`, hace falta
    * `passphrase`; sin ella se importan sin contraseña (o se conserva la que ya existía).
    */
-  'import.creds': ({ db: inDb = [], ssh: inSsh = [], secrets, passphrase } = {}) => {
+  'import.creds': ({ db: inDb = [], ssh: inSsh = [], wp: inWp = [], secrets, passphrase } = {}) => {
     const pw = secrets && passphrase != null && passphrase !== '' ? openSecrets(secrets, passphrase) : { db: {}, ssh: {} };
-    const result = { db: 0, ssh: 0, errors: [] };
+    const result = { db: 0, ssh: 0, wp: 0, errors: [] };
     const conns = dbConns();
     for (const raw of inDb) {
       try {
@@ -1383,6 +1385,20 @@ const ops = {
       } catch (e) { result.errors.push(`SSH ${raw.name || raw.id}: ${e.message}`); }
     }
     if (inSsh.length) ssh.saveHosts(SSH_ENV, hosts, SSH_CLI);
+    // WordPress: sin la clave el token no viene; se conserva el que ya hubiera o queda sin token (se agrega en Editar)
+    const sites = wpSites();
+    for (const raw of inWp) {
+      try {
+        const id = db.slugify(String(raw.id || raw.name || ''), new Set()).slice(0, 60);
+        const existing = sites.find((c) => c.id === id);
+        const token = Object.prototype.hasOwnProperty.call(pw.wp || {}, raw.id) ? pw.wp[raw.id] : null;
+        const c = wpNormalize({ ...raw, token }, existing || { id, token: '' }, { allowNoToken: true });
+        c.id = id;
+        if (existing) sites[sites.indexOf(existing)] = c; else sites.push(c);
+        result.wp++;
+      } catch (e) { result.errors.push(`WordPress ${raw.name || raw.id}: ${e.message}`); }
+    }
+    if (inWp.length) wordpress.saveSites(WP_ENV, sites);
     return result;
   },
   /**
