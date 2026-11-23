@@ -7476,10 +7476,26 @@
       if (r.changed.length) toast(on ? 'Skill frap-issues lista en claude y codex: dile a la IA "toma la issue AVE-…"' : 'Skill frap-issues quitada de claude y codex', 'ok');
     } catch (e) { toast(`Skill frap-issues: ${e.message}`, 'err'); }
   }
+  /** Servicio de origen de la issue según su URL (Linear por defecto si no hay URL pero no es local). */
+  function issueTracker(i) {
+    const u = (i && i.url) || '';
+    if (/linear\.app/i.test(u)) return 'Linear';
+    if (/atlassian\.net|jira/i.test(u)) return 'Jira';
+    if (/github\.com/i.test(u)) return 'GitHub';
+    if (/gitlab/i.test(u)) return 'GitLab';
+    if (/dev\.azure\.com|visualstudio\.com/i.test(u)) return 'Azure DevOps';
+    if (u) return 'el tracker de origen';
+    return i && /^LOCAL-/i.test(i.id || '') ? null : 'Linear';
+  }
   const ISSUE_PROMPTS = {
     take: (id) => `Toma la issue ${id} (skill frap-issues): tráela de Linear a local (con su prioridad tal cual) y arma el plan en su status.md.`,
     local: (id) => `Toma la issue local ${id} (skill frap-issues, sin tracker): ayúdame a redactar issue.md (qué, por qué, cuándo está lista), revisa que la prioridad sea la adecuada y arma el plan en su status.md.`,
-    resume: (id) => `Retoma la issue ${id} (skill frap-issues): lee su status.md y changelog.md y sigue con lo pendiente.`,
+    resume: (id, i) => {
+      const t = issueTracker(i || { id });
+      return t
+        ? `Retoma la issue ${id} (skill frap-issues): lee su status.md y changelog.md, mira su estado en ${t} (comentarios, estado y cambios desde la última vez), actualiza local si es necesario y sigue con lo pendiente.`
+        : `Retoma la issue ${id} (skill frap-issues): lee su status.md y changelog.md y sigue con lo pendiente.`;
+    },
     close: (id) => `Cierra la issue ${id} (skill frap-issues): redacta el comentario final para Linear con lo pendiente de enviar y muéstramelo antes de enviarlo.`,
     day: () => 'Fin de jornada (skill frap-issues): revisa las issues activas en local, arma los comentarios y cambios de estado pendientes para Linear y muéstramelos antes de enviar nada.',
   };
@@ -7541,7 +7557,7 @@
         issuesOpen = r.id;
         toast(r.created ? `Issue ${r.id} creada en ${tilde(r.dir)}` : `${r.id} ya existía: se retoma`, 'ok');
         await loadIssues();
-        if (ask.checked) issueAsk(!r.created ? ISSUE_PROMPTS.resume(r.id) : local.checked ? ISSUE_PROMPTS.local(r.id) : ISSUE_PROMPTS.take(r.id));
+        if (ask.checked) issueAsk(!r.created ? ISSUE_PROMPTS.resume(r.id, (issuesInfo && issuesInfo.issues.find((x) => x.id === r.id)) || r) : local.checked ? ISSUE_PROMPTS.local(r.id) : ISSUE_PROMPTS.take(r.id));
       } catch (e) { toast(e.message, 'err'); }
     };
     [id, title].forEach((el) => el.addEventListener('keydown', (e) => { if (e.key === 'Enter') doCreate(); }));
@@ -7619,6 +7635,7 @@
         h('button.iss-prio', { title: `Prioridad: ${pr.label} (${pr.en}) · clic para cambiarla`, onclick: (e) => issuePrioMenu(e, i) }, pr.icon),
         h('span.iss-id', i.id),
         i.pending && !i.closed ? h('span.iss-pend', { title: `${i.pending} comentario(s)/cambio(s) por enviar a Linear` }, `📤 ${i.pending}`) : null,
+        i.review ? h('span.iss-review', { title: 'In Review en Linear: entregada, falta la aprobación. En local cuenta como cerrada.' }, '👀 In Review') : null,
         h('span.grow'),
         h('span.muted.iss-date', i.updated ? new Date(i.updated).toLocaleDateString([], { day: '2-digit', month: 'short' }) : '')),
       h('div.iss-title', { onclick: toggle, title: open ? 'Clic: ocultar opciones' : 'Clic: ver opciones' }, i.title || h('span.muted', '(sin título)')),
@@ -7626,7 +7643,7 @@
       open ? h('div.iss-acts',
         h('div.iss-files', ['status.md', 'issue.md', 'changelog.md', 'final.md'].filter((x) => i.files.includes(x)).map((x) => h('button.mini', { title: tilde(issueFile(i, x)), onclick: () => openInFrap(issueFile(i, x)) }, x))),
         h('div.iss-files',
-          i.closed ? null : h('button.mini', { onclick: () => issueAsk(ISSUE_PROMPTS.resume(i.id)) }, '🤖 Retomar con la IA'),
+          i.closed ? null : h('button.mini', { title: ISSUE_PROMPTS.resume(i.id, i), onclick: () => issueAsk(ISSUE_PROMPTS.resume(i.id, i)) }, '🤖 Retomar con la IA'),
           i.closed ? null : h('button.mini', { onclick: () => issueAsk(ISSUE_PROMPTS.close(i.id)) }, '✅ Cerrar'),
           i.url ? h('button.mini', { title: i.url, onclick: () => openPageTab({ url: i.url }) }, '↗ Linear') : null,
           h('button.mini', { title: 'Copiar la carpeta de la issue', onclick: () => { copyText(i.dir); toast(`Copiado: ${tilde(i.dir)}`, 'ok'); } }, '⧉ Ruta'))) : null);

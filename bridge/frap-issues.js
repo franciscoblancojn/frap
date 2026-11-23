@@ -45,7 +45,7 @@ function main(argv) {
     const shown = list.filter((i) => all || !i.closed).sort((a, b) => order.indexOf(a.priority) - order.indexOf(b.priority));
     if (!shown.length) { console.log(`Sin issues ${all ? '' : 'activas '}en ${dir}`); return; }
     for (const i of shown) {
-      console.log(`${i.id}\t${label(i.priority)}\t${i.closed ? 'cerrada' : 'activa'}\t${i.estado || '—'}${i.pending ? `\t📤 ${i.pending} por enviar` : ''}\t${i.title}`);
+      console.log(`${i.id}\t${label(i.priority)}\t${i.review ? 'en revisión' : i.closed ? 'cerrada' : 'activa'}\t${i.estado || '—'}${i.pending ? `\t📤 ${i.pending} por enviar` : ''}\t${i.title}`);
     }
     return;
   }

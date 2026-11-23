@@ -904,6 +904,18 @@ test('issues.* y local.*: carpeta local/issues, skill frap-issues, importar carp
   assert.ok(lst.indexOf('AVE-303') < lst.indexOf('LOCAL-1') && lst.indexOf('LOCAL-1') < lst.indexOf('LOCAL-2'), 'ordenada por prioridad');
   assert.doesNotMatch(lst, /AVE-1\t/);
   assert.match(cli('list', '--all'), /AVE-1\tNo priority\tcerrada/);
+  // In Review en Linear: cuenta como cerrada en local (estado «en revisión»); «pendiente de revisión» no
+  const rev = await client.call('issues.create', { id: 'AVE-77', title: 'En revisión' });
+  fs.writeFileSync(path.join(rev.dir, 'status.md'), '- **Estado general:** 👀 In Review en Linear — falta la aprobación\n');
+  const pend = await client.call('issues.create', { id: 'AVE-78', title: 'Sigue activa' });
+  fs.writeFileSync(path.join(pend.dir, 'status.md'), '- **Estado general:** En curso — pendiente de revisión del código\n');
+  const li = (await client.call('issues.list')).issues;
+  const i77 = li.find((x) => x.id === 'AVE-77');
+  assert.equal(i77.review, true);
+  assert.equal(i77.closed, true);
+  assert.equal(li.find((x) => x.id === 'AVE-78').closed, false);
+  assert.doesNotMatch(cli('list'), /AVE-77\t/);
+  assert.match(cli('list', '--all'), /AVE-77\t[^\t]+\ten revisión\t/);
   assert.match(cli('new', 'INT', 'Interna', '--prioridad', 'baja'), /Creada INT-1 .*Prioridad: Low/);
   assert.match(cli('priority', 'INT-1', 'high'), /INT-1: prioridad High/);
   // importar carpeta (acepta la que contiene "issues"), sin pisar existentes

@@ -199,6 +199,8 @@ function pendingCount(status) {
   return m[1].replace(/<!--[\s\S]*?-->/g, '').split('\n').filter((l) => /^\s*[-*]\s+\S/.test(l) && !/^\s*[-*]\s+\[x\]/i.test(l)).length;
 }
 const CLOSED_RE = /termin|done|cerrad|cancel|✅|❌|descartad/i;
+// "In Review" en Linear: ya entregada, falta la aprobación. En local cuenta como cerrada (estado «en revisión»)
+const REVIEW_RE = /\bin[\s-]?review\b|\ben revisi[oó]n\b|🔎\s*revisi[oó]n/i;
 
 function readIssue(id) {
   const dir = path.join(ISSUES_DIR, id);
@@ -217,7 +219,8 @@ function readIssue(id) {
     for (const f of files) { try { updated = Math.max(updated, fs.statSync(path.join(dir, f)).mtimeMs); } catch (_) { /* nada */ } }
   } catch (_) { /* nada */ }
   const hasFinal = files.includes('final.md');
-  return { id, dir, title, estado, priority, url: /^https?:\/\//.test(url) ? url : '', updated, hasFinal, closed: hasFinal || CLOSED_RE.test(estado), pending: pendingCount(status), files: files.filter((f) => f.endsWith('.md')) };
+  const review = REVIEW_RE.test(estado);
+  return { id, dir, title, estado, priority, url: /^https?:\/\//.test(url) ? url : '', updated, hasFinal, review, closed: hasFinal || review || CLOSED_RE.test(estado), pending: pendingCount(status), files: files.filter((f) => f.endsWith('.md')) };
 }
 function listIssues() {
   ensureLocal();
@@ -446,6 +449,8 @@ Toda issue tiene prioridad, con la escala y el formato de Linear, venga o no de 
 2. Enviarlo (en Linear, \`save_comment\`) y, si el usuario lo aprueba, cambiar el estado.
 3. Crear \`final.md\` con el comentario exactamente como se envió, la fecha y el enlace.
 4. \`status.md\`: «Estado general: Terminada» (o Cancelada), pasos resueltos o justificados y «📤 Por enviar» vacía. Cerrar el changelog con la entrada de cierre.
+
+**In Review:** si en Linear queda en revisión (entregada, falta la aprobación), escribe «**Estado general:** In Review en Linear — <qué falta>». FRAP la cuenta como **cerrada** (filtro «Cerradas», con la marca 👀 In Review) y \`list\` ya no la muestra entre las activas. Si después la reabren, cambia el estado a «En curso».
 
 ## 4. Fin de jornada ("fin de jornada", "sincroniza con Linear")
 1. Revisar las issues activas (\`node ${CLI} list\`) y su «📤 Por enviar a Linear».
