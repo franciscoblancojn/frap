@@ -4454,6 +4454,41 @@
     const G = { index: gi, el, tabsEl, banner, bodyEl, cm: null, preview: null, docs: new Map(), shown: null };
     return G;
   }
+  /** URL (http/https) bajo el puntero en el editor: {url, line, from, to} o null. */
+  function codeUrlAt(cm, e) {
+    const pos = cm.coordsChar({ left: e.clientX, top: e.clientY }, 'window');
+    const text = cm.getLine(pos.line) || '';
+    const re = /https?:\/\/[^\s<>"'`()\[\]{}]+[^\s<>"'`()\[\]{}.,;:!?]/g;
+    let m;
+    while ((m = re.exec(text))) if (pos.ch >= m.index && pos.ch <= m.index + m[0].length) return { url: m[0], line: pos.line, from: m.index, to: m.index + m[0].length };
+    return null;
+  }
+  /** Ctrl+clic (Cmd en Mac) en una URL del editor la abre en una pestaña del navegador; con Ctrl pulsado se subraya. */
+  function codeUrlLinks(cm) {
+    const wrap = cm.getWrapperElement();
+    let mark = null;
+    const clear = () => { if (mark) { mark.clear(); mark = null; } wrap.classList.remove('cm-url-hover'); };
+    cm.on('mousedown', (_cm, e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return;
+      const u = codeUrlAt(cm, e);
+      if (!u) return; // Ctrl+clic fuera de una URL: varios cursores, como siempre
+      e.preventDefault(); // CodeMirror no pone un cursor extra
+      clear();
+      openPageTab({ url: u.url });
+    });
+    wrap.addEventListener('mousemove', (e) => {
+      if (!(e.ctrlKey || e.metaKey)) { if (mark) clear(); return; }
+      const u = codeUrlAt(cm, e);
+      if (!u) { if (mark) clear(); return; }
+      const cur = mark && mark.find();
+      if (cur && cur.from.line === u.line && cur.from.ch === u.from) return;
+      clear();
+      mark = cm.markText({ line: u.line, ch: u.from }, { line: u.line, ch: u.to }, { className: 'cm-url-link', title: `Ctrl+clic: abrir ${u.url}` });
+      wrap.classList.add('cm-url-hover');
+    });
+    wrap.addEventListener('mouseleave', clear);
+    window.addEventListener('keyup', (e) => { if ((e.key === 'Control' || e.key === 'Meta') && mark) clear(); });
+  }
   function codeEnsureCm(G) {
     if (G.cm || !hasCM()) return G.cm;
     G.cm = CodeMirror(G.bodyEl, {
@@ -4498,6 +4533,7 @@
     G.cm.on('changes', () => codeRenderDirtySoon());
     G.cm.on('focus', () => { if (state.code.focus !== G.index) { state.code.focus = G.index; save(); codeRenderFocus(); codeRenderStatus(); } });
     G.cm.getWrapperElement().addEventListener('contextmenu', (e) => codeEditorMenu(e, G));
+    codeUrlLinks(G.cm);
     return G.cm;
   }
   const codeRememberCursor = debounce((G) => {

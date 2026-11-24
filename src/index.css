@@ -1251,3 +1251,7 @@ li.CodeMirror-hint-active { background: var(--accent); color: var(--bg); }
 .rel-cmd { font-family: var(--mono); background: var(--bg-3); padding: 2px 6px; border-radius: 4px; }
 .rel-warn { color: var(--warn); font-size: 12px; margin: 8px 0 0; }
 @media (max-width: 700px) { .rel-kinds { grid-template-columns: 1fr; } }
+
+/* editor: Ctrl+clic en una URL la abre */
+.cm-url-link, .cm-url-link * { text-decoration: underline; color: var(--accent) !important; }
+.cm-url-hover .CodeMirror-lines { cursor: pointer; }

@@ -16,6 +16,7 @@
 - [x] Cada sección del panel izquierdo recuerda su proyecto y ventana abierta (y cada proyecto su última ventana): al cambiar de sección vuelve a ellas
 - [x] Barra de secciones en una sola fila con scroll (rueda del ratón) y un ＋ fijo a la derecha con menú: abrir carpeta (nuevo proyecto) o crear sección. Sin el ＋ de la cabecera
 - [x] Carpetas fuera de la carpeta personal (p. ej. /var/www): el selector ofrece permitirlas y muestra accesos a cada una; `FRAP_FS_EXTRA` o `FRAP_HOME/fs-roots`; nunca carpetas del sistema
+- [x] Editor: Ctrl+clic (Cmd en Mac) en una URL la abre en una pestaña del navegador; con Ctrl pulsado se subraya. Fuera de una URL, Ctrl+clic sigue agregando cursores
 - [x] Editor: una ruta de carpeta (clic en la terminal, o «Ver sus archivos» en el árbol) se abre como pestaña 📁 con su contenido (miniaturas de imágenes, ↑, terminal, explorador); si está fuera del proyecto, aparece como raíz aparte en el árbol
 - [x] Panel derecho:
   - [x] Procesos: árbol por terminal con CPU, memoria y tiempo, agentes resaltados, matar proceso
