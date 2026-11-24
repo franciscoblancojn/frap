@@ -2810,12 +2810,13 @@
     const rt = Git;
     const o = { log: false, rt, repo: state.git.repo };
     try {
-      const [st, br, rbr, rem, lg] = await Promise.all([
+      const [st, br, rbr, rem, lg, head] = await Promise.all([
         git(['status', '--porcelain=v1', '-b', '-z', '--untracked-files=all'], o),
         git(['branch', '--format=%(HEAD)%09%(refname:short)%09%(upstream:short)%09%(upstream:track)'], o),
         git(['branch', '-r', '--format=%(refname:short)'], o),
         git(['remote'], o),
         git(['log', '-n', '60', '--pretty=format:%h%x1f%an%x1f%ar%x1f%D%x1f%s'], o),
+        git(['rev-parse', '--abbrev-ref', 'origin/HEAD'], o).catch(() => ({ code: 1, stdout: '' })), // rama principal del remoto
       ]);
       if (Git !== rt) return; // se cambió de vista mientras git respondía
       if (st.code !== 0) { Git.status = { error: st.stderr.trim() }; renderGit(); return; }
@@ -2826,6 +2827,8 @@
       });
       Git.remoteBranches = rbr.stdout.split('\n').map((s) => s.trim()).filter((s) => s && !s.endsWith('/HEAD') && s.includes('/'));
       Git.remotes = rem.stdout.split('\n').filter(Boolean);
+      const dh = head.code === 0 ? head.stdout.trim() : '';
+      Git.defaultBranch = dh.startsWith('origin/') ? dh.slice(7) : ['main', 'master', 'develop'].find((n) => Git.branches.some((b) => b.name === n) || (Git.remoteBranches || []).includes(`origin/${n}`)) || '';
       Git.log = lg.code === 0 ? lg.stdout.split('\n').filter(Boolean).map((l) => {
         const [hash, author, when, refs, subject] = l.split('\x1f');
         return { hash, author, when, refs, subject };
@@ -2922,9 +2925,11 @@
       if (okToast(await g(['checkout', '-b', name]), `Rama "${name}" creada`)) pane.newBranch.value = '';
     });
   }
-  async function gitDeleteBranch(b) {
-    if (!(await confirmBox(`¿Eliminar la rama "${b.name}"?`, 'Usa git branch -d: si tiene commits sin fusionar, git se negará y no se pierde nada.'))) return;
-    gitAction('git branch -d', async (g) => okToast(await g(['branch', '-d', b.name]), `Rama "${b.name}" eliminada`));
+  async function gitDeleteBranch(b, force) {
+    if (!(await confirmBox(`¿${force ? 'Forzar la eliminación de' : 'Eliminar'} la rama "${b.name}"?`, force
+      ? 'git branch -D: se borra aunque tenga commits sin fusionar (esos commits se pierden, salvo que estén en otra rama).'
+      : 'Usa git branch -d: si tiene commits sin fusionar, git se negará y no se pierde nada.'))) return;
+    gitAction(`git branch ${force ? '-D' : '-d'}`, async (g) => okToast(await g(['branch', force ? '-D' : '-d', b.name]), `Rama "${b.name}" eliminada`));
   }
 
   /** Comando libre: "git log --oneline -5" o "log --oneline -5". */
@@ -3070,17 +3075,106 @@
       return `${x.protocol}//${x.host}${x.pathname.replace(/\.git\/?$/, '').replace(/\/+$/, '')}`;
     } catch (_) { return null; }
   }
+  /** {name, url} web del remoto `want` (o origin, o el primero). Avisa y devuelve null si no hay. */
+  async function gitRemoteWeb(want) {
+    const r = await git(['remote', '-v'], { log: false });
+    const lines = r.stdout.split('\n').map((l) => l.trim().split(/\s+/)).filter((x) => x.length >= 2);
+    const pick = (want && lines.find((x) => x[0] === want)) || lines.find((x) => x[0] === 'origin') || lines[0];
+    if (!pick) { toast('Este repositorio no tiene remoto (git remote add origin …)', 'err'); return null; }
+    const url = remoteWebUrl(pick[1]);
+    if (!url) { toast(`No se puede abrir el remoto «${pick[0]}» en el navegador`, 'err'); return null; }
+    return { name: pick[0], url };
+  }
   async function gitOpenRemote() {
     if (!state.git.repo) { toast('No hay repositorio seleccionado', 'err'); return; }
+    try { const w = await gitRemoteWeb(); if (w) openPageTab({ url: w.url }); } catch (e) { toast(e.message, 'err'); }
+  }
+  /** URL web de una rama (y de su pull/merge request nueva) según el servicio: GitHub, GitLab, Bitbucket u otro. */
+  function branchWebUrls(base, branch, target) {
+    const e = (x) => x.split('/').map(encodeURIComponent).join('/');
+    const host = (() => { try { return new URL(base).host; } catch (_) { return ''; } })();
+    if (/gitlab/i.test(host)) return { list: `${base}/-/merge_requests`, tree: `${base}/-/tree/${e(branch)}`, pr: `${base}/-/merge_requests/new?merge_request%5Bsource_branch%5D=${encodeURIComponent(branch)}${target ? `&merge_request%5Btarget_branch%5D=${encodeURIComponent(target)}` : ''}` };
+    if (/bitbucket/i.test(host)) return { list: `${base}/pull-requests`, tree: `${base}/src/${e(branch)}`, pr: `${base}/pull-requests/new?source=${encodeURIComponent(branch)}${target ? `&dest=${encodeURIComponent(target)}` : ''}` };
+    return { list: `${base}/pulls`, tree: `${base}/tree/${e(branch)}`, pr: `${base}/compare/${target ? `${e(target)}...` : ''}${e(branch)}?expand=1` }; // GitHub (y Gitea, que usa lo mismo)
+  }
+  /** Rama local o remota → {remote, branch} en el servidor ("origin/feat" → origin, feat; local con upstream → su upstream). */
+  function branchOnRemote(b, isRemote) {
+    const ref = isRemote ? b : b.upstream || '';
+    if (ref && ref.includes('/')) { const [remote, ...rest] = ref.split('/'); return { remote, branch: rest.join('/') }; }
+    return { remote: null, branch: isRemote ? b : b.name };
+  }
+  async function gitBranchOnline(b, isRemote, pr) {
     try {
-      const r = await git(['remote', '-v'], { log: false });
-      const lines = r.stdout.split('\n').map((l) => l.trim().split(/\s+/)).filter((x) => x.length >= 2);
-      const pick = lines.find((x) => x[0] === 'origin') || lines[0];
-      if (!pick) { toast('Este repositorio no tiene remoto (git remote add origin …)', 'err'); return; }
-      const url = remoteWebUrl(pick[1]);
-      if (!url) { toast(`No se puede abrir el remoto «${pick[0]}» en el navegador`, 'err'); return; }
-      openPageTab({ url });
+      const { remote, branch } = branchOnRemote(b, isRemote);
+      const w = await gitRemoteWeb(remote);
+      if (!w) return;
+      // el PR va contra la rama principal del remoto (origin/HEAD: la "default" de GitHub); si la rama ES la
+      // principal, no hay PR que crear: se abre la lista de pull requests del repo
+      const target = Git.defaultBranch || '';
+      const urls = branchWebUrls(w.url, branch, target);
+      openPageTab({ url: !pr ? urls.tree : branch === target ? urls.list : urls.pr });
     } catch (e) { toast(e.message, 'err'); }
+  }
+  /** Clic derecho en una rama (local o remota "origin/x"). */
+  function gitBranchMenu(ev, b, isRemote) {
+    const name = isRemote ? b : b.name;
+    const cur = (Git.branches.find((x) => x.current) || {}).name || 'HEAD';
+    const isCur = !isRemote && b.current;
+    const short = isRemote ? name.split('/').slice(1).join('/') : name;
+    const compare = () => gitAction(`comparar ${name}`, async (g) => {
+      await g(['log', '--oneline', '--no-merges', `${cur}..${name}`]); // lo que trae esa rama
+      await g(['log', '--oneline', '--no-merges', `${name}..${cur}`]); // lo que tiene la actual y esa no
+      await g(['diff', '--stat', `${cur}...${name}`]);
+      state.git.tab = 'out';
+      save();
+    });
+    popMenu(ev, [
+      !isCur && { label: isRemote ? `Cambiar a ${short} (seguir la remota)` : 'Cambiar a esta rama', hint: 'checkout', action: () => gitCheckout(name, isRemote) },
+      { label: '↗ Abrir en línea', action: () => gitBranchOnline(b, isRemote, false) },
+      short === Git.defaultBranch
+        ? { label: '↗ Ver pull requests', hint: 'es la rama principal', action: () => gitBranchOnline(b, isRemote, true) }
+        : { label: `↗ Crear pull request en línea${Git.defaultBranch ? ` (hacia ${Git.defaultBranch})` : ''}`, action: () => gitBranchOnline(b, isRemote, true) },
+      '-',
+      !isCur && { label: `Fusionar en «${cur}» (la actual)…`, hint: `git merge ${name}`, action: () => gitMergeBranch(name, cur) },
+      !isCur && { label: `Comparar con «${cur}»`, hint: 'log y diff --stat', action: compare },
+      { label: 'Crear rama desde aquí…', action: () => gitBranchFrom(name) },
+      !isRemote && { label: 'Renombrar…', action: () => gitRenameBranch(b) },
+      !isRemote && { label: b.upstream ? 'Publicar (push)' : 'Publicar en el remoto (push -u)', action: () => gitAction(`git push ${name}`, async (g) => okToast(await g(b.upstream ? ['push', b.upstream.split('/')[0], name] : ['push', '-u', 'origin', name]), `Rama "${name}" publicada`)) },
+      '-',
+      { label: 'Copiar nombre', action: () => codeCopy(short) },
+      '-',
+      !isRemote && !isCur && { label: 'Eliminar…', hint: 'branch -d', danger: true, action: () => gitDeleteBranch(b) },
+      !isRemote && !isCur && { label: 'Forzar eliminación…', hint: 'branch -D: pierde commits sin fusionar', danger: true, action: () => gitDeleteBranch(b, true) },
+      isRemote && { label: 'Eliminar la rama del remoto…', hint: 'push --delete', danger: true, action: () => gitDeleteRemoteBranch(name) },
+    ]);
+  }
+  async function gitMergeBranch(name, cur) {
+    const st = Git.status || {};
+    const dirty = (st.staged || []).length + (st.unstaged || []).length;
+    if (!(await confirmBox(`¿Fusionar «${name}» en «${cur}»?`, `git merge ${name}${dirty ? `\n\n⚠ Hay ${dirty} archivo(s) con cambios sin commit: si la fusión los toca, git se negará (no se pierde nada).` : ''}\n\nSi hay conflictos, aparecen en la lista de cambios para resolverlos y luego hacer commit.`))) return;
+    gitAction(`git merge ${name}`, async (g) => {
+      const r = await g(['merge', '--no-edit', name]);
+      if (r.code === 0) toast(/Already up to date|Ya está actualizado/i.test(r.stdout) ? `«${cur}» ya tenía todo lo de «${name}»` : `«${name}» fusionada en «${cur}»`, 'ok');
+      else if (/CONFLICT|conflicto/i.test(r.stdout + r.stderr)) { toast('Fusión con conflictos: resuélvelos en los archivos marcados y haz commit (o git merge --abort en la caja de comandos)', 'err'); }
+    });
+  }
+  async function gitBranchFrom(name) {
+    const nb = await askText('Nueva rama', `Nombre (se crea desde ${name} y te cambias a ella)`, '');
+    if (!nb) return;
+    if (!/^(?!-)(?!.*\.\.)(?!.*\/\/)[\w./-]+(?<![./])$/.test(nb)) { toast('Nombre de rama inválido', 'err'); return; }
+    gitAction('git checkout -b', async (g) => okToast(await g(['checkout', '-b', nb, name]), `Rama "${nb}" creada desde ${name}`));
+  }
+  async function gitRenameBranch(b) {
+    const nb = await askText('Renombrar rama', 'Nuevo nombre', b.name);
+    if (!nb || nb === b.name) return;
+    if (!/^(?!-)(?!.*\.\.)(?!.*\/\/)[\w./-]+(?<![./])$/.test(nb)) { toast('Nombre de rama inválido', 'err'); return; }
+    gitAction('git branch -m', async (g) => okToast(await g(['branch', '-m', b.name, nb]), `Rama renombrada a "${nb}"${b.upstream ? ' (en el remoto sigue con el nombre anterior)' : ''}`));
+  }
+  async function gitDeleteRemoteBranch(ref) {
+    const [remote, ...rest] = ref.split('/');
+    const br = rest.join('/');
+    if (!(await confirmBox(`¿Eliminar «${br}» del remoto «${remote}»?`, `git push ${remote} --delete ${br}\n\nSe borra en el servidor para todo el equipo. Las copias locales no se tocan.`))) return;
+    gitAction('git push --delete', async (g) => okToast(await g(['push', remote, '--delete', br]), `Rama «${br}» eliminada de ${remote}`));
   }
   /** Clic derecho en un archivo con cambios: abrirlo (editor, explorador, editor externo), rutas, IA y acciones de git. */
   function gitFileMenu(ev, f, area) {
@@ -3288,8 +3382,9 @@
         h('div.git-sec-head', h('span.grow', 'Ramas')),
         h('div.field-row.git-newbranch', p.newBranch, h('button.mini', { onclick: gitNewBranch, title: 'git checkout -b <nueva-rama>' }, 'checkout -b')),
         Git.branches.map((b) => h(`div.git-branch-row${b.current ? '.current' : ''}`, {
-          title: b.current ? 'Rama actual' : `git checkout ${b.name}`,
+          title: `${b.current ? 'Rama actual' : `Clic: git checkout ${b.name}`}${b.upstream ? `\nSigue a ${b.upstream}` : ''}\nClic derecho: más opciones`,
           onclick: () => { if (!b.current) gitCheckout(b.name, false); },
+          oncontextmenu: (e) => gitBranchMenu(e, b, false),
         },
         h('span', b.current ? '●' : '○'),
         h('span.grow.mono', b.name),
@@ -3300,7 +3395,7 @@
             h('summary.muted', 'Ramas remotas'),
             Git.remoteBranches
               .filter((r) => !Git.branches.some((b) => b.name === r.split('/').slice(1).join('/')))
-              .map((r) => h('div.git-branch-row', { title: `git checkout --track ${r}`, onclick: () => gitCheckout(r, true) }, h('span', '☁'), h('span.grow.mono', r))))
+              .map((r) => h('div.git-branch-row', { title: `Clic: git checkout --track ${r}\nClic derecho: más opciones`, onclick: () => gitCheckout(r, true), oncontextmenu: (e) => gitBranchMenu(e, r, true) }, h('span', '☁'), h('span.grow.mono', r))))
           : null),
     ].filter(Boolean));
     renderGitRight();
@@ -4078,6 +4173,8 @@
         const open = e.dir && expanded.has(abs);
         out.push(h(`div.code-node${e.dir ? '.dir' : ''}${abs === active ? '.active' : ''}`, {
           style: `padding-left:${8 + depth * 12}px`, title: tilde(abs), dataset: { path: abs },
+          draggable: 'true', // arrastrar a un panel del editor lo abre ahí
+          ondragstart: (ev) => { ev.dataTransfer.effectAllowed = 'copy'; ev.dataTransfer.setData('text/x-frap-path', abs); ev.dataTransfer.setData('text/plain', abs); },
           onclick: () => (e.dir ? codeToggleDir(abs) : codeOpenFile(abs)),
           oncontextmenu: (ev) => codeTreeMenu(ev, abs, e.dir),
         }, h('span.code-twisty', e.dir ? (open ? '▾' : '▸') : ''), h('span.code-fname', e.name)));
@@ -4482,6 +4579,7 @@
     await codeLoad(file);
     if (!codePane) return;
     codeShowActive(gi);
+    codeRenderTabsOnly(); // ya cargado: un archivo nuevo con plantilla queda marcado «sin guardar»
     if (opts.line) codeGoTo(gi, opts.line, opts.col, opts.len);
     codeRenderStatus();
     if (state.code.side === 'tree') { codeMarkTreeActive(); codeReveal(file, true); } // despliega las carpetas hasta el archivo
@@ -4511,13 +4609,82 @@
     const bodyEl = h('div.code-body');
     const el = h('div.code-group', {
       onmousedown: () => { if (state.code.focus !== G.index) { state.code.focus = G.index; save(); codeRenderFocus(); codeRenderStatus(); } },
-      ondragover: (e) => { if (codePane.dragTab) { e.preventDefault(); el.classList.add('drop'); } },
-      ondragleave: () => el.classList.remove('drop'),
-      ondrop: (e) => { el.classList.remove('drop'); const d = codePane.dragTab; if (d) { e.preventDefault(); codeMoveTab(d.gi, d.file, G.index); } },
+      ondragover: (e) => { if (codePane.dragTab || codeDropKind(e)) { e.preventDefault(); e.dataTransfer.dropEffect = codePane.dragTab ? 'move' : 'copy'; el.classList.add('drop'); } },
+      ondragleave: (e) => { if (!el.contains(e.relatedTarget)) el.classList.remove('drop'); },
+      ondrop: (e) => {
+        el.classList.remove('drop');
+        const d = codePane.dragTab;
+        if (d) { e.preventDefault(); codeMoveTab(d.gi, d.file, G.index); return; }
+        if (codeDropKind(e)) { e.preventDefault(); e.stopPropagation(); codeHandleDrop(e.dataTransfer, G.index); }
+      },
     }, tabsEl, banner, bodyEl);
     const G = { index: gi, el, tabsEl, banner, bodyEl, cm: null, preview: null, docs: new Map(), shown: null };
     return G;
   }
+  // ----- arrastrar archivos al editor para abrirlos -----
+  /** ¿Lo que se arrastra es algo que el editor sabe abrir? (archivos del sistema, rutas, o del árbol de FRAP) */
+  function codeDropKind(e) {
+    const t = [...((e.dataTransfer && e.dataTransfer.types) || [])];
+    if (t.includes('text/x-frap-path')) return 'frap';
+    if (t.includes('Files')) return 'files';
+    if (t.includes('text/uri-list')) return 'uri';
+    return null;
+  }
+  /** Ruta absoluta de un file://… (o una ruta absoluta en texto). */
+  function pathFromUri(u) {
+    const s = String(u || '').trim();
+    if (s.startsWith('file://')) { try { return decodeURIComponent(new URL(s).pathname); } catch (_) { return null; } }
+    return s.startsWith('/') && !s.includes('\n') ? s : null;
+  }
+  async function codeOpenDropped(abs, gi) {
+    let st;
+    try { st = (await Bridge.call('fs.stat', { paths: [abs] }))[0]; } catch (e) { toast(e.message, 'err'); return false; }
+    if (!st || !st.exists) { toast(`No existe: ${tilde(abs)}`, 'err'); return false; }
+    if (st.dir) { await codeRevealDir(abs); await codeOpenDir(abs); } else await codeOpenFile(st.path, { group: gi });
+    return true;
+  }
+  /** Busca en las carpetas del proyecto un archivo con ese nombre y tamaño (el navegador no da la ruta de lo arrastrado). */
+  async function codeFindDropped(file) {
+    const hits = [];
+    for (const root of codeRoots()) {
+      let r;
+      try { r = await Bridge.call('code.files', { root }); } catch (_) { continue; }
+      for (const rel of r.files) if (rel === file.name || rel.endsWith(`/${file.name}`)) hits.push(`${r.root}/${rel}`);
+    }
+    if (hits.length <= 1) return hits[0] || null;
+    try {
+      const st = await Bridge.call('fs.stat', { paths: hits.slice(0, 200) });
+      const same = st.filter((x) => x.exists && !x.dir && x.size === file.size);
+      if (same.length === 1) return same[0].path;
+      return (same.sort((a, b) => Math.abs(b.mtime - file.lastModified) - Math.abs(a.mtime - file.lastModified)).pop() || {}).path || hits[0];
+    } catch (_) { return hits[0]; }
+  }
+  async function codeHandleDrop(dt, gi) {
+    if (!Bridge.ready) { toast('Bridge desconectado', 'err'); return; }
+    const frap = dt.getData('text/x-frap-path');
+    if (frap) { await codeOpenDropped(frap, gi); return; }
+    // desde el gestor de archivos: la ruta llega como file:// si el navegador la da
+    const uris = (dt.getData('text/uri-list') || '').split(/\r?\n/).filter((l) => l && !l.startsWith('#')).map(pathFromUri).filter(Boolean);
+    if (uris.length) { for (const p of uris.slice(0, 10)) await codeOpenDropped(p, gi); return; }
+    const files = [...(dt.files || [])].slice(0, 10);
+    if (!files.length) { const p = pathFromUri(dt.getData('text/plain')); if (p) await codeOpenDropped(p, gi); return; }
+    for (const f of files) {
+      const found = await codeFindDropped(f);
+      if (found) { await codeOpenFile(found, { group: gi }); continue; }
+      // no está en el proyecto: se abre como archivo nuevo (sin guardar) en la carpeta del proyecto
+      const root = codeRoots()[0];
+      if (!root) { toast(`No encontré ${f.name} en el proyecto`, 'err'); continue; }
+      if (f.size > 2 * 1024 * 1024) { toast(`${f.name}: no está en el proyecto y pesa más de 2 MB; ábrelo desde su carpeta`, 'err'); continue; }
+      const text = await f.text();
+      if (text.slice(0, 8000).includes('\0')) { toast(`${f.name}: no está en el proyecto y es binario`, 'err'); continue; }
+      const target = `${root}/${f.name}`;
+      await codeOpenFile(target, { group: gi, template: text });
+      toast(`${f.name} no está en las carpetas del proyecto: lo abrí como archivo nuevo en ${tilde(root)} (Ctrl+S para guardarlo ahí)`, 'ok');
+    }
+  }
+  // soltar un archivo fuera de donde se acepta no debe hacer que el navegador navegue a él (se perdería FRAP)
+  window.addEventListener('dragover', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files') && !e.defaultPrevented) { e.preventDefault(); e.dataTransfer.dropEffect = 'none'; } });
+  window.addEventListener('drop', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files') && !e.defaultPrevented) e.preventDefault(); });
   /** URL (http/https) bajo el puntero en el editor: {url, line, from, to} o null. */
   function codeUrlAt(cm, e) {
     const pos = cm.coordsChar({ left: e.clientX, top: e.clientY }, 'window');

@@ -20,6 +20,10 @@ FRAP es una alternativa ligera a Warp que corre en el navegador: 3 paneles (proy
 9. **Aveonline**: los tokens de la revisión por token solo viven en `FRAP_HOME/aveonline.env` (0600): nunca en la UI (usa `publicSite`; `ave.paste` no los devuelve) ni en la salida de `frap-ave.js`, que es de solo lectura y solo ve tiendas con `ENABLED=1` y `AI=1`. El plugin Aveonline es otro repo: no se toca sin pedirlo.
 10. La UI está en español.
 
+## Glosario (cómo habla el usuario)
+
+- **ED** o **EC**: el editor de código (vista «Código» del panel central, módulo `center.code`, Alt+Shift+E; código en `index.js` con prefijo `code…`).
+
 ## Estructura
 
 ```

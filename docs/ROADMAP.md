@@ -9,6 +9,7 @@
 - [x] Terminales persistentes: sobreviven a recargar la página y se re-adjuntan con su scrollback
 - [x] Shell y SSH: botones arriba a la derecha para limpiar (también vacía el historial guardado: no vuelve al recargar ni al reiniciar el bridge) y copiar todo el contenido de la terminal
 - [x] Vista «API» (como Postman): peticiones HTTP guardadas en local/api con carpetas, variables por carpeta y globales ({{var}}), cuerpo JSON/texto/formularios, última respuesta guardada, árbol con clic derecho, Ctrl+Enter; CLI `frap-api` y skill `frap-api` para que la IA guarde sus peticiones en la carpeta de la issue o del proyecto; viaja en el zip de local/
+- [x] Git: clic derecho en las ramas (locales y remotas): cambiar, abrir en línea, crear pull/merge request (GitHub, GitLab, Bitbucket), fusionar en la actual, comparar (commits de cada lado y diff --stat), crear rama desde aquí, renombrar, publicar (push -u), copiar nombre, eliminar (-d / -D) y eliminar del remoto
 - [x] Git: botón «↗ Repo» que abre el remoto (origin, o el primero) en el navegador; convierte URLs ssh (git@host:u/r.git) a https y nunca abre un token embebido
 - [x] Git: clic derecho en los archivos con cambios: ver diff, abrir en el editor de código, explorador o editor externo, copiar ruta, enviar a la IA, agregar/quitar/descartar, historial del archivo (git log --follow) y git blame
 - [x] Git: el selector incluye los repos de subcarpetas (la carpeta del proyecto puede no tener git) y 🔍 vuelve a buscarlos; botón «🚀 Versión X.Y.Z» si el repo tiene `npm run push-v` (o `deploy` con bump-version): modal patch/minor/major con la versión siguiente y aviso de cambios sin commit; se ejecuta en el bridge y su salida aparece en vivo en la pestaña «Salida» de Git
@@ -19,6 +20,7 @@
 - [x] Cada sección del panel izquierdo recuerda su proyecto y ventana abierta (y cada proyecto su última ventana): al cambiar de sección vuelve a ellas
 - [x] Barra de secciones en una sola fila con scroll (rueda del ratón) y un ＋ fijo a la derecha con menú: abrir carpeta (nuevo proyecto) o crear sección. Sin el ＋ de la cabecera
 - [x] Carpetas fuera de la carpeta personal (p. ej. /var/www): el selector ofrece permitirlas y muestra accesos a cada una; `FRAP_FS_EXTRA` o `FRAP_HOME/fs-roots`; nunca carpetas del sistema
+- [x] Editor: arrastrar archivos lo abre: desde el gestor de archivos (con su ruta file:// si el navegador la da; si no, se busca en el proyecto por nombre y tamaño, y si no está se abre como nuevo sin guardar en la carpeta del proyecto) o desde el árbol a un panel concreto. Soltar un archivo fuera ya no saca de FRAP
 - [x] Editor: Ctrl+clic (Cmd en Mac) en una URL la abre en una pestaña del navegador; con Ctrl pulsado se subraya. Fuera de una URL, Ctrl+clic sigue agregando cursores
 - [x] Editor: una ruta de carpeta (clic en la terminal, o «Ver sus archivos» en el árbol) se abre como pestaña 📁 con su contenido (miniaturas de imágenes, ↑, terminal, explorador); si está fuera del proyecto, aparece como raíz aparte en el árbol
 - [x] Panel derecho:
