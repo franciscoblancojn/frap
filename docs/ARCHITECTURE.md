@@ -111,6 +111,17 @@ navegador (file://src/index.html)                     máquina local
 - **UI:** colapsable «Aveonline» con 📋 (pegar token) y ＋. Cada tienda muestra estado, host y «vence en N min» (se refresca cada 30 s), interruptores y menú: pegar token nuevo, probar, últimos pedidos (modal con «⧉ IA» que copia la petición), editar, abrir la revisión por token en la tienda, abrir la tienda, copiar el comando y eliminar.
 - **Exportar / importar:** grupo «Integraciones · Aveonline»; token solo cifrado (`secrets.ave`). Como duran minutos, lo normal es pegar uno nuevo tras importar.
 
+## API: peticiones HTTP guardadas (vista del panel central)
+
+- Como Postman, dentro de FRAP. Lanzador «API» (Alt+Shift+R, módulo `center.api`). Todo vive en `local/api/` (fuera de git; viaja en el zip de `local/`):
+  - `<carpeta>/<nombre>.req.json`: la petición `{method, url, query: [{key, value, off?}], headers: […], body: {mode: none|json|text|urlencoded|form, text, form}, descripcion}`.
+  - `<carpeta>/<nombre>.res.json`: la última respuesta (se guarda al enviar; cuerpo hasta 2 MB).
+  - `<carpeta>/_carpeta.json`: `{variables, descripcion}` de la carpeta. `_globales.json` en la raíz: las globales.
+- **Variables** `{{nombre}}` en URL, parámetros, cabeceras y cuerpo. Se buscan en la carpeta de la petición, luego en sus carpetas padre y por último en las globales (la más cercana gana). Dinámicas: `{{$timestamp}}`, `{{$isoDate}}`, `{{$uuid}}`, `{{$randomInt}}`. Las resuelve el bridge al enviar.
+- **Envío** (`bridge/api.js`): http/https con la librería estándar, sigue hasta 5 redirecciones, descomprime gzip/deflate/br, 30 s de espera, lee hasta 10 MB; los binarios vuelven en base64. Acepta certificados propios en hosts locales o de red privada (como WordPress).
+- **UI:** árbol de carpetas y peticiones (método en color, filtro, clic derecho: nueva petición o carpeta aquí, variables, duplicar, renombrar/mover, papelera, copiar el comando para la IA) y, a la derecha, pestañas con el editor (método, URL con la URL resuelta debajo y las variables sin definir, Parámetros, Cabeceras, Cuerpo, Descripción, Variables que ve la petición) y la respuesta (estado, tiempo, tamaño; Cuerpo formateado o sin formato, vista HTML sin scripts, imágenes; Cabeceras; lo Enviado). Ctrl+Enter envía (guarda antes), Ctrl+S guarda.
+- **IA:** `bridge/frap-api.js` (skill `frap-api`): `list`, `new`, `run`, `show`, `vars`, `set-var`. La skill pide guardarlas en una carpeta con el ID de la issue o el nombre del proyecto, poner la URL base y los tokens en variables, y pedir visto bueno antes de peticiones que cambian datos. `vars` oculta las variables con nombre sensible (token, key, pass…).
+
 ## Gestión de issues (módulo interno)
 
 - Replica dentro de FRAP el harness de tareas `_linear`. Cada issue vive en `local/issues/<ID>/` de la carpeta de FRAP, con `issue.md` (copia fiel del tracker), `changelog.md`, `status.md` y `final.md` al cerrar.
@@ -326,6 +337,14 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `tunnel.ports` | — | servidores escuchando en el equipo (`ss -ltnp`), sin puertos no web, de las IA ni de FRAP: `[{port, host, pid, name, cmd, cwd}]` |
 | `tunnel.start` | `{id, name, target: {type:'url', url\|port} \| {type:'path', path}, provider, password?, hostRewrite?, rewriteUrls?}` | arranca la puerta local y el proveedor; la URL pública llega en el evento `tunnel` |
 | `tunnel.stop` | `{id}` | detiene el proveedor y cierra la puerta (también sus WebSocket) |
+| `api.tree` | — | `{dir, cli, skill, tree: [{name, path, type: folder\|request, method?, url?, hasRes?, vars?, children?}]}` |
+| `api.read` | `{path}` | `{path, request, response}` (la última respuesta guardada o null) |
+| `api.save` | `{path, request, create?}` | guarda (o crea) una petición normalizada |
+| `api.mkdir` / `api.rename` / `api.delete` | `{path}` / `{from, to, type}` / `{path, type}` | carpetas y peticiones (con su respuesta); `delete` manda a la papelera |
+| `api.vars` | `{folder?, path?}` | `{folder, variables, descripcion}` y, con `path`, `scope: {vars, from}` (lo que ve esa petición) |
+| `api.setVars` | `{folder, variables, descripcion?}` | guarda las variables de una carpeta (`''` = globales); crea la carpeta si falta |
+| `api.send` | `{path, request?, vars?, timeoutMs?}` | resuelve variables, envía y guarda la respuesta: `{path, request (enviada), response, missing}` |
+| `api.skill` / `api.setSkill` | — / `{on}` | estado / instala o quita la skill `frap-api` |
 | `scripts.list` | — | `{dir, enabled, bun, scripts: [{path, abs, folder, name, ext, runnable, runner, desc, size, mtime, user, ai}], folders: [{name, salida}]}` |
 | `scripts.set` | `{path, user?, ai?}` | cambia los interruptores de un script (en `local/scripts/.frap-scripts.json`) |
 | `scripts.create` | `{path, desc?}` | crea `local/scripts/<carpeta>/<nombre.ext>` con cabecera; interruptores encendidos |

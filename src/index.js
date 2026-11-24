@@ -50,6 +50,7 @@
     ssh: 'vendor/icons/ssh.svg',
     notes: 'vendor/icons/notes.svg',
     code: 'vendor/icons/code.svg',
+    api: 'vendor/icons/api.svg',
   };
   const kindIcon = (kind) => (ICONS[kind] ? h('img.ico', { src: ICONS[kind], alt: kind, title: kind }) : null);
   const uid = () => Math.random().toString(36).slice(2, 10);
@@ -187,7 +188,7 @@
       }
     }
     if (!Array.isArray(st.views)) st.views = [];
-    st.views = st.views.filter((v) => v && ['git', 'db', 'sftp', 'notes', 'code'].includes(v.kind) && v.projectId && v.data);
+    st.views = st.views.filter((v) => v && ['git', 'db', 'sftp', 'notes', 'code', 'api'].includes(v.kind) && v.projectId && v.data);
     for (const kind of ['git', 'db', 'sftp']) {
       const old = st[kind] || {};
       if (old.open && st.activeProject && !st.views.some((v) => v.kind === kind && v.projectId === st.activeProject)) {
@@ -238,9 +239,10 @@
     sftp: () => ({ hostId: null, local: null, remote: {}, hidden: false }),
     notes: () => ({ gitignore: true }),
     code: () => ({ groups: [{ tabs: [], active: null }], focus: 0, expanded: [], side: 'tree', hidden: false, wrap: false, cursors: {} }),
+    api: () => ({ tabs: [], active: null, expanded: [], reqTab: 'params', resTab: 'body' }),
   };
   const vSid = (v) => `${v.kind}:${v.projectId}`;
-  const viewKind = (sid) => { const m = /^(git|db|sftp|notes|code):/.exec(sid || ''); return m ? m[1] : null; };
+  const viewKind = (sid) => { const m = /^(git|db|sftp|notes|code|api):/.exec(sid || ''); return m ? m[1] : null; };
   const viewBySid = (sid) => (viewKind(sid) ? state.views.find((v) => v.open && vSid(v) === sid) || null : null);
   const activeView = () => viewBySid(state.activeSid);
   const openViewsOf = (pid) => {
@@ -249,7 +251,7 @@
   };
   const viewPanes = new Map(); // sid -> panel DOM de la vista
   const gitRts = new Map(); // sid -> memoria de git (status, salida, diff…)
-  let bound = { git: null, db: null, sftp: null, notes: null, code: null }; // sid enlazado por tipo
+  let bound = { git: null, db: null, sftp: null, notes: null, code: null, api: null }; // sid enlazado por tipo
   /** Datos de todas las vistas de un tipo (para mantenerlas al borrar conexiones o servidores). */
   const viewDatas = (kind) => [...new Set([state[kind], ...state.views.filter((v) => v.kind === kind).map((v) => v.data)])];
   function needProject() {
@@ -275,6 +277,7 @@
     } else if (v.kind === 'db') dbPane = pane;
     else if (v.kind === 'sftp') sftpPane = pane;
     else if (v.kind === 'notes') notesPane = pane;
+    else if (v.kind === 'api') apiPane = pane;
     else codePane = pane;
   }
   /** Enlaza y activa la vista `kind` del proyecto activo. fresh = todavía no tenía panel. */
@@ -318,6 +321,7 @@
     else if (v.kind === 'db') openDbView();
     else if (v.kind === 'sftp') openSftpView();
     else if (v.kind === 'notes') openNotesView();
+    else if (v.kind === 'api') openApiView();
     else openCodeView();
   }
   /** Al borrar un proyecto: se van sus vistas y sus paneles. */
@@ -331,14 +335,15 @@
       if (bound[v.kind] === sid) {
         bound[v.kind] = null;
         state[v.kind] = VIEW_DATA[v.kind]();
-        if (v.kind === 'git') { gitPane = null; Git = newGitRt(); } else if (v.kind === 'db') dbPane = null; else if (v.kind === 'sftp') sftpPane = null; else if (v.kind === 'notes') notesPane = null; else codePane = null;
+        if (v.kind === 'git') { gitPane = null; Git = newGitRt(); } else if (v.kind === 'db') dbPane = null; else if (v.kind === 'sftp') sftpPane = null; else if (v.kind === 'notes') notesPane = null; else if (v.kind === 'api') apiPane = null; else codePane = null;
       }
     }
     state.views = state.views.filter((x) => x.projectId !== pid);
   }
-  const VIEW_TITLE = { git: 'Git (Alt+Shift+G)', db: 'Consultas SQL (Alt+Shift+D)', sftp: 'Archivos por SFTP (Alt+Shift+F)', notes: 'Notas: NOTES.md de la carpeta (Alt+Shift+N)', code: 'Editor de código (Alt+Shift+E)' };
+  const VIEW_TITLE = { git: 'Git (Alt+Shift+G)', db: 'Consultas SQL (Alt+Shift+D)', sftp: 'Archivos por SFTP (Alt+Shift+F)', notes: 'Notas: NOTES.md de la carpeta (Alt+Shift+N)', code: 'Editor de código (Alt+Shift+E)', api: 'API: peticiones HTTP guardadas (Alt+Shift+R)' };
   function viewLabel(v) {
     if (v.kind === 'notes') return 'Notas';
+    if (v.kind === 'api') return v.data.active ? `API · ${basename(v.data.active)}` : 'API';
     if (v.kind === 'code') { const g = (v.data.groups || [])[v.data.focus || 0]; return g && g.active ? `Código · ${basename(g.active)}` : 'Código'; }
     if (v.kind === 'git') return v.data.repo ? `Git · ${basename(v.data.repo)}` : 'Git';
     if (v.kind === 'db') { const c = dbConnById(v.data.connId); return c ? `DB · ${c.name}` : 'DB'; }
@@ -423,7 +428,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -1670,7 +1675,7 @@
         onauxclick: (e) => { if (e.button === 1) closeView(v); },
       },
       v.kind === 'sftp' ? null : kindIcon(v.kind),
-      h('span.tname', { git: 'Git', db: 'DB', sftp: '⇅ Archivos', notes: 'Notas', code: 'Código' }[v.kind]),
+      h('span.tname', { git: 'Git', db: 'DB', sftp: '⇅ Archivos', notes: 'Notas', code: 'Código', api: 'API' }[v.kind]),
       h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeView(v); } }, '✕')));
     }
     tabs.scrollLeft = keepLeft;
@@ -1837,6 +1842,8 @@
     if (notesActive) ensureNotesPane();
     const codeActive = !!av && av.kind === 'code';
     if (codeActive) ensureCodePane();
+    const apiActive = !!av && av.kind === 'api';
+    if (apiActive) ensureApiPane();
     for (const [sid, pane] of viewPanes) {
       const was = pane.root.classList.contains('hidden');
       pane.root.classList.toggle('hidden', sid !== state.activeSid);
@@ -1846,7 +1853,7 @@
     $('#empty').classList.toggle('hidden', !!activeTerm() || !!pg || !!av);
     $('#st-project').textContent = p ? p.name : '—';
     const t = activeTerm();
-    $('#st-cwd').textContent = codeActive ? tilde(codeActiveFile() || codeRoots()[0] || '') : notesActive ? tilde(notesFile() || '') : sftpActive ? sftpStatusLine() : gitActive ? (state.git.repo ? tilde(state.git.repo) : 'Git') : dbActive ? dbStatusLine() : pg ? pg.url : t ? tilde((t.info.meta || {}).cwd || '') : p ? p.folders.map(tilde).join('  +  ') : '';
+    $('#st-cwd').textContent = apiActive ? `local/api${state.api.active ? `/${state.api.active}` : ''}` : codeActive ? tilde(codeActiveFile() || codeRoots()[0] || '') : notesActive ? tilde(notesFile() || '') : sftpActive ? sftpStatusLine() : gitActive ? (state.git.repo ? tilde(state.git.repo) : 'Git') : dbActive ? dbStatusLine() : pg ? pg.url : t ? tilde((t.info.meta || {}).cwd || '') : p ? p.folders.map(tilde).join('  +  ') : '';
     renderStatusActions();
   }
 
@@ -5115,6 +5122,463 @@
   document.addEventListener('mousedown', (e) => { if (popMenuEl && !popMenuEl.contains(e.target)) closePopMenu(); }, true);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && popMenuEl) { closePopMenu(); e.stopPropagation(); } }, true);
   window.addEventListener('blur', closePopMenu);
+
+  // ---------- API: peticiones HTTP guardadas en local/api (como Postman) ----------
+  // Árbol de carpetas y peticiones a la izquierda; a la derecha, pestañas con el editor (método, URL, parámetros,
+  // cabeceras, cuerpo, descripción, variables) y la respuesta. Las variables {{x}} se resuelven en el bridge
+  // (carpeta de la petición → carpetas padre → globales). Las IA usan lo mismo con la skill frap-api (frap-api.js).
+  let apiPane = null; // panel de la vista API enlazada
+  let apiInfo = null; // árbol (común a todas las vistas API: local/api es uno solo)
+  let apiSkillSynced = null;
+  const API_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
+  const API_MODES = [['none', 'Ninguno'], ['json', 'JSON'], ['text', 'Texto'], ['urlencoded', 'x-www-form-urlencoded'], ['form', 'form-data']];
+  const apiMethodTag = (m) => h(`span.api-m.m-${String(m || 'GET').toLowerCase()}`, String(m || 'GET'));
+  const apiParent = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '');
+  const apiDefaultFolder = () => { const p = project(); return p ? (basename(p.folders[0] || '') || p.name).replace(/[^\w.-]+/g, '-') : ''; };
+
+  function openApiView() {
+    if (!needProject()) return;
+    showView('api');
+    apiLoadTree();
+    if (apiPane && state.api.active) apiRenderEditor();
+  }
+  async function syncApiSkill(force) {
+    if (!Bridge.ready) return;
+    const on = launchOn('api');
+    if (!force && apiSkillSynced === on) return;
+    try {
+      const r = await Bridge.call('api.setSkill', { on });
+      apiSkillSynced = on;
+      if (r.changed.length) toast(on ? 'Skill frap-api lista en claude y codex' : 'Skill frap-api quitada de claude y codex', 'ok');
+    } catch (e) { toast(`Skill frap-api: ${e.message}`, 'err'); }
+  }
+  async function apiLoadTree() {
+    if (!Bridge.ready) return;
+    try { apiInfo = await Bridge.call('api.tree'); } catch (e) { apiInfo = { error: e.message, tree: [] }; }
+    if (apiPane) apiRenderTree();
+  }
+
+  function ensureApiPane() {
+    if (apiPane) return apiPane;
+    const filter = h('input.api-filter', { placeholder: 'Filtrar…', spellcheck: 'false' });
+    filter.addEventListener('input', () => apiRenderTree());
+    const treeEl = h('div.api-tree');
+    const tabsEl = h('div.api-tabs');
+    const bodyEl = h('div.api-body');
+    const root = h('div.api-pane.hidden',
+      h('div.api-side',
+        h('div.api-side-head',
+          h('span.api-title', 'API'),
+          h('span.grow'),
+          h('button.icon.mini', { title: 'Nueva petición', onclick: () => apiNewRequest(null) }, '＋'),
+          h('button.icon.mini', { title: 'Nueva carpeta', onclick: () => apiNewFolder('') }, '📁'),
+          h('button.icon.mini', { title: 'Variables globales (las ven todas las peticiones)', onclick: () => apiVarsModal('') }, '🌐'),
+          h('button.icon.mini', { title: 'Recargar', onclick: () => apiLoadTree() }, '⟳')),
+        filter, treeEl),
+      h('div.api-main', tabsEl, bodyEl));
+    $('#term-host').append(root);
+    apiPane = { kind: 'api', root, filter, treeEl, tabsEl, bodyEl, docs: new Map() };
+    viewPanes.set(bound.api, apiPane);
+    if (!state.api.expanded.length && apiDefaultFolder()) state.api.expanded = [apiDefaultFolder()];
+    apiRenderTree();
+    apiRenderEditor();
+    return apiPane;
+  }
+
+  // ----- árbol -----
+  function apiRenderTree() {
+    const P = apiPane;
+    if (!P) return;
+    if (!apiInfo) { P.treeEl.replaceChildren(h('p.muted.api-hint', Bridge.ready ? 'Cargando…' : 'Bridge desconectado')); if (Bridge.ready) apiLoadTree(); return; }
+    if (apiInfo.error) { P.treeEl.replaceChildren(h('pre.db-error', apiInfo.error)); return; }
+    const q = P.filter.value.trim().toLowerCase();
+    const exp = new Set(state.api.expanded);
+    const match = (n) => !q || n.path.toLowerCase().includes(q) || (n.url || '').toLowerCase().includes(q) || (n.children || []).some(match);
+    const build = (nodes, depth) => nodes.filter(match).flatMap((n) => {
+      const pad = { style: `padding-left:${6 + depth * 12}px` };
+      if (n.type === 'folder') {
+        const open = q ? true : exp.has(n.path);
+        return [h('div.api-node.api-folder', {
+          ...pad, title: `${n.path}${n.vars ? `\n${n.vars} variable(s)` : ''}\nClic derecho: más opciones`,
+          onclick: () => { const s = new Set(state.api.expanded); if (s.has(n.path)) s.delete(n.path); else s.add(n.path); state.api.expanded = [...s]; save(); apiRenderTree(); },
+          oncontextmenu: (e) => apiFolderMenu(e, n),
+        }, h('span.code-twisty', open ? '▾' : '▸'), h('span.api-name', `📁 ${n.name}`), n.vars ? h('span.api-vars', { title: 'Variables de la carpeta' }, `{${n.vars}}`) : null),
+        ...(open ? build(n.children, depth + 1) : [])];
+      }
+      return [h(`div.api-node.api-rnode${state.api.active === n.path ? '.active' : ''}`, {
+        ...pad, title: `${n.method} ${n.url}${n.hasRes ? '' : '\n(sin ejecutar)'}`,
+        onclick: () => apiOpen(n.path), oncontextmenu: (e) => apiReqMenu(e, n),
+      }, h('span.code-twisty', ''), apiMethodTag(n.method), h('span.api-name', n.name))];
+    });
+    const rows = build(apiInfo.tree, 0);
+    P.treeEl.replaceChildren(...(rows.length ? rows : [h('div.api-empty',
+      h('p', q ? 'Nada coincide.' : 'Sin peticiones todavía.'),
+      q ? null : h('p.muted', 'Crea una con ＋, o pídele a la IA que la cree (skill frap-api): las guarda en una carpeta con el ID de la issue o el nombre del proyecto.'))]));
+  }
+  function apiFolderMenu(e, n) {
+    popMenu(e, [
+      { label: 'Nueva petición aquí', action: () => apiNewRequest(n.path) },
+      { label: 'Nueva carpeta aquí', action: () => apiNewFolder(n.path) },
+      { label: `Variables de la carpeta${n.vars ? ` (${n.vars})` : ''}…`, action: () => apiVarsModal(n.path) },
+      '-',
+      { label: 'Renombrar / mover…', action: () => apiRename(n.path, 'folder') },
+      { label: 'Copiar ruta', action: () => codeCopy(`${apiInfo.dir}/${n.path}`) },
+      '-',
+      { label: 'Mover a la papelera', danger: true, action: () => apiDelete(n.path, 'folder') },
+    ]);
+  }
+  function apiReqMenu(e, n) {
+    popMenu(e, [
+      { label: 'Abrir', action: () => apiOpen(n.path) },
+      { label: '▶ Enviar', action: async () => { await apiOpen(n.path); apiSend(); } },
+      { label: 'Duplicar', action: () => apiDuplicate(n.path) },
+      { label: 'Renombrar / mover…', action: () => apiRename(n.path, 'request') },
+      '-',
+      { label: 'Copiar comando para la IA', hint: 'frap-api run', action: () => codeCopy(`node ${apiInfo.cli} run ${n.path}`) },
+      { label: 'Copiar ruta del archivo', action: () => codeCopy(`${apiInfo.dir}/${n.path}.req.json`) },
+      '-',
+      { label: 'Mover a la papelera', danger: true, action: () => apiDelete(n.path, 'request') },
+    ]);
+  }
+  async function apiNewFolder(parent) {
+    const name = await askText('Nueva carpeta', `Nombre${parent ? ` (dentro de ${parent})` : ''} — p. ej. el ID de la issue`, parent ? '' : apiDefaultFolder());
+    if (!name) return;
+    const rel = `${parent ? `${parent}/` : ''}${name.replace(/^\/+|\/+$/g, '')}`;
+    try {
+      await Bridge.call('api.mkdir', { path: rel });
+      state.api.expanded = [...new Set([...state.api.expanded, parent, rel].filter(Boolean))];
+      save();
+      await apiLoadTree();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  async function apiNewRequest(folder) {
+    const base = folder != null ? folder : apiDefaultFolder();
+    const name = await askText('Nueva petición', 'Carpeta/nombre (las carpetas se crean solas)', `${base ? `${base}/` : ''}nueva-peticion`);
+    if (!name) return;
+    const rel = name.replace(/^\/+|\/+$/g, '');
+    try {
+      await Bridge.call('api.save', { path: rel, create: true, request: { method: 'GET', url: '{{base}}/', headers: [{ key: 'Accept', value: 'application/json' }] } });
+      state.api.expanded = [...new Set([...state.api.expanded, ...rel.split('/').slice(0, -1).map((_, i, a) => a.slice(0, i + 1).join('/'))])];
+      save();
+      await apiLoadTree();
+      apiOpen(rel);
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  async function apiDuplicate(rel) {
+    try {
+      const r = await Bridge.call('api.read', { path: rel });
+      const to = await askText('Duplicar petición', 'Carpeta/nombre de la copia', `${rel}-copia`);
+      if (!to) return;
+      await Bridge.call('api.save', { path: to, request: r.request, create: true });
+      await apiLoadTree();
+      apiOpen(to.replace(/^\/+|\/+$/g, ''));
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  async function apiRename(rel, type) {
+    const to = await askText(type === 'folder' ? 'Renombrar carpeta' : 'Renombrar petición', 'Nueva ruta (carpeta/nombre)', rel);
+    if (!to || to === rel) return;
+    try {
+      const r = await Bridge.call('api.rename', { from: rel, to: to.replace(/^\/+|\/+$/g, ''), type });
+      // pestañas abiertas siguen a lo renombrado
+      const P = apiPane;
+      const move = (p) => (type === 'folder' ? (p === rel || p.startsWith(`${rel}/`) ? r.path + p.slice(rel.length) : p) : p === rel ? r.path : p);
+      state.api.tabs = state.api.tabs.map(move);
+      if (state.api.active) state.api.active = move(state.api.active);
+      if (P) for (const [k, d] of [...P.docs]) { const nk = move(k); if (nk !== k) { P.docs.delete(k); P.docs.set(nk, d); } }
+      save();
+      await apiLoadTree();
+      apiRenderEditor();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  async function apiDelete(rel, type) {
+    if (!(await confirmBox(type === 'folder' ? `¿Mover la carpeta «${rel}» a la papelera?` : `¿Mover la petición «${rel}» a la papelera?`, type === 'folder' ? 'Con todas sus peticiones y variables. Se puede recuperar desde la papelera del sistema.' : 'Con su última respuesta. Se puede recuperar desde la papelera del sistema.'))) return;
+    try {
+      await Bridge.call('api.delete', { path: rel, type });
+      const gone = (p) => (type === 'folder' ? p === rel || p.startsWith(`${rel}/`) : p === rel);
+      state.api.tabs = state.api.tabs.filter((p) => !gone(p));
+      if (state.api.active && gone(state.api.active)) state.api.active = state.api.tabs[state.api.tabs.length - 1] || null;
+      if (apiPane) for (const k of [...apiPane.docs.keys()]) if (gone(k)) apiPane.docs.delete(k);
+      save();
+      await apiLoadTree();
+      apiRenderEditor();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  // ----- variables -----
+  /** Editor clave/valor (filas con interruptor, clave, valor y ✕; siempre queda una fila vacía al final). */
+  function kvEditor(list, onChange, { placeholders = ['clave', 'valor'], toggles = true } = {}) {
+    const box = h('div.kv');
+    const paint = () => {
+      const rows = list.map((it, i) => h(`div.kv-row${it.off ? '.off' : ''}`,
+        toggles ? h('input', { type: 'checkbox', checked: !it.off, title: 'Activa', onchange: (e) => { if (e.target.checked) delete it.off; else it.off = true; onChange(); paint(); } }) : h('span'),
+        h('input.mono', { value: it.key, placeholder: placeholders[0], spellcheck: 'false', oninput: (e) => { it.key = e.target.value; onChange(); } }),
+        h('input.mono', { value: it.value, placeholder: placeholders[1], spellcheck: 'false', oninput: (e) => { it.value = e.target.value; onChange(); } }),
+        h('button.icon.mini', { title: 'Quitar', onclick: () => { list.splice(i, 1); onChange(); paint(); } }, '✕')));
+      const add = h('button.mini.kv-add', { onclick: () => { list.push({ key: '', value: '' }); onChange(); paint(); const ins = box.querySelectorAll('.kv-row input.mono'); if (ins.length) ins[ins.length - 2].focus(); } }, '＋ Agregar');
+      box.replaceChildren(...rows, add);
+    };
+    paint();
+    return box;
+  }
+  async function apiVarsModal(folder) {
+    let cur;
+    try { cur = await Bridge.call('api.vars', { folder }); } catch (e) { toast(e.message, 'err'); return; }
+    const list = Object.entries(cur.variables).map(([key, value]) => ({ key, value }));
+    const desc = h('textarea.api-desc', { rows: '2', placeholder: 'Descripción (opcional)' });
+    desc.value = cur.descripcion || '';
+    const doSave = async () => {
+      const vars = {};
+      for (const it of list) if (it.key.trim()) vars[it.key.trim()] = it.value;
+      try {
+        await Bridge.call('api.setVars', { folder, variables: vars, ...(folder ? { descripcion: desc.value } : {}) });
+        modalClose(true);
+        toast(`Variables ${folder ? `de ${folder}` : 'globales'} guardadas`, 'ok');
+        await apiLoadTree();
+        if (apiPane && state.api.active) apiRefreshScope();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    openModal({
+      title: folder ? `Variables · ${folder}` : 'Variables globales',
+      wide: true,
+      body: [
+        h('p.muted', { style: 'margin:0 0 8px' }, folder
+          ? `Las ven las peticiones de «${folder}» y de sus subcarpetas (y tapan a las globales con el mismo nombre). Úsalas como {{nombre}} en URL, parámetros, cabeceras y cuerpo.`
+          : 'Las ven todas las peticiones (una carpeta puede taparlas con una variable del mismo nombre). Úsalas como {{nombre}}.'),
+        kvEditor(list, () => {}, { toggles: false, placeholders: ['nombre (p. ej. base)', 'valor (p. ej. https://api.ejemplo.com)'] }),
+        folder ? desc : null,
+        h('p.muted', { style: 'font-size:11px;margin:8px 0 0' }, 'Se guardan en local/api (fuera de git) y viajan en el zip de local/. Variables con nombre de token, clave o password se ocultan al mostrárselas a la IA.'),
+      ],
+      foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
+    });
+  }
+
+  // ----- pestañas y editor -----
+  const apiDoc = (rel) => apiPane && apiPane.docs.get(rel);
+  const apiDirty = (d) => !!d && !!d.req && JSON.stringify(d.req) !== d.saved;
+  async function apiOpen(rel) {
+    const P = apiPane || ensureApiPane();
+    if (!state.api.tabs.includes(rel)) state.api.tabs.push(rel);
+    state.api.active = rel;
+    save();
+    if (!P.docs.has(rel)) {
+      P.docs.set(rel, { loading: true });
+      apiRenderEditor();
+      try {
+        const r = await Bridge.call('api.read', { path: rel });
+        P.docs.set(rel, { req: r.request, saved: JSON.stringify(r.request), response: r.response, scope: null });
+      } catch (e) { P.docs.set(rel, { error: e.message }); }
+    }
+    apiRenderTree();
+    apiRenderEditor();
+    apiRefreshScope();
+    renderTabs();
+  }
+  async function apiRefreshScope() {
+    const rel = state.api.active;
+    const d = apiDoc(rel);
+    if (!d || !d.req) return;
+    try { d.scope = (await Bridge.call('api.vars', { folder: apiParent(rel), path: rel })).scope; } catch (_) { d.scope = null; }
+    if (state.api.active === rel) apiRenderResolved();
+  }
+  async function apiCloseTab(rel) {
+    const d = apiDoc(rel);
+    if (apiDirty(d) && !(await confirmBox('Cerrar petición', `«${rel}» tiene cambios sin guardar. ¿Cerrarla y descartarlos?`))) return;
+    const i = state.api.tabs.indexOf(rel);
+    state.api.tabs = state.api.tabs.filter((x) => x !== rel);
+    if (apiPane) apiPane.docs.delete(rel);
+    if (state.api.active === rel) state.api.active = state.api.tabs[Math.min(i, state.api.tabs.length - 1)] || null;
+    save();
+    apiRenderTree();
+    apiRenderEditor();
+    renderTabs();
+  }
+  function apiRenderTabs() {
+    const P = apiPane;
+    if (!P) return;
+    P.tabsEl.replaceChildren(...state.api.tabs.map((rel) => {
+      const d = apiDoc(rel);
+      const dirty = apiDirty(d);
+      return h(`div.ed-tab${rel === state.api.active ? '.active' : ''}${dirty ? '.dirty' : ''}`, {
+        title: `${rel}${dirty ? ' (sin guardar)' : ''}`,
+        onclick: () => { if (state.api.active !== rel) apiOpen(rel); },
+        onauxclick: (e) => { if (e.button === 1) apiCloseTab(rel); },
+      },
+      d && d.req ? apiMethodTag(d.req.method) : null,
+      h('span.code-tname', basename(rel)),
+      h('span.x', { title: dirty ? 'Sin guardar · cerrar' : 'Cerrar', onclick: (e) => { e.stopPropagation(); apiCloseTab(rel); } }, dirty ? '●' : '✕'));
+    }));
+  }
+  const apiMarkDirty = debounce(() => { apiRenderTabs(); const d = apiDoc(state.api.active); if (apiPane && apiPane.saveBtn) apiPane.saveBtn.disabled = !apiDirty(d); apiRenderResolved(); }, 120);
+
+  /** Resuelve {{var}} con las variables que ve la petición (solo para mostrar; el envío lo resuelve el bridge). */
+  function apiPreviewUrl(d) {
+    const vars = (d.scope && d.scope.vars) || {};
+    const missing = new Set();
+    const I = (t) => String(t || '').replace(/{{\s*([$\w.-]+)\s*}}/g, (m, k) => (k.startsWith('$') ? m : Object.prototype.hasOwnProperty.call(vars, k) ? vars[k] : (missing.add(k), m)));
+    let url = I(d.req.url);
+    const qs = d.req.query.filter((x) => !x.off && x.key).map((x) => `${encodeURIComponent(I(x.key))}=${encodeURIComponent(I(x.value))}`).join('&');
+    if (qs) url += (url.includes('?') ? '&' : '?') + qs;
+    for (const x of [...d.req.headers, ...(d.req.body.form || [])]) { I(x.key); I(x.value); }
+    I(d.req.body.text);
+    return { url, missing: [...missing] };
+  }
+  function apiRenderResolved() {
+    const P = apiPane;
+    const d = apiDoc(state.api.active);
+    if (!P || !P.resolvedEl || !d || !d.req) return;
+    const { url, missing } = apiPreviewUrl(d);
+    P.resolvedEl.replaceChildren(...[
+      h('span.muted', '→ '), h('span.mono', url || '(sin URL)'),
+      missing.length ? h('span.api-missing', { title: 'Defínelas en las variables de la carpeta o globales' }, `  ⚠ sin definir: ${missing.join(', ')}`) : null].filter(Boolean));
+  }
+
+  function apiRenderEditor() {
+    const P = apiPane;
+    if (!P) return;
+    apiRenderTabs();
+    P.saveBtn = null;
+    P.resolvedEl = null;
+    const rel = state.api.active;
+    const d = rel ? apiDoc(rel) : null;
+    if (!rel) {
+      P.bodyEl.replaceChildren(h('div.api-welcome',
+        h('h3', 'API'),
+        h('p.muted', 'Peticiones HTTP guardadas en local/api, como en Postman: carpetas, variables {{así}} por carpeta y globales, y la última respuesta de cada una.'),
+        h('p', h('button.primary', { onclick: () => apiNewRequest(null) }, '＋ Nueva petición'), ' ', h('button', { onclick: () => apiVarsModal('') }, '🌐 Variables globales')),
+        h('p.muted', h('kbd', 'Ctrl+Enter'), ' enviar · ', h('kbd', 'Ctrl+S'), ' guardar · las IA las crean y ejecutan con la skill frap-api, en una carpeta con el ID de la issue o el nombre del proyecto.')));
+      return;
+    }
+    if (!d || d.loading) {
+      if (!Bridge.ready) { P.bodyEl.replaceChildren(h('p.muted.api-hint', 'Esperando al bridge…')); return; } // al conectar se vuelve a pintar
+      if (!d) apiOpen(rel);
+      P.bodyEl.replaceChildren(h('p.muted.api-hint', 'Cargando…'));
+      return;
+    }
+    if (d.error) { P.bodyEl.replaceChildren(h('div.api-hint', h('p', d.error), h('button', { onclick: () => { P.docs.delete(rel); apiOpen(rel); } }, 'Reintentar'), ' ', h('button', { onclick: () => apiCloseTab(rel) }, 'Cerrar'))); return; }
+    const req = d.req;
+    const changed = () => apiMarkDirty();
+    const method = h('select.api-method', { onchange: (e) => { req.method = e.target.value; method.className = `api-method m-${req.method.toLowerCase()}`; changed(); } }, API_METHODS.map((m) => h('option', { value: m }, m)));
+    method.value = req.method;
+    method.className = `api-method m-${req.method.toLowerCase()}`;
+    const url = h('input.api-url.mono', { value: req.url, placeholder: '{{base}}/ruta  ·  https://…', spellcheck: 'false', oninput: (e) => { req.url = e.target.value; changed(); } });
+    url.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); apiSend(); } });
+    const sendBtn = h('button.primary.api-send', { title: 'Enviar (Ctrl+Enter). Guarda la petición antes de enviarla', onclick: () => apiSend() }, d.sending ? '⏳ Enviando…' : '▶ Enviar');
+    if (d.sending) sendBtn.disabled = true;
+    P.saveBtn = h('button', { title: 'Guardar (Ctrl+S)', onclick: () => apiSave() }, 'Guardar');
+    P.saveBtn.disabled = !apiDirty(d);
+    P.resolvedEl = h('div.api-resolved');
+    const count = (l) => l.filter((x) => !x.off && x.key).length;
+    const tabs = [['params', `Parámetros${count(req.query) ? ` (${count(req.query)})` : ''}`], ['headers', `Cabeceras${count(req.headers) ? ` (${count(req.headers)})` : ''}`], ['body', `Cuerpo${req.body.mode !== 'none' ? ' ●' : ''}`], ['desc', 'Descripción'], ['vars', 'Variables']];
+    const cur = state.api.reqTab || 'params';
+    let pane;
+    if (cur === 'params') pane = kvEditor(req.query, changed, { placeholders: ['parámetro', 'valor ({{var}} vale)'] });
+    else if (cur === 'headers') pane = kvEditor(req.headers, changed, { placeholders: ['cabecera (p. ej. Authorization)', 'valor (p. ej. Bearer {{token}})'] });
+    else if (cur === 'body') {
+      const ta = h('textarea.api-bodytext.mono', { spellcheck: 'false', placeholder: req.body.mode === 'json' ? '{\n  "clave": "{{valor}}"\n}' : 'texto', oninput: (e) => { req.body.text = e.target.value; changed(); } });
+      ta.value = req.body.text || '';
+      ta.addEventListener('keydown', (e) => { if (e.key === 'Tab') { e.preventDefault(); const s = ta.selectionStart; ta.setRangeText('  ', s, ta.selectionEnd, 'end'); req.body.text = ta.value; changed(); } });
+      pane = h('div.api-bodybox',
+        h('div.api-modes', API_MODES.map(([m, label]) => h('label', h('input', { type: 'radio', name: `apimode-${rel}`, checked: req.body.mode === m, onchange: () => { req.body.mode = m; if ((m === 'urlencoded' || m === 'form') && !Array.isArray(req.body.form)) req.body.form = []; changed(); apiRenderEditor(); } }), ` ${label}`)),
+          req.body.mode === 'json' ? h('button.mini', { title: 'Formatear el JSON', onclick: () => { try { const t = req.body.text.replace(/{{\s*([$\w.-]+)\s*}}/g, '"__FRAP_VAR_$1__"'); req.body.text = JSON.stringify(JSON.parse(t), null, 2).replace(/"__FRAP_VAR_([$\w.-]+)__"/g, '{{$1}}'); ta.value = req.body.text; changed(); } catch (err) { toast(`JSON inválido: ${err.message}`, 'err'); } } }, '{ } Formatear') : null),
+        req.body.mode === 'json' || req.body.mode === 'text' ? ta
+          : req.body.mode === 'none' ? h('p.muted', 'Sin cuerpo.') : kvEditor(req.body.form, changed, { placeholders: ['campo', 'valor'] }));
+    } else if (cur === 'desc') {
+      const ta = h('textarea.api-desc', { rows: '6', placeholder: 'Para qué sirve, de qué issue viene, qué devuelve…', oninput: (e) => { req.descripcion = e.target.value; changed(); } });
+      ta.value = req.descripcion || '';
+      pane = ta;
+    } else {
+      const sc = d.scope;
+      pane = h('div.api-scope',
+        h('div.api-scope-btns',
+          h('button.mini', { onclick: () => apiVarsModal(apiParent(rel)) }, `✎ Variables de ${apiParent(rel) || 'la raíz (globales)'}`),
+          apiParent(rel) ? h('button.mini', { onclick: () => apiVarsModal('') }, '🌐 Globales') : null),
+        !sc ? h('p.muted', 'Cargando…') : !Object.keys(sc.vars).length ? h('p.muted', 'Esta petición no ve ninguna variable todavía.')
+          : h('div.api-scope-list', Object.entries(sc.vars).map(([k, v]) => h('div.api-scope-row',
+            h('span.mono', `{{${k}}}`), h('span.mono.api-scope-val', { title: v }, /token|secret|pass|clave|key|auth/i.test(k) && v ? `•••${String(v).slice(-3)}` : v), h('span.muted', sc.from[k])))));
+    }
+    const reqEl = h('div.api-req',
+      h('div.api-urlrow', method, url, sendBtn, P.saveBtn),
+      P.resolvedEl,
+      h('div.api-subtabs', tabs.map(([id, label]) => h(`button${cur === id ? '.active' : ''}`, { onclick: () => { state.api.reqTab = id; save(); apiRenderEditor(); } }, label))),
+      h('div.api-subbody', pane));
+    P.bodyEl.replaceChildren(reqEl, apiResponseView(d));
+    apiRenderResolved();
+  }
+  function apiFmtSize(n) { return n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`; }
+  function apiResponseView(d) {
+    const r = d.response;
+    if (d.sending) return h('div.api-res', h('p.muted.api-hint', '⏳ Esperando respuesta…'));
+    if (!r) return h('div.api-res', h('p.muted.api-hint', 'Sin respuesta todavía: pulsa ▶ Enviar (o Ctrl+Enter).'));
+    if (r.error) return h('div.api-res', h('div.api-reshead', h('span.api-status.s-err', 'Error'), h('span.muted', r.at ? new Date(r.at).toLocaleString() : '')), h('pre.db-error', r.error), r.request ? h('p.muted.mono', `${r.request.method} ${r.request.url}`) : null);
+    const tab = state.api.resTab || 'body';
+    const cls = r.status >= 500 ? 's-err' : r.status >= 400 ? 's-warn' : r.status >= 300 ? 's-redir' : 's-ok';
+    const ctype = r.contentType || (r.headers && r.headers['content-type']) || '';
+    let body;
+    if (tab === 'headers') {
+      body = h('div.api-headers', Object.entries(r.headers || {}).map(([k, v]) => h('div.api-hrow', h('span.mono.api-hk', k), h('span.mono', Array.isArray(v) ? v.join(', ') : String(v)))));
+    } else if (tab === 'sent') {
+      const s = r.request || {};
+      body = h('div', h('p.mono', `${s.method} ${s.url}`), h('div.api-headers', Object.entries(s.headers || {}).map(([k, v]) => h('div.api-hrow', h('span.mono.api-hk', k), h('span.mono', /authorization|token|cookie|key/i.test(k) && v ? `${String(v).slice(0, 10)}•••` : String(v))))), s.body ? h('pre.api-pre', s.body) : null);
+    } else if (r.encoding === 'base64') {
+      body = /^image\//i.test(ctype) && r.size < 5 * 1048576 ? h('img.api-img', { src: `data:${ctype.split(';')[0]};base64,${r.body}`, alt: 'respuesta' }) : h('p.muted', `Binario (${apiFmtSize(r.size)}, ${ctype || 'sin tipo'}).`);
+    } else {
+      let text = r.body || '';
+      const pretty = state.api.raw !== true && /json/i.test(ctype);
+      if (pretty) { try { text = JSON.stringify(JSON.parse(text), null, 2); } catch (_) { /* no es JSON válido: tal cual */ } }
+      const cut = text.length > 400000;
+      body = h('div',
+        cut ? h('p.muted', `Se muestran los primeros 400 KB de ${apiFmtSize(text.length)}.`) : null,
+        /html/i.test(ctype) && state.api.htmlView ? h('iframe.api-html', { sandbox: '', srcdoc: text.slice(0, 2000000), title: 'Vista HTML (sin scripts)' }) : h('pre.api-pre', cut ? text.slice(0, 400000) : text));
+    }
+    const rt = (id, label) => h(`button${tab === id ? '.active' : ''}`, { onclick: () => { state.api.resTab = id; save(); apiRenderEditor(); } }, label);
+    return h('div.api-res',
+      h('div.api-reshead',
+        h(`span.api-status.${cls}`, `${r.status} ${r.statusText || ''}`.trim()),
+        h('span.muted', `${r.ms} ms · ${apiFmtSize(r.size)}${r.truncated ? ' · truncada' : ''}${r.redirects && r.redirects.length ? ` · ${r.redirects.length} redirección(es)` : ''}`),
+        h('span.grow'),
+        h('span.muted', { title: r.at }, r.at ? new Date(r.at).toLocaleString([], { dateStyle: 'short', timeStyle: 'medium' }) : '')),
+      h('div.api-subtabs', rt('body', 'Cuerpo'), rt('headers', `Cabeceras (${Object.keys(r.headers || {}).length})`), rt('sent', 'Enviado'), h('span.grow'),
+        tab === 'body' && /json/i.test(ctype) ? h('button.mini', { onclick: () => { state.api.raw = !state.api.raw; save(); apiRenderEditor(); } }, state.api.raw ? 'Formateado' : 'Sin formato') : null,
+        tab === 'body' && /html/i.test(ctype) ? h('button.mini', { onclick: () => { state.api.htmlView = !state.api.htmlView; save(); apiRenderEditor(); } }, state.api.htmlView ? 'Código' : 'Ver HTML') : null,
+        tab === 'body' && r.encoding !== 'base64' ? h('button.mini', { onclick: () => { copyText(r.body || ''); toast('Respuesta copiada', 'ok'); } }, '⧉ Copiar') : null),
+      h('div.api-resbody', body));
+  }
+  async function apiSave() {
+    const rel = state.api.active;
+    const d = apiDoc(rel);
+    if (!d || !d.req) return false;
+    try {
+      const r = await Bridge.call('api.save', { path: rel, request: d.req });
+      d.req = r.request;
+      d.saved = JSON.stringify(r.request);
+      apiRenderTabs();
+      if (apiPane && apiPane.saveBtn) apiPane.saveBtn.disabled = true;
+      apiLoadTree();
+      return true;
+    } catch (e) { toast(e.message, 'err'); return false; }
+  }
+  async function apiSend() {
+    const rel = state.api.active;
+    const d = apiDoc(rel);
+    if (!d || !d.req || d.sending) return;
+    if (apiDirty(d) && !(await apiSave())) return;
+    d.sending = true;
+    apiRenderEditor();
+    try {
+      const r = await Bridge.call('api.send', { path: rel });
+      d.response = { at: new Date().toISOString(), request: r.request, ...r.response };
+      if (r.missing && r.missing.length) toast(`Variables sin definir: ${r.missing.join(', ')}`, 'err');
+    } catch (e) { d.response = { error: e.message, at: new Date().toISOString() }; }
+    d.sending = false;
+    if (state.api.active === rel) apiRenderEditor();
+    apiLoadTree();
+  }
+  // atajos dentro de la vista API
+  document.addEventListener('keydown', (e) => {
+    if (viewKind(state.activeSid) !== 'api' || !apiPane || modalClose || !apiPane.root.contains(document.activeElement)) return;
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); apiSend(); }
+    else if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) { e.preventDefault(); apiSave(); }
+  }, true);
 
   // ---------- notas: NOTES.md de la carpeta del proyecto (vista por proyecto) ----------
   // Se edita a mano (autoguardado) o desde una IA con la skill frap-notes ("guarda esto en notas" / "lee las notas").
@@ -8588,6 +9052,7 @@
       { key: 'center.db', launch: 'db', img: 'db', name: 'Bases de datos', desc: 'Consultas SQL (Alt+Shift+D)' },
       { key: 'center.notes', launch: 'notes', img: 'notes', name: 'Notas', desc: 'NOTES.md de la carpeta (Alt+Shift+N)' },
       { key: 'center.code', launch: 'code', img: 'code', name: 'Editor de código', desc: 'Alt+Shift+E · si se apaga, las rutas clicadas van al editor externo' },
+      { key: 'center.api', launch: 'api', img: 'api', name: 'API', desc: 'Alt+Shift+R · peticiones HTTP guardadas en local/api (como Postman) y la skill frap-api para las IA' },
       { key: 'center.split', icon: '⊞', name: 'Pantalla dividida', desc: 'Botón para ver hasta 4 terminales a la vez' },
     ],
     right: [
@@ -8621,7 +9086,7 @@
   const rtabOn = (tab) => modOn(RTAB_MODULE[tab] || `right.${tab}`);
   const visibleRtabs = () => $$('#rtabs button').map((b) => b.dataset.rtab).filter(rtabOn);
   /** Atajo Alt+Shift+… → módulo que lo da (si está apagado, el atajo no hace nada). */
-  const SHORTCUT_MODULE = { KeyT: 'center.shell', KeyC: 'center.claude', KeyX: 'center.codex', KeyO: 'center.opencode', KeyD: 'center.db', KeyG: 'center.git', KeyF: 'center.sftp', KeyN: 'center.notes', KeyE: 'center.code', KeyV: 'right.voice', KeyM: 'right.music' };
+  const SHORTCUT_MODULE = { KeyT: 'center.shell', KeyC: 'center.claude', KeyX: 'center.codex', KeyO: 'center.opencode', KeyD: 'center.db', KeyG: 'center.git', KeyF: 'center.sftp', KeyN: 'center.notes', KeyE: 'center.code', KeyR: 'center.api', KeyV: 'right.voice', KeyM: 'right.music' };
 
   function setModule(key, on) {
     const off = new Set((state.modules && state.modules.off) || []);
@@ -8647,6 +9112,7 @@
     syncScriptsModule();
     syncWpSkill();
     syncAveSkill();
+    syncApiSkill();
   }
 
   /** Modal de Módulos: tres columnas (izquierdo, central, derecho) con un switch por módulo. */
@@ -8693,7 +9159,7 @@
   function isAppShortcut(e) {
     if (!e.altKey || e.ctrlKey || e.metaKey) return false;
     if (!e.shiftKey && /^Digit[1-9]$/.test(e.code)) return true;
-    return e.shiftKey && ['KeyT', 'KeyW', 'KeyB', 'KeyP', 'KeyC', 'KeyX', 'KeyO', 'KeyD', 'KeyM', 'KeyG', 'KeyF', 'KeyN', 'KeyV', 'KeyE'].includes(e.code);
+    return e.shiftKey && ['KeyT', 'KeyW', 'KeyB', 'KeyP', 'KeyC', 'KeyX', 'KeyO', 'KeyD', 'KeyM', 'KeyG', 'KeyF', 'KeyN', 'KeyV', 'KeyE', 'KeyR'].includes(e.code);
   }
   document.addEventListener('keydown', (e) => {
     if (!$('#alarm').classList.contains('hidden')) return; // el aviso bloqueante tiene prioridad
@@ -8716,6 +9182,7 @@
       case 'KeyF': openSftpView(); break;
       case 'KeyN': openNotesView(); break;
       case 'KeyE': openCodeView(); break;
+      case 'KeyR': openApiView(); break;
       case 'KeyV': voiceToggle(); break;
       case 'KeyM': togglePlay(); break;
       case 'KeyW':
@@ -9076,7 +9543,7 @@
   $('#btn-split').onclick = cycleSplit;
   $('#toggle-left').onclick = () => togglePanel('left');
   $('#toggle-right').onclick = () => togglePanel('right');
-  for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : b.dataset.launch === 'git' ? openGitView() : b.dataset.launch === 'ssh' ? pickSsh() : b.dataset.launch === 'sftp' ? openSftpView() : b.dataset.launch === 'notes' ? openNotesView() : b.dataset.launch === 'code' ? openCodeView() : launch(b.dataset.launch));
+  for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : b.dataset.launch === 'git' ? openGitView() : b.dataset.launch === 'ssh' ? pickSsh() : b.dataset.launch === 'sftp' ? openSftpView() : b.dataset.launch === 'notes' ? openNotesView() : b.dataset.launch === 'code' ? openCodeView() : b.dataset.launch === 'api' ? openApiView() : launch(b.dataset.launch));
   for (const b of $$('#rtabs button')) b.onclick = () => setRtab(b.dataset.rtab);
   $('#token-input').value = conn.token;
   $('#port-input').value = conn.port;
@@ -9119,6 +9586,13 @@
     loadWp(true);
     syncAveSkill(true);
     loadAve(true);
+    syncApiSkill(true);
+    apiInfo = null;
+    if (apiPane) { // al (re)conectar: lo que no pudo cargarse sin bridge
+      for (const [k, d] of [...apiPane.docs]) if (d.error || d.loading) apiPane.docs.delete(k);
+      apiLoadTree();
+      apiRenderEditor();
+    }
     loadIssues();
     loadScripts();
     loadTunnels(state.ui.rtab === 'tunnels');

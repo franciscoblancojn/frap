@@ -457,6 +457,9 @@ Toda issue tiene prioridad, con la escala y el formato de Linear, venga o no de 
 2. Armar por issue un comentario breve del avance del día y los cambios de estado pendientes, y **mostrar todo junto al usuario** antes de enviar nada.
 3. Enviar lo aprobado, vaciar esos ítems de «📤 Por enviar» y anotar en el changelog de cada issue qué se envió.
 
+## Peticiones HTTP de una issue
+- Con la skill frap-api (módulo API de FRAP), en la carpeta \`${path.join(LOCAL_DIR, 'api')}/<ID>/\`: quedan guardadas (con su última respuesta) para revisarlas o repetirlas más adelante. Anótalas en el changelog.
+
 ## Scripts de una issue
 - Van en \`${path.join(LOCAL_DIR, 'scripts')}/<ID>/\` (no en la carpeta de la issue ni en los repos), numerados y descriptivos, con un comentario al inicio (qué hace, qué genera, cómo se ejecuta). Lo generado va en \`<ID>/salida/\`.
 - Se crean con \`frap-scripts new <ID>/<nombre.ext>\` y se ejecutan con \`frap-scripts run <ID>/<script>\` (skill frap-scripts: respeta el interruptor «IA» de cada script; si está apagado, se le pide al usuario). Las utilidades compartidas de \`${path.join(LOCAL_DIR, 'scripts')}\` (p. ej. \`conexion.ts\`, \`select.ts\`) se reutilizan. Las reglas propias del workspace (CLAUDE.md del repo o del workspace) mandan.

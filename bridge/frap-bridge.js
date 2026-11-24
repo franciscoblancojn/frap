@@ -25,6 +25,7 @@ const tunnels = require('./tunnels');
 const scripts = require('./scripts');
 const wordpress = require('./wordpress');
 const aveonline = require('./aveonline');
+const apiReq = require('./api');
 
 const VERSION = '1.3.0';
 const STARTED_AT = Date.now();
@@ -1493,6 +1494,30 @@ const ops = {
   },
   'ave.skill': () => aveonline.skillStatus(),
   'ave.setSkill': ({ on }) => aveonline.setSkill(!!on),
+  // ----- módulo API (peticiones HTTP tipo Postman en local/api) -----
+  /** {dir, cli, skill, tree: [{name, path, type: folder|request, method?, url?, hasRes?, vars?, children?}]} */
+  'api.tree': () => ({ dir: apiReq.API_DIR, cli: apiReq.CLI, skill: apiReq.skillStatus(), tree: apiReq.tree() }),
+  /** {path, request, response} (la última respuesta guardada, o null) */
+  'api.read': ({ path: p }) => apiReq.readReq(p),
+  /** Guarda (crea con create=true) una petición. {path, request} */
+  'api.save': ({ path: p, request, create }) => apiReq.saveReq(p, request, { create: !!create }),
+  'api.mkdir': ({ path: p }) => apiReq.mkdir(p),
+  /** Renombra o mueve una petición (con su respuesta) o una carpeta. type: request|folder */
+  'api.rename': ({ from, to, type }) => apiReq.rename(from, to, type === 'folder' ? 'folder' : 'request'),
+  /** A la papelera (se puede recuperar). */
+  'api.delete': ({ path: p, type }) => {
+    const files = apiReq.targetsOf(p, type === 'folder' ? 'folder' : 'request');
+    if (!files.length) throw new Error(`No existe: ${p}`);
+    for (const f of files) moveToTrash(f);
+    return { trashed: files.length };
+  },
+  /** Variables de una carpeta ('' = globales) y, con `path`, las que ve esa petición (con su origen). */
+  'api.vars': ({ folder = '', path: p }) => ({ ...apiReq.getVars(folder), ...(p != null ? { scope: apiReq.scopeVars(p) } : {}) }),
+  'api.setVars': ({ folder = '', variables, descripcion }) => apiReq.setVars(folder, variables, descripcion),
+  /** Envía una petición guardada (`path`) o la que se está editando (`request`, con su `path` para las variables). */
+  'api.send': ({ path: p, request, vars, timeoutMs }) => apiReq.run(p, { request, vars, timeoutMs: Math.min(Number(timeoutMs) || 30000, 300000) }),
+  'api.skill': () => apiReq.skillStatus(),
+  'api.setSkill': ({ on }) => apiReq.setSkill(!!on),
   'scripts.list': () => scripts.listScripts(),
   /** Cambia los interruptores de un script. {path, user?, ai?} → {path, user, ai} */
   'scripts.set': ({ path: p, user, ai }) => scripts.setFlags(p, { user, ai }),

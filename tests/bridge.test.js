@@ -1222,6 +1222,118 @@ test('scripts.*: crear, listar, interruptores Usuario/IA, comando, CLI frap-scri
   void execFileSync;
 });
 
+test('api.*: peticiones guardadas en local/api, variables por carpeta y globales, envío, respuesta, CLI frap-api y skill', async (t) => {
+  const http = require('http');
+  const { execFile } = require('child_process');
+  const zlib = require('zlib');
+  const srv = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const u = new URL(req.url, 'http://x');
+      if (u.pathname === '/redir') { res.writeHead(302, { Location: '/eco?r=1' }); res.end(); return; }
+      if (u.pathname === '/gz') { res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' }); res.end(zlib.gzipSync(JSON.stringify({ comprimido: true }))); return; }
+      if (u.pathname === '/img') { res.writeHead(200, { 'Content-Type': 'image/png' }); res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2])); return; }
+      res.writeHead(u.pathname.startsWith('/404') ? 404 : 200, { 'Content-Type': 'application/json', 'X-Prueba': 'si' });
+      res.end(JSON.stringify({ method: req.method, path: u.pathname, query: Object.fromEntries(u.searchParams), auth: req.headers.authorization || null, ctype: req.headers['content-type'] || null, body }));
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  const dir = (await client.call('api.tree')).dir;
+  assert.equal(dir, path.join(root, 'local', 'api'));
+
+  // variables: globales < carpeta padre < subcarpeta
+  await client.call('api.setVars', { folder: '', variables: { base, saludo: 'global' } });
+  await client.call('api.setVars', { folder: 'AVE-1', variables: { token: 'secreto', saludo: 'carpeta' } });
+  await client.call('api.mkdir', { path: 'AVE-1/sub' });
+  await client.call('api.setVars', { folder: 'AVE-1/sub', variables: { saludo: 'sub' } });
+  await assert.rejects(client.call('api.setVars', { folder: 'AVE-1', variables: { 'mal nombre': 1 } }), /inválido/);
+
+  // crear y enviar: query, cabeceras y JSON con variables
+  await client.call('api.save', { path: 'AVE-1/sub/crear', create: true, request: { method: 'post', url: '{{base}}/eco', query: [{ key: 'q', value: '{{saludo}}' }, { key: 'apagado', value: 'x', off: true }], headers: { Authorization: 'Bearer {{token}}' }, body: { mode: 'json', text: '{"s":"{{saludo}}","id":"{{$uuid}}"}' } } });
+  await assert.rejects(client.call('api.save', { path: 'AVE-1/sub/crear', create: true, request: {} }), /Ya existe/);
+  const r = await client.call('api.send', { path: 'AVE-1/sub/crear' });
+  assert.equal(r.response.status, 200);
+  const echo = JSON.parse(r.response.body);
+  assert.equal(echo.method, 'POST');
+  assert.deepEqual(echo.query, { q: 'sub' }, 'la variable de la subcarpeta tapa a la de la carpeta y a la global');
+  assert.equal(echo.auth, 'Bearer secreto', 'hereda la variable de la carpeta padre');
+  assert.equal(echo.ctype, 'application/json');
+  assert.equal(JSON.parse(echo.body).s, 'sub');
+  assert.match(JSON.parse(echo.body).id, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(r.missing, []);
+  // la respuesta queda guardada y se lee con la petición
+  const read = await client.call('api.read', { path: 'AVE-1/sub/crear' });
+  assert.equal(read.request.method, 'POST');
+  assert.equal(read.response.status, 200);
+  assert.ok(fs.existsSync(path.join(dir, 'AVE-1', 'sub', 'crear.res.json')));
+  // formularios, redirecciones, gzip, binario, errores y variables sin definir
+  await client.call('api.save', { path: 'AVE-1/form', request: { method: 'POST', url: '{{base}}/eco', body: { mode: 'urlencoded', form: [{ key: 'a', value: '1' }, { key: 'b', value: '{{saludo}}' }] } } });
+  assert.equal(JSON.parse((await client.call('api.send', { path: 'AVE-1/form' })).response.body).body, 'a=1&b=carpeta');
+  await client.call('api.save', { path: 'AVE-1/redir', request: { url: '{{base}}/redir' } });
+  const rd = (await client.call('api.send', { path: 'AVE-1/redir' })).response;
+  assert.equal(JSON.parse(rd.body).query.r, '1');
+  assert.equal(rd.redirects.length, 1);
+  await client.call('api.save', { path: 'AVE-1/gz', request: { url: '{{base}}/gz' } });
+  assert.deepEqual(JSON.parse((await client.call('api.send', { path: 'AVE-1/gz' })).response.body), { comprimido: true });
+  await client.call('api.save', { path: 'AVE-1/img', request: { url: '{{base}}/img' } });
+  const img = (await client.call('api.send', { path: 'AVE-1/img' })).response;
+  assert.equal(img.encoding, 'base64');
+  assert.deepEqual([...Buffer.from(img.body, 'base64')].slice(0, 4), [0x89, 0x50, 0x4e, 0x47]);
+  await client.call('api.save', { path: 'otra/falta', request: { url: '{{base}}/404/{{nadie}}' } });
+  const miss = await client.call('api.send', { path: 'otra/falta' });
+  assert.equal(miss.response.status, 404);
+  assert.deepEqual(miss.missing, ['nadie']);
+  await client.call('api.save', { path: 'otra/caida', request: { url: 'http://127.0.0.1:1/x' } });
+  assert.match((await client.call('api.send', { path: 'otra/caida' })).response.error, /rechazada/);
+  await assert.rejects(client.call('api.save', { path: 'otra/ftp', request: { method: 'GET', url: 'x', body: 1 } }).then(() => client.call('api.send', { path: 'otra/ftp', request: { url: 'ftp://x/y' } })), /http y https/);
+
+  // rutas fuera de local/api: no
+  for (const bad of ['../fuera', 'a/../../b', '.oculta/x', 'x/_privada']) await assert.rejects(client.call('api.save', { path: bad, request: { url: base } }), /inválida|_/, bad);
+
+  // árbol, renombrar (con su respuesta), duplicar y papelera
+  const tree = (await client.call('api.tree')).tree;
+  const ave = tree.find((n) => n.path === 'AVE-1');
+  assert.equal(ave.type, 'folder');
+  assert.equal(ave.vars, 2);
+  assert.ok(ave.children.some((n) => n.path === 'AVE-1/form' && n.method === 'POST' && n.hasRes));
+  await client.call('api.rename', { from: 'AVE-1/form', to: 'AVE-1/formulario', type: 'request' });
+  assert.ok(fs.existsSync(path.join(dir, 'AVE-1', 'formulario.res.json')));
+  await client.call('api.rename', { from: 'otra', to: 'AVE-1/otra', type: 'folder' });
+  await assert.rejects(client.call('api.rename', { from: 'AVE-1', to: 'AVE-1/dentro', type: 'folder' }), /dentro de sí misma/);
+  assert.deepEqual(await client.call('api.delete', { path: 'AVE-1/gz', type: 'request' }), { trashed: 2 });
+  assert.ok(!fs.existsSync(path.join(dir, 'AVE-1', 'gz.req.json')));
+
+  // CLI para la IA
+  const cli = (...args) => new Promise((resolve) => execFile(process.execPath, [path.join(__dirname, '..', 'bridge', 'frap-api.js'), ...args], { env: { ...process.env, FRAP_LOCAL: path.join(root, 'local') } }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stdout, stderr })));
+  let c = await cli('new', 'AVE-2/listar', '--method', 'GET', '--url', '{{base}}/eco', '--query', 'page=2', '--header', 'X-Uno: 1');
+  assert.equal(c.code, 0, c.stderr);
+  c = await cli('run', 'AVE-2/listar');
+  assert.equal(c.code, 0, c.stderr);
+  assert.match(c.stderr, /→ 200 OK/);
+  assert.deepEqual(JSON.parse(c.stdout).query, { page: '2' });
+  c = await cli('set-var', 'AVE-2', 'api_token=abcdef123', 'base=' + base);
+  c = await cli('vars', 'AVE-2');
+  assert.match(c.stdout, /api_token=•••123/);
+  assert.ok(!c.stdout.includes('abcdef123'), 'las variables sensibles salen ocultas');
+  c = await cli('list');
+  assert.match(c.stdout, /GET\s+AVE-2\/listar/);
+  c = await cli('run', 'AVE-1/otra/falta');
+  assert.equal(c.code, 2);
+  assert.match(c.stderr, /Variables sin definir: nadie/);
+  c = await cli('new', 'AVE-2/mal', '--url', 'x', '--json', '{no es json');
+  assert.match(c.stderr, /no es JSON válido/);
+
+  // skill
+  const skill = path.join(root, '.claude', 'skills', 'frap-api', 'SKILL.md');
+  assert.equal((await client.call('api.setSkill', { on: true })).changed.length, 2);
+  assert.match(fs.readFileSync(skill, 'utf8'), /frap-api\.js run <carpeta>\/<nombre>/);
+  await client.call('api.setSkill', { on: false });
+  assert.ok(!fs.existsSync(skill));
+});
+
 test('ave.*: tiendas Aveonline (revisión por token), pegar token, interruptores, CLI frap-ave, skill y export', async (t) => {
   const http = require('http');
   const { execFile } = require('child_process');
