@@ -3024,7 +3024,8 @@
         btn('⬇ Pull', 'git pull --no-edit', gitPull),
         btn('⬆ Push', 'git push (o push -u origin HEAD si la rama no tiene upstream)', gitPush),
         btn('📦 Stash', 'git stash push -u (guarda los cambios y limpia el directorio)', gitStash),
-        btn('📤 Pop', 'git stash pop (recupera lo último guardado)', gitStashPop)),
+        btn('📤 Pop', 'git stash pop (recupera lo último guardado)', gitStashPop),
+        btn('↗ Repo', 'Abrir el repositorio remoto (origin) en otra pestaña del navegador', gitOpenRemote)),
       h('div.git-main',
         left,
         h('div.git-right', rtabs, right,
@@ -3053,6 +3054,33 @@
       slash === -1 ? null : h('span.git-fdir', f.path.slice(0, slash)),
       h('span.grow'),
       ...acts);
+  }
+  /** URL web de un remoto git: git@host:u/r.git, ssh://git@host/u/r.git o https://user@host/u/r.git → https://host/u/r */
+  function remoteWebUrl(raw) {
+    let u = String(raw || '').trim();
+    if (!u) return null;
+    let m = u.match(/^[\w.-]+@([\w.-]+):(.+)$/); // scp: git@github.com:usuario/repo.git
+    if (m) u = `https://${m[1]}/${m[2]}`;
+    else if ((m = u.match(/^(?:ssh|git):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/))) u = `https://${m[1]}/${m[2]}`;
+    else if (!/^https?:\/\//i.test(u)) return null; // ruta local u otro esquema
+    try {
+      const x = new URL(u);
+      x.username = '';
+      x.password = ''; // nunca abrir (ni mostrar) un token embebido en la URL del remoto
+      return `${x.protocol}//${x.host}${x.pathname.replace(/\.git\/?$/, '').replace(/\/+$/, '')}`;
+    } catch (_) { return null; }
+  }
+  async function gitOpenRemote() {
+    if (!state.git.repo) { toast('No hay repositorio seleccionado', 'err'); return; }
+    try {
+      const r = await git(['remote', '-v'], { log: false });
+      const lines = r.stdout.split('\n').map((l) => l.trim().split(/\s+/)).filter((x) => x.length >= 2);
+      const pick = lines.find((x) => x[0] === 'origin') || lines[0];
+      if (!pick) { toast('Este repositorio no tiene remoto (git remote add origin …)', 'err'); return; }
+      const url = remoteWebUrl(pick[1]);
+      if (!url) { toast(`No se puede abrir el remoto «${pick[0]}» en el navegador`, 'err'); return; }
+      openPageTab({ url });
+    } catch (e) { toast(e.message, 'err'); }
   }
   /** Clic derecho en un archivo con cambios: abrirlo (editor, explorador, editor externo), rutas, IA y acciones de git. */
   function gitFileMenu(ev, f, area) {
