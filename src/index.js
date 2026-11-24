@@ -3047,12 +3047,41 @@
       acts.push(h('button.icon.mini', { title: `git add -- ${f.path}`, onclick: (e) => { e.stopPropagation(); gitAdd([f.path]); } }, '+'));
     }
     const slash = f.path.lastIndexOf('/');
-    return h(`div.git-file${sel ? '.sel' : ''}${f.conflict ? '.conflict' : ''}`, { title: `${f.path}\nClic: ver diff`, onclick: () => gitShowDiff(f, area) },
+    return h(`div.git-file${sel ? '.sel' : ''}${f.conflict ? '.conflict' : ''}`, { title: `${f.path}\nClic: ver diff · clic derecho: más opciones`, onclick: () => gitShowDiff(f, area), oncontextmenu: (e) => gitFileMenu(e, f, area) },
       h(`span.git-code.c-${f.code === '?' ? 'U2' : f.code}`, f.code === '?' ? 'U' : f.code),
       h('span.git-fname', slash === -1 ? f.path : f.path.slice(slash + 1)),
       slash === -1 ? null : h('span.git-fdir', f.path.slice(0, slash)),
       h('span.grow'),
       ...acts);
+  }
+  /** Clic derecho en un archivo con cambios: abrirlo (editor, explorador, editor externo), rutas, IA y acciones de git. */
+  function gitFileMenu(ev, f, area) {
+    const repo = state.git.repo;
+    if (!repo) return;
+    const isDir = f.path.endsWith('/'); // git status lista así las carpetas nuevas sin seguimiento
+    const rel = f.path.replace(/\/+$/, '');
+    const abs = `${repo}/${rel}`;
+    const gone = f.code === 'D'; // borrado: ya no está en disco
+    const runLog = async (args) => { try { await git(args); state.git.tab = 'out'; save(); renderGit(); } catch (e) { toast(e.message, 'err'); } };
+    popMenu(ev, [
+      { label: 'Ver diff', action: () => gitShowDiff(f, area) },
+      !gone && !isDir && launchOn('code') && { label: 'Abrir en el editor de código', action: () => openInFrap(abs) },
+      !gone && isDir && launchOn('code') && { label: 'Ver la carpeta en el editor de código', action: () => openInFrap(abs, null, null, true) },
+      !gone && { label: isDir ? 'Abrir en el explorador de archivos' : 'Mostrar en el explorador de archivos', action: () => openInFileManager(abs) },
+      gone && { label: 'Mostrar la carpeta en el explorador de archivos', action: () => openInFileManager(abs.slice(0, abs.lastIndexOf('/'))) },
+      !gone && { label: `Abrir en ${extEditorName()}`, action: () => openExternal(abs) },
+      '-',
+      { label: 'Copiar ruta', action: () => codeCopy(abs) },
+      { label: 'Copiar ruta relativa al repo', action: () => codeCopy(rel) },
+      !gone && !isDir && { label: 'Enviar ruta a la IA', action: () => codeSendToAi(abs) },
+      '-',
+      area === 'staged'
+        ? { label: 'Quitar del área de preparación', hint: 'restore --staged', action: () => gitUnstage([f.path]) }
+        : { label: 'Agregar', hint: 'git add', action: () => gitAdd([f.path]) },
+      area !== 'staged' && { label: area === 'untracked' ? 'Borrar (no tiene seguimiento)…' : 'Descartar cambios…', danger: true, action: () => gitDiscard(f) },
+      area !== 'untracked' && !isDir && { label: 'Historial del archivo', hint: 'git log', action: () => runLog(['log', '--oneline', '-20', '--follow', '--', rel]) },
+      area !== 'untracked' && !isDir && !gone && { label: 'Quién cambió cada línea', hint: 'git blame', action: () => runLog(['blame', '--date=short', '--', rel]) },
+    ]);
   }
   function fileSection(title, files, area, bulk) {
     if (!files.length) return null;
