@@ -8,6 +8,7 @@
 - [x] Panel central: pestañas y lanzadores shell/claude/codex/opencode (`--add-dir` para las carpetas extra)
 - [x] Terminales persistentes: sobreviven a recargar la página y se re-adjuntan con su scrollback
 - [x] Shell y SSH: botones arriba a la derecha para limpiar (también vacía el historial guardado: no vuelve al recargar ni al reiniciar el bridge) y copiar todo el contenido de la terminal
+- [x] Pestañas del panel derecho con ícono; doble clic para editar ícono, título y descripción (se ve al pasar el ratón); arrastrar para ordenarlas. Se guarda en `state.rtabs` y viaja en el export .json («Pestañas del panel derecho»)
 - [x] Módulo «Pendientes» (pestaña del panel derecho): tareas locales con prioridad, estado, ícono, descripción y dependencias, en orden (lo que espera va después de aquello de lo que depende), vinculadas a su sesión de IA con «→» para volver a ella (o reabrirla con su conversación); la IA los guarda con la skill `frap-pendientes` (📌 en la terminal de IA)
 - [x] Módulo «Equipo»: personas (nombre, ícono, rol, descripción) y cada sesión de IA asignada a una (chip arriba a la derecha de la terminal, menú por rol, modal del equipo); la IA lo lee con la skill `frap-equipo` (`frap-team quien` encuentra su sesión por el árbol de procesos) y escribe para esa persona respetando su descripción
 - [x] Equipo en el export .json (personas con rol, ícono, color y descripción) y la persona asignada a cada terminal: al importar vuelve el equipo y las terminales se reabren asignadas

@@ -132,6 +132,7 @@
     // secciones del panel izquierdo: la primera es siempre "Todas" (ver ensureSections)
     sections: [{ id: 'all', icon: '🗂️', title: 'Todas', desc: 'Todas las carpetas', display: 'both' }],
     modules: { off: [] }, // módulos de la UI apagados (Ajustes → Módulos); vacío = todo activado
+    rtabs: { order: [], custom: {} }, // pestañas del panel derecho: orden (arrastrando) e ícono/título/descripción propios
     settings: {
       fontSize: 13,
       editor: 'frap', // rutas clicadas en la terminal: 'frap' = editor de código de FRAP; si no, un comando (code, cursor…)
@@ -187,6 +188,9 @@
         st.settings.editor = 'frap';
       }
     }
+    if (!st.rtabs || typeof st.rtabs !== 'object') st.rtabs = { order: [], custom: {} };
+    if (!Array.isArray(st.rtabs.order)) st.rtabs.order = [];
+    if (!st.rtabs.custom || typeof st.rtabs.custom !== 'object') st.rtabs.custom = {};
     if (!Array.isArray(st.views)) st.views = [];
     st.views = st.views.filter((v) => v && ['git', 'db', 'sftp', 'notes', 'code', 'api'].includes(v.kind) && v.projectId && v.data);
     for (const kind of ['git', 'db', 'sftp']) {
@@ -9849,6 +9853,7 @@
     { key: 'tunnels', label: 'Túneles', count: (c) => (c.tunnels || []).length, sub: 'incluye sus contraseñas' },
     { key: 'modules', label: 'Módulos', count: (c) => MODULE_LIST.length - (((c.modules || {}).off) || []).length, sub: 'qué se muestra en cada panel' },
     { key: 'sections', label: 'Secciones del panel izquierdo', count: (c) => (c.sections || []).filter((s) => s.id !== 'all').length },
+    { key: 'rtabs', label: 'Pestañas del panel derecho', count: (c) => Object.keys((c.rtabs || {}).custom || {}).length, sub: 'orden, íconos, títulos y descripciones' },
     { key: 'music', label: 'Música', count: (c) => ((c.music || {}).tracks || []).filter((t) => t.type === 'youtube').length, sub: 'solo enlaces de YouTube' },
     { key: 'settings', label: 'Ajustes', sub: 'fuente, editor, lanzadores de claude/codex/opencode' },
   ];
@@ -10060,6 +10065,11 @@
         } else if (key === 'modules') {
           state.modules = { off: Array.isArray((v || {}).off) ? v.off.filter((k) => typeof k === 'string') : [] };
           applyModules();
+        } else if (key === 'rtabs') {
+          const custom = {};
+          for (const [t, c] of Object.entries((v && v.custom) || {})) if (c && typeof c === 'object') custom[t] = { ...(typeof c.icon === 'string' ? { icon: c.icon.slice(0, 8) } : {}), ...(typeof c.title === 'string' ? { title: c.title.slice(0, 40) } : {}), ...(typeof c.desc === 'string' ? { desc: c.desc.slice(0, 300) } : {}) };
+          state.rtabs = { order: Array.isArray((v || {}).order) ? v.order.filter((t) => typeof t === 'string') : [], custom };
+          renderRtabs();
         } else if (Array.isArray(v)) {
           state[key] = mergeById(state[key], v);
         }
@@ -10132,7 +10142,86 @@
   $('#toggle-left').onclick = () => togglePanel('left');
   $('#toggle-right').onclick = () => togglePanel('right');
   for (const b of $$('#launchers button')) b.onclick = () => (b.dataset.launch === 'db' ? openDbView() : b.dataset.launch === 'git' ? openGitView() : b.dataset.launch === 'ssh' ? pickSsh() : b.dataset.launch === 'sftp' ? openSftpView() : b.dataset.launch === 'notes' ? openNotesView() : b.dataset.launch === 'code' ? openCodeView() : b.dataset.launch === 'api' ? openApiView() : launch(b.dataset.launch));
-  for (const b of $$('#rtabs button')) b.onclick = () => setRtab(b.dataset.rtab);
+  // ----- pestañas del panel derecho: ícono, título y descripción editables (doble clic) y orden arrastrando -----
+  const RTAB_EXTRA = { issues: { icon: '🎫', desc: 'Issues locales (Linear u otro tracker)' }, scripts: { icon: '📜', desc: 'Scripts locales con interruptores Usuario / IA' } };
+  for (const [i, b] of $$('#rtabs button').entries()) { b.dataset.label = b.textContent.trim(); b.dataset.idx = String(i); }
+  /** Ícono, título y descripción de una pestaña: los propios del usuario o los de su módulo. */
+  function rtabInfo(tab) {
+    const b = $(`#rtabs button[data-rtab="${tab}"]`);
+    const mod = MODULE_LIST.find((m) => m.rtab === tab) || {};
+    const def = { icon: mod.icon || (RTAB_EXTRA[tab] || {}).icon || '•', title: (b && b.dataset.label) || tab, desc: mod.desc || (RTAB_EXTRA[tab] || {}).desc || '' };
+    const c = (state.rtabs.custom || {})[tab] || {};
+    return { icon: c.icon != null && c.icon !== '' ? c.icon : def.icon, title: c.title || def.title, desc: c.desc != null ? c.desc : def.desc, def, custom: !!state.rtabs.custom[tab] };
+  }
+  function renderRtabs() {
+    const nav = $('#rtabs');
+    const btns = [...nav.querySelectorAll('button')];
+    const order = state.rtabs.order || [];
+    const rank = (b) => { const i = order.indexOf(b.dataset.rtab); return i < 0 ? 1000 + Number(b.dataset.idx) : i; };
+    nav.append(...btns.sort((a, b) => rank(a) - rank(b)));
+    for (const b of btns) {
+      const d = rtabInfo(b.dataset.rtab);
+      b.replaceChildren(h('span.rt-ico', d.icon), h('span.rt-label', d.title));
+      b.title = `${d.desc ? `${d.desc}\n` : ''}Doble clic: editar ícono, título y descripción · arrastra para ordenar`;
+    }
+  }
+  let rtabDrag = null;
+  for (const b of $$('#rtabs button')) {
+    b.onclick = () => setRtab(b.dataset.rtab);
+    b.draggable = true;
+    b.addEventListener('dblclick', () => rtabEditModal(b.dataset.rtab));
+    b.addEventListener('dragstart', (e) => { rtabDrag = b.dataset.rtab; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/x-frap-rtab', rtabDrag); b.classList.add('dragging'); });
+    b.addEventListener('dragend', () => { rtabDrag = null; for (const x of $$('#rtabs button')) x.classList.remove('dragging', 'drop-before', 'drop-after'); });
+    b.addEventListener('dragover', (e) => {
+      if (!rtabDrag || rtabDrag === b.dataset.rtab) return;
+      e.preventDefault();
+      const r = b.getBoundingClientRect();
+      const after = e.clientX > r.left + r.width / 2;
+      for (const x of $$('#rtabs button')) x.classList.remove('drop-before', 'drop-after');
+      b.classList.add(after ? 'drop-after' : 'drop-before');
+    });
+    b.addEventListener('dragleave', () => b.classList.remove('drop-before', 'drop-after'));
+    b.addEventListener('drop', (e) => {
+      if (!rtabDrag || rtabDrag === b.dataset.rtab) return;
+      e.preventDefault();
+      const after = b.classList.contains('drop-after');
+      const cur = [...$$('#rtabs button')].map((x) => x.dataset.rtab).filter((t) => t !== rtabDrag);
+      cur.splice(cur.indexOf(b.dataset.rtab) + (after ? 1 : 0), 0, rtabDrag);
+      state.rtabs.order = cur;
+      save();
+      renderRtabs();
+    });
+  }
+  function rtabEditModal(tab) {
+    const d = rtabInfo(tab);
+    const icon = h('input.team-icon-in', { value: d.icon, maxlength: '8' });
+    const title = h('input', { value: d.title, placeholder: d.def.title });
+    const desc = h('textarea.team-desc', { rows: '3', placeholder: d.def.desc || 'Para qué la usas (se ve al pasar el ratón)' });
+    desc.value = d.desc;
+    const picks = h('div.icon-grid', [...new Set([d.def.icon, ...SECTION_ICONS, '⚙️', '💬', '▶️', '🛢️', '🔐', '🎵', '⏰', '🧩', '⌘', '🪝', '🧠', '🚇', '🎫', '📜', '📌', '📊', '📝', '✅'])].map((ic) => h('button.icon-pick', { type: 'button', onclick: () => { icon.value = ic; } }, ic)));
+    const doSave = () => {
+      const c = {};
+      if (icon.value.trim() && icon.value.trim() !== d.def.icon) c.icon = icon.value.trim();
+      if (title.value.trim() && title.value.trim() !== d.def.title) c.title = title.value.trim().slice(0, 40);
+      if (desc.value !== d.def.desc) c.desc = desc.value.slice(0, 300);
+      if (Object.keys(c).length) state.rtabs.custom[tab] = c; else delete state.rtabs.custom[tab];
+      save();
+      renderRtabs();
+      modalClose(true);
+    };
+    openModal({
+      title: `Pestaña · ${d.title}`,
+      body: [
+        h('div.field-row', h('div.field', { style: 'width:80px' }, h('label', 'Ícono'), icon), h('div.field.grow', h('label', 'Título'), title)),
+        picks,
+        h('div.field', h('label', 'Descripción'), desc),
+        h('p.muted', { style: 'font-size:11px;margin:4px 0 0' }, 'Arrastra las pestañas para cambiar el orden. Todo se guarda y viaja en el export .json (Configuración → Pestañas del panel derecho).'),
+      ],
+      foot: [d.custom ? h('button', { onclick: () => { delete state.rtabs.custom[tab]; save(); renderRtabs(); modalClose(true); } }, 'Restablecer') : null, h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
+    });
+    requestAnimationFrame(() => title.select());
+  }
+  renderRtabs();
   $('#token-input').value = conn.token;
   $('#port-input').value = conn.port;
   const bridgePath = decodeURIComponent(location.pathname).replace(/\/src\/index\.html$/, '/bridge/frap-bridge.js');

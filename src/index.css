@@ -1384,3 +1384,10 @@ li.CodeMirror-hint-active { background: var(--accent); color: var(--bg); }
 .todo-deps { display: flex; flex-direction: column; gap: 2px; max-height: 150px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 6px; }
 .todo-dep { font-size: 12px; cursor: pointer; }
 .todo-sess { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+
+/* pestañas del panel derecho: ícono + título, arrastrables */
+#rtabs button { display: inline-flex; align-items: center; gap: 5px; }
+#rtabs .rt-ico { font-size: 12px; line-height: 1; }
+#rtabs button.dragging { opacity: .4; }
+#rtabs button.drop-before { box-shadow: -3px 0 0 var(--accent); }
+#rtabs button.drop-after { box-shadow: 3px 0 0 var(--accent); }
