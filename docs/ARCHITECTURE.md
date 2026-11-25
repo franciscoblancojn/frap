@@ -111,6 +111,12 @@ navegador (file://src/index.html)                     máquina local
 - **UI:** colapsable «Aveonline» con 📋 (pegar token) y ＋. Cada tienda muestra estado, host y «vence en N min» (se refresca cada 30 s), interruptores y menú: pegar token nuevo, probar, últimos pedidos (modal con «⧉ IA» que copia la petición), editar, abrir la revisión por token en la tienda, abrir la tienda, copiar el comando y eliminar.
 - **Exportar / importar:** grupo «Integraciones · Aveonline»; token solo cifrado (`secrets.ave`). Como duran minutos, lo normal es pegar uno nuevo tras importar.
 
+## Mensajes listos para enviar (terminales de IA)
+
+- Cuando la IA escribe en la terminal la ruta de un archivo de mensaje (dentro de una carpeta `mensajes/`, o con «mensaje»/«respuesta» en el nombre; `.md` o `.txt`) y existe, abajo a la derecha de esa terminal aparece «📋 Copiar mensaje para <persona>» (copia el archivo al portapapeles), ✎ para abrirlo y ✕. Se escanean las últimas líneas tras cada salida (hasta el cursor; las líneas partidas por ancho se unen); cada ruta se ofrece una vez y quedan las 3 más recientes.
+- En **cualquier terminal** (también tras un `git push`), los enlaces de pull/merge request dan un botón: para crearlo (`compare/base...rama`, `pull/new/rama`, `-/merge_requests/new`, `pull-requests/new`) «🔀 Generar PR · rama → base»; de uno existente (`/pull/N`, `/-/merge_requests/N`, `/pull-requests/N`) «↗ Abrir PR #N». Abren el enlace en otra pestaña; ⧉ lo copia.
+- La persona sale del nombre del archivo comparado con el Equipo, de la persona asignada a la sesión o de la palabra que sigue a la fecha (`2026-11-25-andres-…` → Andres). La skill `frap-equipo` pide guardar los mensajes así: `<carpeta>/mensajes/AAAA-MM-DD-<persona>-<tema>.md`.
+
 ## Pendientes (pestaña del panel derecho)
 
 - Módulo `right.todos` (pestaña «Pendientes» del panel derecho): tareas locales del usuario en `local/pendientes/pendientes.json` (fuera de git; viaja en el zip). Cada una: `{id, title, descripcion, icon, priority (las 5 de las issues), estado (pendiente / en curso / bloqueado / hecho), depends: [ids], session: {sid, projectId, cwd, title, kind, agent}, created, updated}`.

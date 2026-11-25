@@ -625,10 +625,124 @@
     if (!t) return;
     t.lastOut = Date.now();
     if (!t.attaching) {
-      t.term.write(d); // durante attach el buffer ya trae esta salida
+      t.term.write(d, () => msgScanSoon(t)); // durante attach el buffer ya trae esta salida
       actionScan(t, d, false);
     }
   });
+
+  // ----- mensajes listos para enviar: «📋 Copiar mensaje para Andrés» abajo de la terminal -----
+  // Cuando la IA escribe la ruta de un archivo de mensaje (carpeta mensajes/, o "mensaje"/"respuesta" en el nombre,
+  // .md o .txt) y existe, se ofrece copiarlo. El nombre sale del archivo (personas del Equipo), de la persona asignada
+  // a la sesión o de la palabra que sigue a la fecha en el nombre del archivo.
+  const MSG_PATH_RE = /(?:^|[\s'"`(<\[])(\/[^\s'"`)<>\]]+?\.(?:md|txt))(?=$|[\s'"`)>\].,;:])/g;
+  const isMsgPath = (p) => /\/mensajes?\//i.test(p) || /(mensaje|respuesta|reply|message)[^/]*\.(md|txt)$/i.test(p);
+  const msgScanSoon = (t) => { clearTimeout(t.msgTimer); t.msgTimer = setTimeout(() => msgScan(t), 250); };
+  /** Últimas líneas escritas de la terminal, hasta el cursor (debajo solo hay filas vacías); las partidas por ancho se unen. */
+  function termTail(t, n = 40) {
+    const b = t.term.buffer.active;
+    const end = Math.min(b.length, b.baseY + b.cursorY + 1);
+    const out = [];
+    for (let i = Math.max(0, end - n); i < end; i++) {
+      const l = b.getLine(i);
+      if (!l) continue;
+      const txt = l.translateToString(true);
+      if (l.isWrapped && out.length) out[out.length - 1] += txt; else out.push(txt);
+    }
+    return out.join('\n');
+  }
+  /** Enlace de pull/merge request → {kind: 'new'|'open', label, title} o null (GitHub, GitLab, Bitbucket). */
+  function prLinkInfo(url) {
+    let u;
+    try { u = new URL(url); } catch (_) { return null; }
+    const p = decodeURIComponent(u.pathname);
+    let m;
+    if ((m = p.match(/^\/[^/]+\/[^/]+\/compare\/(.+?)\.\.\.?(.+)$/))) return { kind: 'new', label: `🔀 Generar PR · ${m[2]} → ${m[1]}`, title: `Crear el pull request de ${m[2]} hacia ${m[1]}` };
+    if ((m = p.match(/^\/[^/]+\/[^/]+\/compare\/(.+)$/))) return { kind: 'new', label: `🔀 Generar PR · ${m[1]}`, title: `Crear el pull request de ${m[1]}` };
+    if ((m = p.match(/^\/[^/]+\/[^/]+\/pull\/new\/(.+)$/))) return { kind: 'new', label: `🔀 Generar PR · ${m[1]}`, title: `Crear el pull request de ${m[1]}` };
+    if ((m = p.match(/^\/.+\/-\/merge_requests\/new$/))) { const src = u.searchParams.get('merge_request[source_branch]') || ''; return { kind: 'new', label: `🔀 Generar MR${src ? ` · ${src}` : ''}`, title: 'Crear el merge request' }; }
+    if ((m = p.match(/^\/[^/]+\/[^/]+\/pull-requests\/new$/))) { const src = u.searchParams.get('source') || ''; return { kind: 'new', label: `🔀 Generar PR${src ? ` · ${src}` : ''}`, title: 'Crear el pull request' }; }
+    if ((m = p.match(/^\/[^/]+\/[^/]+\/pull\/(\d+)(\/|$)/)) || (m = p.match(/\/-\/merge_requests\/(\d+)(\/|$)/)) || (m = p.match(/^\/[^/]+\/[^/]+\/pull-requests\/(\d+)(\/|$)/))) return { kind: 'open', label: `↗ Abrir PR #${m[1]}`, title: `Abrir el pull request #${m[1]}` };
+    return null;
+  }
+  async function msgScan(t) {
+    if (!terms.has(t.sid)) return;
+    const text = termTail(t);
+    // enlaces de pull request (cualquier terminal: también el "Create a pull request" de git push)
+    t.linkSeen = t.linkSeen || new Set();
+    const urls = text.match(/https?:\/\/[^\s'"`<>)\]]+/g) || [];
+    for (const raw of urls) {
+      const url = raw.replace(/[.,;:!?]+$/, '');
+      if (t.linkSeen.has(url)) continue;
+      const info = prLinkInfo(url);
+      if (!info) continue;
+      t.linkSeen.add(url);
+      linkOffer(t, url, info);
+    }
+    if (!isAgentTerm(t)) return; // los mensajes listos, solo en las terminales de IA
+    const found = [];
+    let m;
+    MSG_PATH_RE.lastIndex = 0;
+    while ((m = MSG_PATH_RE.exec(text))) if (isMsgPath(m[1])) found.push(m[1]);
+    t.msgSeen = t.msgSeen || new Set();
+    const fresh = [...new Set(found)].filter((p) => !t.msgSeen.has(p));
+    if (!fresh.length || !Bridge.ready) return;
+    for (const p of fresh) t.msgSeen.add(p);
+    let stats = [];
+    try { stats = await Bridge.call('fs.stat', { paths: fresh }); } catch (_) { return; }
+    for (const st of stats) if (st.exists && !st.dir) msgOffer(t, st.path, text);
+  }
+  /** Para quién es el mensaje: alguien del Equipo en el nombre del archivo, la persona de la sesión o la palabra tras la fecha. */
+  function msgRecipient(t, file) {
+    const base = basename(file).replace(/\.(md|txt)$/i, '');
+    const norm = (x) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const toks = norm(base).split(/[^a-z0-9]+/).filter(Boolean);
+    const people = (teamInfo && teamInfo.people) || [];
+    const byFile = people.find((p) => { const n = norm(p.name).split(/\s+/); return toks.includes(n[0]) || toks.includes(norm(p.id)); });
+    if (byFile) return byFile.name.split(' ')[0];
+    const assigned = teamPerson((t.info.meta || {}).person);
+    if (assigned) return assigned.name.split(' ')[0];
+    const m = base.match(/\d{4}-\d{2}-\d{2}[-_]([a-záéíóúñ]+)/i);
+    return m ? m[1].charAt(0).toUpperCase() + m[1].slice(1) : '';
+  }
+  function msgBar(t) {
+    let bar = t.pane.querySelector('.term-msgbar');
+    if (!bar) { bar = h('div.term-msgbar'); t.pane.append(bar); }
+    return bar;
+  }
+  function linkOffer(t, url, info) {
+    const bar = msgBar(t);
+    if ([...bar.children].some((x) => x.dataset.url === url)) return;
+    // el mismo PR por crear (p. ej. compare y pull/new de la misma rama) no se repite
+    const item = h(`div.term-msg.term-pr.${info.kind}`, { dataset: { url }, title: url },
+      h('button.term-msg-copy', { title: `${info.title}: abre el enlace en otra pestaña`, onmousedown: (e) => e.preventDefault(), onclick: () => { openPageTab({ url }); item.classList.add('copied'); } }, info.label),
+      h('button.icon.mini', { title: 'Copiar el enlace', onmousedown: (e) => e.preventDefault(), onclick: () => { copyText(url); toast('Enlace copiado', 'ok'); } }, '⧉'),
+      h('button.icon.mini', { title: 'Cerrar', onmousedown: (e) => e.preventDefault(), onclick: () => { item.remove(); if (!bar.children.length) bar.remove(); } }, '✕'));
+    bar.append(item);
+    while (bar.children.length > 3) bar.firstChild.remove();
+  }
+  function msgOffer(t, file) {
+    let bar = t.pane.querySelector('.term-msgbar');
+    if (!bar) { bar = h('div.term-msgbar'); t.pane.append(bar); }
+    if ([...bar.children].some((x) => x.dataset.file === file)) return;
+    const who = msgRecipient(t, file);
+    const item = h('div.term-msg', { dataset: { file }, title: tilde(file) },
+      h('span.term-msg-file', `✉ ${basename(file)}`),
+      h('button.term-msg-copy', {
+        onmousedown: (e) => e.preventDefault(),
+        onclick: async () => {
+          try {
+            const r = await Bridge.call('fs.read', { path: file });
+            copyText(r.content.replace(/\s+$/, ''));
+            toast(`Mensaje${who ? ` para ${who}` : ''} copiado: pégalo donde lo vayas a enviar`, 'ok');
+            item.classList.add('copied');
+          } catch (e) { toast(e.message, 'err'); }
+        },
+      }, `📋 Copiar mensaje${who ? ` para ${who}` : ''}`),
+      h('button.icon.mini', { title: 'Abrir el archivo en el editor', onmousedown: (e) => e.preventDefault(), onclick: () => (launchOn('code') ? openInFrap(file) : openExternal(file)) }, '✎'),
+      h('button.icon.mini', { title: 'Cerrar', onmousedown: (e) => e.preventDefault(), onclick: () => { item.remove(); if (!bar.children.length) bar.remove(); } }, '✕'));
+    bar.append(item);
+    while (bar.children.length > 3) bar.firstChild.remove(); // los 3 más recientes
+  }
   Bridge.on('exit', ({ sid, code }) => {
     const t = terms.get(sid);
     if (!t) return;

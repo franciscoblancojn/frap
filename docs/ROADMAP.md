@@ -8,6 +8,8 @@
 - [x] Panel central: pestañas y lanzadores shell/claude/codex/opencode (`--add-dir` para las carpetas extra)
 - [x] Terminales persistentes: sobreviven a recargar la página y se re-adjuntan con su scrollback
 - [x] Shell y SSH: botones arriba a la derecha para limpiar (también vacía el historial guardado: no vuelve al recargar ni al reiniciar el bridge) y copiar todo el contenido de la terminal
+- [x] Terminales: los enlaces de pull/merge request dan un botón «🔀 Generar PR · rama → base» o «↗ Abrir PR #N» (GitHub, GitLab, Bitbucket) que abre el enlace en otra pestaña
+- [x] Terminales de IA: si la respuesta trae la ruta de un mensaje listo (mensajes/…md), aparece «📋 Copiar mensaje para <persona>» abajo de la terminal (la persona sale del Equipo o del nombre del archivo); la skill frap-equipo guarda así los mensajes
 - [x] Pendientes: al marcar uno como hecho, su sesión de IA (si sigue abierta) recibe un aviso con lo que quedó desbloqueado
 - [x] Pestañas del panel derecho con ícono; doble clic para editar ícono, título y descripción (se ve al pasar el ratón); arrastrar para ordenarlas. Se guarda en `state.rtabs` y viaja en el export .json («Pestañas del panel derecho»)
 - [x] Módulo «Pendientes» (pestaña del panel derecho): tareas locales con prioridad, estado, ícono, descripción y dependencias, en orden (lo que espera va después de aquello de lo que depende), vinculadas a su sesión de IA con «→» para volver a ella (o reabrirla con su conversación); la IA los guarda con la skill `frap-pendientes` (📌 en la terminal de IA)
