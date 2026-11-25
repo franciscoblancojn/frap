@@ -158,7 +158,7 @@ ${cli} show <nombre>    # una persona (por nombre o id)
 - La descripción es información privada del usuario: no la copies tal cual en el mensaje.
 - **Guarda el mensaje en un archivo** listo para enviar (solo el texto del mensaje, sin notas para el usuario):
   \`<carpeta de la issue o del proyecto>/mensajes/AAAA-MM-DD-<persona>-<tema>.md\` (p. ej. \`local/issues/AVE-2507/mensajes/2026-11-25-andres-capacidad.md\`)
-  y escribe su ruta completa en tu respuesta: FRAP muestra un botón «📋 Copiar mensaje para <persona>» debajo de la terminal.
+  y escribe su ruta completa en tu respuesta: FRAP muestra un botón «📋 Copiar último mensaje» en el panel derecho.
 `;
 }
 const skill = require('./wordpress').skillManager('frap-equipo', SKILL_MARK, skillText);

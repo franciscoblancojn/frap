@@ -1392,11 +1392,13 @@ li.CodeMirror-hint-active { background: var(--accent); color: var(--bg); }
 #rtabs button.drop-before { box-shadow: -3px 0 0 var(--accent); }
 #rtabs button.drop-after { box-shadow: 3px 0 0 var(--accent); }
 
-/* mensajes listos para enviar detectados en la terminal de IA */
-.term-msgbar { position: absolute; right: 16px; bottom: 10px; z-index: 20; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
-.term-msg { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; background: var(--bg-3); border: 1px solid var(--accent); border-radius: var(--radius); box-shadow: 0 2px 10px rgba(0, 0, 0, .6); font-size: 12px; max-width: 520px; }
-.term-msg-file { color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px; }
-.term-pane button.term-msg-copy { background: var(--accent); color: var(--bg); border: none; border-radius: var(--radius); padding: 3px 10px; font-weight: 600; white-space: nowrap; }
-.term-msg.copied { border-color: var(--ok); }
-.term-msg.copied .term-msg-copy { background: var(--ok); }
-.term-pr.open .term-msg-copy { background: var(--opencode); }
+/* mensajes listos y PR de la sesión activa: encima de «Hablar» en el panel derecho */
+#msg-dock { border-top: 1px solid var(--line); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; background: var(--bg-2); }
+.msg-item { display: flex; flex-direction: column; gap: 4px; }
+.msg-head { display: flex; align-items: center; font-size: 11px; color: var(--fg-2); }
+.msg-file { font: 11px var(--mono); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-row { display: flex; align-items: center; gap: 4px; }
+.msg-row .msg-copy { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--ok); color: var(--bg); border: none; border-radius: var(--radius); padding: 6px 10px; font-weight: 600; text-align: left; }
+.msg-item.copied .msg-copy { background: var(--orange, #ff9e64); }
+.msg-item.pr.open .msg-copy { background: var(--opencode); }
+.msg-item.pr.copied .msg-copy { background: var(--orange, #ff9e64); }

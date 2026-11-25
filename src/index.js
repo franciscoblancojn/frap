@@ -630,10 +630,9 @@
     }
   });
 
-  // ----- mensajes listos para enviar: «📋 Copiar mensaje para Andrés» abajo de la terminal -----
+  // ----- mensajes listos para enviar: «📋 Copiar último mensaje» encima de «Hablar» (sesión activa) -----
   // Cuando la IA escribe la ruta de un archivo de mensaje (carpeta mensajes/, o "mensaje"/"respuesta" en el nombre,
-  // .md o .txt) y existe, se ofrece copiarlo. El nombre sale del archivo (personas del Equipo), de la persona asignada
-  // a la sesión o de la palabra que sigue a la fecha en el nombre del archivo.
+  // .md o .txt) y existe, se ofrece copiarlo. Sin nombre de persona: el mensaje puede ser para otra que la asignada.
   const MSG_PATH_RE = /(?:^|[\s'"`(<\[])(\/[^\s'"`)<>\]]+?\.(?:md|txt))(?=$|[\s'"`)>\].,;:])/g;
   const isMsgPath = (p) => /\/mensajes?\//i.test(p) || /(mensaje|respuesta|reply|message)[^/]*\.(md|txt)$/i.test(p);
   const msgScanSoon = (t) => { clearTimeout(t.msgTimer); t.msgTimer = setTimeout(() => msgScan(t), 250); };
@@ -689,59 +688,79 @@
     for (const p of fresh) t.msgSeen.add(p);
     let stats = [];
     try { stats = await Bridge.call('fs.stat', { paths: fresh }); } catch (_) { return; }
-    for (const st of stats) if (st.exists && !st.dir) msgOffer(t, st.path, text);
+    const okFiles = stats.filter((st) => st.exists && !st.dir).map((st) => st.path);
+    if (okFiles.length) msgOffer(t, okFiles, text);
   }
-  /** Para quién es el mensaje: alguien del Equipo en el nombre del archivo, la persona de la sesión o la palabra tras la fecha. */
-  function msgRecipient(t, file) {
-    const base = basename(file).replace(/\.(md|txt)$/i, '');
-    const norm = (x) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-    const toks = norm(base).split(/[^a-z0-9]+/).filter(Boolean);
-    const people = (teamInfo && teamInfo.people) || [];
-    const byFile = people.find((p) => { const n = norm(p.name).split(/\s+/); return toks.includes(n[0]) || toks.includes(norm(p.id)); });
-    if (byFile) return byFile.name.split(' ')[0];
-    const assigned = teamPerson((t.info.meta || {}).person);
-    if (assigned) return assigned.name.split(' ')[0];
-    const m = base.match(/\d{4}-\d{2}-\d{2}[-_]([a-záéíóúñ]+)/i);
-    return m ? m[1].charAt(0).toUpperCase() + m[1].slice(1) : '';
+  /** Nombre que distingue cada mensaje: como lo presenta la IA ("Juan: /ruta…") o el del archivo (fecha-persona-tema). */
+  function msgLabel(file, text) {
+    const esc = file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m = String(text || '').match(new RegExp(`([A-ZÁÉÍÓÚÑ][\\wáéíóúñü]+(?: [A-ZÁÉÍÓÚÑ][\\wáéíóúñü]+)?)\\**\\s*:\\s*\\**\\s*${esc}`));
+    const base = basename(file).replace(/\.(md|txt)$/i, '').replace(/^\d{4}-\d{2}-\d{2}[-_]?/, '');
+    const parts = base.split(/[-_]+/).filter(Boolean);
+    const topic = (m ? parts.slice(1) : parts.slice(1)).join(' ');
+    const who = m ? m[1] : parts[0] ? parts[0].charAt(0).toUpperCase() + parts[0].slice(1) : base;
+    return topic ? `${who} · ${topic}` : who;
   }
-  function msgBar(t) {
-    let bar = t.pane.querySelector('.term-msgbar');
-    if (!bar) { bar = h('div.term-msgbar'); t.pane.append(bar); }
-    return bar;
-  }
+  /** Enlace de PR detectado en una sesión: se guarda en ella (los 3 más recientes) y se muestra en el panel derecho. */
   function linkOffer(t, url, info) {
-    const bar = msgBar(t);
-    if ([...bar.children].some((x) => x.dataset.url === url)) return;
-    // el mismo PR por crear (p. ej. compare y pull/new de la misma rama) no se repite
-    const item = h(`div.term-msg.term-pr.${info.kind}`, { dataset: { url }, title: url },
-      h('button.term-msg-copy', { title: `${info.title}: abre el enlace en otra pestaña`, onmousedown: (e) => e.preventDefault(), onclick: () => { openPageTab({ url }); item.classList.add('copied'); } }, info.label),
-      h('button.icon.mini', { title: 'Copiar el enlace', onmousedown: (e) => e.preventDefault(), onclick: () => { copyText(url); toast('Enlace copiado', 'ok'); } }, '⧉'),
-      h('button.icon.mini', { title: 'Cerrar', onmousedown: (e) => e.preventDefault(), onclick: () => { item.remove(); if (!bar.children.length) bar.remove(); } }, '✕'));
-    bar.append(item);
-    while (bar.children.length > 3) bar.firstChild.remove();
+    t.prs = (t.prs || []).filter((x) => x.url !== url);
+    t.prs.push({ url, info, opened: false });
+    while (t.prs.length > 3) t.prs.shift();
+    renderMsgDock();
   }
-  function msgOffer(t, file) {
-    let bar = t.pane.querySelector('.term-msgbar');
-    if (!bar) { bar = h('div.term-msgbar'); t.pane.append(bar); }
-    if ([...bar.children].some((x) => x.dataset.file === file)) return;
-    const who = msgRecipient(t, file);
-    const item = h('div.term-msg', { dataset: { file }, title: tilde(file) },
-      h('span.term-msg-file', `✉ ${basename(file)}`),
-      h('button.term-msg-copy', {
-        onmousedown: (e) => e.preventDefault(),
-        onclick: async () => {
-          try {
-            const r = await Bridge.call('fs.read', { path: file });
-            copyText(r.content.replace(/\s+$/, ''));
-            toast(`Mensaje${who ? ` para ${who}` : ''} copiado: pégalo donde lo vayas a enviar`, 'ok');
-            item.classList.add('copied');
-          } catch (e) { toast(e.message, 'err'); }
-        },
-      }, `📋 Copiar mensaje${who ? ` para ${who}` : ''}`),
-      h('button.icon.mini', { title: 'Abrir el archivo en el editor', onmousedown: (e) => e.preventDefault(), onclick: () => (launchOn('code') ? openInFrap(file) : openExternal(file)) }, '✎'),
-      h('button.icon.mini', { title: 'Cerrar', onmousedown: (e) => e.preventDefault(), onclick: () => { item.remove(); if (!bar.children.length) bar.remove(); } }, '✕'));
-    bar.append(item);
-    while (bar.children.length > 3) bar.firstChild.remove(); // los 3 más recientes
+  /** Mensajes listos de una sesión: los que llegan juntos (en menos de 30 s) forman un grupo; uno nuevo reemplaza al anterior. */
+  function msgOffer(t, files, text) {
+    const now = Date.now();
+    const fresh = !t.msgAt || now - t.msgAt > 30000;
+    let list = fresh ? [] : (t.msgs || []).slice();
+    for (const file of files) {
+      if (list.some((x) => x.file === file)) continue;
+      list.push({ file, label: msgLabel(file, text), copied: false });
+    }
+    if (list.length > 8) list = list.slice(-8);
+    t.msgs = list;
+    t.msgAt = now;
+    renderMsgDock();
+  }
+  /** Encima de «Hablar»: el mensaje para copiar y los PR de la sesión de IA activa (si cambias de sesión, se va). */
+  function renderMsgDock() {
+    const dock = $('#msg-dock');
+    if (!dock) return;
+    const t = activeTerm();
+    const has = t && ((t.msgs && t.msgs.length) || (t.prs && t.prs.length));
+    dock.classList.toggle('hidden', !has);
+    if (!has) { dock.replaceChildren(); return; }
+    const items = [];
+    const msgs = t.msgs || [];
+    if (msgs.length > 1) items.push(h('div.msg-head', h('span.grow', `✉ ${msgs.length} mensajes listos`), h('button.icon.mini', { title: 'Quitar todos', onclick: () => { t.msgs = []; renderMsgDock(); } }, '✕')));
+    for (const m of msgs) {
+      const one = msgs.length === 1;
+      items.push(h(`div.msg-item${m.copied ? '.copied' : ''}`, { title: tilde(m.file) },
+        one ? h('div.msg-file', `✉ ${basename(m.file)}`) : null,
+        h('div.msg-row',
+          h('button.msg-copy', {
+            title: `${m.copied ? 'Ya lo copiaste · clic: copiar otra vez' : 'Copiar el mensaje al portapapeles'}\n${tilde(m.file)}`,
+            onclick: async () => {
+              try {
+                const r = await Bridge.call('fs.read', { path: m.file });
+                copyText(r.content.replace(/\s+$/, ''));
+                m.copied = true;
+                toast(`Mensaje copiado${one ? '' : ` (${m.label})`}: pégalo donde lo vayas a enviar`, 'ok');
+                renderMsgDock();
+              } catch (e) { toast(e.message, 'err'); }
+            },
+          }, one ? (m.copied ? '✓ Mensaje copiado' : '📋 Copiar último mensaje') : (m.copied ? `✓ ${m.label} · copiado` : `📋 ${m.label}`)),
+          h('button.icon.mini', { title: 'Abrir el archivo en el editor', onclick: () => (launchOn('code') ? openInFrap(m.file) : openExternal(m.file)) }, '✎'),
+          h('button.icon.mini', { title: 'Quitar', onclick: () => { t.msgs = t.msgs.filter((x) => x !== m); renderMsgDock(); } }, '✕'))));
+    }
+    for (const pr of (t.prs || []).slice().reverse()) {
+      items.push(h(`div.msg-item.pr.${pr.info.kind}${pr.opened ? '.copied' : ''}`, { title: pr.url },
+        h('div.msg-row',
+          h('button.msg-copy', { title: `${pr.info.title}: abre el enlace en otra pestaña`, onclick: () => { openPageTab({ url: pr.url }); pr.opened = true; renderMsgDock(); } }, pr.info.label),
+          h('button.icon.mini', { title: 'Copiar el enlace', onclick: () => { copyText(pr.url); toast('Enlace copiado', 'ok'); } }, '⧉'),
+          h('button.icon.mini', { title: 'Quitar', onclick: () => { t.prs = t.prs.filter((x) => x !== pr); renderMsgDock(); } }, '✕'))));
+    }
+    dock.replaceChildren(...items);
   }
   Bridge.on('exit', ({ sid, code }) => {
     const t = terms.get(sid);
@@ -1921,6 +1940,7 @@
   }
 
   function renderPanes() {
+    renderMsgDock(); // el aviso de mensaje/PR es de la sesión activa
     // el grupo solo se muestra si la terminal activa es parte de él (git, DB, páginas o una 5.ª terminal van solas)
     let group = splitGroup();
     if (!group.some((t) => t.sid === state.activeSid)) group = [];
