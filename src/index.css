@@ -692,6 +692,12 @@ input[type=range] { accent-color: var(--accent); height: 4px; padding: 0; border
 .git-branch-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 4px; font-size: 12px; cursor: pointer; }
 .git-branch-row:hover { background: var(--bg-hover); }
 .git-branch-row.current { color: var(--ok); cursor: default; }
+/* rama principal del remoto (origin/HEAD): siempre arriba y con su propio color */
+.git-branch-row.main { color: var(--warn); font-weight: 600; }
+.git-branch-row.main .mono::after { content: '  principal'; font: 500 9.5px var(--sans); color: var(--fg-3); }
+.git-branch-row.main.current { color: var(--warn); box-shadow: inset 2px 0 var(--ok); }
+.out-link { color: var(--accent); text-decoration: underline; cursor: pointer; }
+.out-link:hover { color: var(--fg); }
 .git-branch-row button { visibility: hidden; }
 .git-branch-row:hover button { visibility: visible; }
 .git-remotes summary { cursor: pointer; font-size: 12px; margin: 4px 0; }

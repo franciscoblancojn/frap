@@ -3384,7 +3384,11 @@
       h('div.git-sec',
         h('div.git-sec-head', h('span.grow', 'Ramas')),
         h('div.field-row.git-newbranch', p.newBranch, h('button.mini', { onclick: gitNewBranch, title: 'git checkout -b <nueva-rama>' }, 'checkout -b')),
-        Git.branches.map((b) => h(`div.git-branch-row${b.current ? '.current' : ''}`, {
+        // la rama principal primero (con su color), la actual segunda y el resto en su orden
+        [...Git.branches].sort((a, b) => {
+          const rank = (x) => (x.name === Git.defaultBranch ? 0 : x.current ? 1 : 2);
+          return rank(a) - rank(b);
+        }).map((b) => h(`div.git-branch-row${b.current ? '.current' : ''}${b.name === Git.defaultBranch ? '.main' : ''}`, {
           title: `${b.current ? 'Rama actual' : `Clic: git checkout ${b.name}`}${b.upstream ? `\nSigue a ${b.upstream}` : ''}\nClic derecho: más opciones`,
           onclick: () => { if (!b.current) gitCheckout(b.name, false); },
           oncontextmenu: (e) => gitBranchMenu(e, b, false),
@@ -3404,6 +3408,21 @@
     renderGitRight();
   }
 
+  /** Texto con sus URL http(s) como enlaces que se abren en otra pestaña (p. ej. el "pull/new/rama" que da git push). */
+  function linkifyText(text) {
+    const out = [];
+    const re = /https?:\/\/[^\s<>"'`]+[^\s<>"'`.,;:!?)\]]/g;
+    let last = 0;
+    let m;
+    while ((m = re.exec(text))) {
+      if (m.index > last) out.push(text.slice(last, m.index));
+      const url = m[0];
+      out.push(h('a.out-link', { href: url, title: `Abrir ${url}`, onclick: (e) => { e.preventDefault(); openPageTab({ url }); } }, url));
+      last = m.index + url.length;
+    }
+    if (last < text.length) out.push(text.slice(last));
+    return out;
+  }
   function renderGitRight() {
     if (!gitPane) return;
     const p = gitPane;
@@ -3426,7 +3445,7 @@
       body = Git.out.length
         ? [h('div.git-out', [...Git.out].reverse().map((o) => h('div.git-out-item',
           h('div.mono', o.code == null ? h('span.git-run', '⏳') : h(`span.${o.code === 0 ? 'ok' : 'err'}`, o.code === 0 ? '✓' : '✗'), ` $ ${o.cmd}`, o.code == null ? h('span.muted', '  ejecutando…') : null),
-          o.text ? h('pre', o.text) : null)))]
+          o.text ? h('pre', linkifyText(o.text)) : null)))]
         : [h('p.muted.git-hint', 'Aquí aparece cada comando git que ejecutes desde esta vista, con su salida. Así ves exactamente qué hace cada botón.')];
     }
     p.right.replaceChildren(...body);
