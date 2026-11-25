@@ -214,6 +214,56 @@ setInterval(()=>{},1000);`);
   for (const m of made) await client.waitFor((e) => e.ev === 'exit' && e.sid === m.sid, 8000);
 });
 
+test('team.*: equipo en local/equipo, sesión asignada (meta.person) y frap-team quien desde dentro de la sesión', async () => {
+  const { execFile } = require('child_process');
+  const juan = await client.call('team.save', { person: { name: 'Juan Pérez', role: 'Jefe', icon: '👨‍💼', descripcion: 'No le gusta que le pidan cosas por ssh.' } });
+  assert.equal(juan.id, 'juan-perez');
+  const otro = await client.call('team.save', { person: { name: 'Juan Pérez', role: 'Desarrollador' } });
+  assert.equal(otro.id, 'juan-perez-2', 'mismo nombre: id distinto');
+  await assert.rejects(client.call('team.save', { person: { name: '  ' } }), /obligatorio/);
+  await client.call('team.save', { person: { id: otro.id, name: 'Ana', role: 'QA', icon: '🧪' } });
+  const list = await client.call('team.list');
+  assert.deepEqual(list.people.map((p) => [p.name, p.role]), [['Juan Pérez', 'Jefe'], ['Ana', 'QA']]);
+  assert.ok(list.roles.includes('Project manager'));
+  assert.ok(fs.existsSync(path.join(root, 'local', 'equipo', 'equipo.json')));
+
+  // la IA corre dentro de una sesión asignada: frap-team quien sube por sus procesos hasta esa sesión
+  const cli = path.join(__dirname, '..', 'bridge', 'frap-team.js');
+  const s = await client.call('session.create', { cwd: root, cmd: [process.execPath, cli, 'quien'], meta: { kind: 'claude', person: juan.id } });
+  const out = await client.waitOutput(s.sid, /asignada a/);
+  assert.ok(out.includes('Juan Pérez — Jefe'), out);
+  assert.ok(out.includes('No le gusta que le pidan cosas por ssh.'), out);
+  await client.waitFor((e) => e.ev === 'exit' && e.sid === s.sid, 8000).catch(() => {});
+  // fuera de FRAP no hay sesión
+  const outside = await new Promise((resolve) => execFile(process.execPath, [cli, 'quien'], { env: { ...process.env, FRAP_HOME: path.join(root, 'cfg'), FRAP_LOCAL: path.join(root, 'local') } }, (err, stdout) => resolve(stdout)));
+  assert.match(outside, /no es una sesión de FRAP/);
+  const show = await new Promise((resolve) => execFile(process.execPath, [cli, 'show', 'juan'], { env: { ...process.env, FRAP_LOCAL: path.join(root, 'local') } }, (err, stdout) => resolve(stdout)));
+  assert.match(show, /Juan Pérez — Jefe/);
+
+  // importar (de un export .json): conserva el id, el mismo id se reemplaza
+  const imp = await client.call('team.import', { people: [{ id: 'juan-perez', name: 'Juan Pérez', role: 'Gerente', icon: '🧔', color: '#F7768E', descripcion: 'x' }, { id: 'nuevo', name: 'Nuevo', role: 'QA' }, { name: '' }] });
+  assert.deepEqual(imp, { added: 1, replaced: 1 });
+  const after = (await client.call('team.list')).people;
+  const j = after.find((p) => p.id === 'juan-perez');
+  assert.equal(j.role, 'Gerente');
+  assert.equal(j.color, '#f7768e');
+  assert.ok(after.some((p) => p.id === 'nuevo'));
+  // borrar una persona la quita de las sesiones asignadas
+  const s2 = await client.call('session.create', { cwd: root, meta: { kind: 'claude', person: otro.id } });
+  await client.call('team.delete', { id: otro.id });
+  const again = (await client.call('sessions.list')).find((x) => x.sid === s2.sid);
+  assert.equal(again.meta.person, undefined);
+  await client.call('session.kill', { sid: s2.sid });
+  await client.waitFor((e) => e.ev === 'exit' && e.sid === s2.sid, 8000);
+
+  // skill
+  const skill = path.join(root, '.claude', 'skills', 'frap-equipo', 'SKILL.md');
+  assert.equal((await client.call('team.setSkill', { on: true })).changed.length, 2);
+  assert.match(fs.readFileSync(skill, 'utf8'), /frap-team\.js quien/);
+  await client.call('team.setSkill', { on: false });
+  assert.ok(!fs.existsSync(skill));
+});
+
 test('init escribe el comando inicial en la shell', async () => {
   const s = await client.call('session.create', { cwd: root, init: 'echo init-$((1+1))' });
   await client.waitOutput(s.sid, /init-2/);

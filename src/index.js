@@ -428,7 +428,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -519,6 +519,7 @@
     });
     fitTerm(t);
     attach(t);
+    renderTeamChip(t);
     return t;
   }
 
@@ -668,6 +669,7 @@
       if (reattach && existed) attach(t);
     }
     for (const sid of [...terms.keys()]) if (!seen.has(sid) && terms.get(sid).info.alive !== false) disposeTerm(sid);
+    renderTeamChips(); // la persona asignada o el tipo de agente pudieron cambiar
     if (state.activeSid && !isViewSid(state.activeSid) && !terms.has(state.activeSid)) state.activeSid = null;
     if (!state.activeSid) {
       const first = sessionsOf(state.activeProject)[0];
@@ -742,7 +744,7 @@
         cwd: opts.cwd || p.folders[0],
         cols: 120, rows: 32,
         init: opts.init != null ? opts.init : buildLaunch(kind, p),
-        meta: { projectId: p.id, kind, title: opts.title || (n > 1 ? `${kind} ${n}` : kind), ...(opts.named && opts.title ? { named: true } : {}) },
+        meta: { projectId: p.id, kind, title: opts.title || (n > 1 ? `${kind} ${n}` : kind), ...(opts.named && opts.title ? { named: true } : {}), ...(opts.person ? { person: opts.person } : {}) },
       });
       ensureTerm(info);
       activate(info.sid);
@@ -1127,6 +1129,7 @@
     h('span', { class: dotClass(t) }),
     grouped ? h('span.slot', { title: `Pantalla dividida: panel ${slot + 1}` }, String(slot + 1)) : null,
     h('span.tname', termTitle(t)),
+    teamOn() && teamPerson((t.info.meta || {}).person) ? h('span.tperson', { title: `Asignada a ${teamPerson(t.info.meta.person).name} (${teamPerson(t.info.meta.person).role})` }, teamAvatar(teamPerson(t.info.meta.person), '.sm'), h('span.tperson-name', { style: `color:${teamColor(teamPerson(t.info.meta.person))}` }, teamPerson(t.info.meta.person).name.split(' ')[0])) : null,
     noticeBadge(t),
     kindIcon(termKind(t)) || h(`span.kind.${termKind(t)}`, termKind(t)));
   }
@@ -1879,7 +1882,7 @@
       .filter((t) => termKind(t) !== 'action' && t.info.alive !== false)
       .map((t) => {
         const m = t.info.meta || {};
-        return { sid: t.sid, projectId: m.projectId, kind: termKind(t), title: m.title || termKind(t), cwd: m.cwd || '', ...(m.named ? { named: true } : {}), ...(m.sshId ? { sshId: m.sshId } : {}), ...(m.agent && m.agent.session ? { agent: m.agent } : {}) };
+        return { sid: t.sid, projectId: m.projectId, kind: termKind(t), title: m.title || termKind(t), cwd: m.cwd || '', ...(m.named ? { named: true } : {}), ...(m.sshId ? { sshId: m.sshId } : {}), ...(m.agent && m.agent.session ? { agent: m.agent } : {}), ...(m.person ? { person: m.person } : {}) };
       });
   }
   function snapshotTerms() {
@@ -5346,6 +5349,146 @@
   document.addEventListener('mousedown', (e) => { if (popMenuEl && !popMenuEl.contains(e.target)) closePopMenu(); }, true);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && popMenuEl) { closePopMenu(); e.stopPropagation(); } }, true);
   window.addEventListener('blur', closePopMenu);
+
+  // ---------- Equipo: personas y a quién está asignada cada sesión de IA ----------
+  // Arriba a la derecha de cada terminal de IA: la persona asignada (o «＋ Asignar sesión»). Ambos abren un menú con el
+  // equipo por rol. El equipo vive en local/equipo/equipo.json y la asignación en la meta de la sesión (meta.person):
+  // la IA los lee con la skill frap-equipo (frap-team quien / list / show) y escribe para esa persona.
+  let teamInfo = null; // respuesta de team.list
+  let teamSkillSynced = null;
+  const TEAM_ICONS = [
+    '👤', '👨‍💼', '👩‍💼', '🧑‍💼', '👨‍💻', '👩‍💻', '🧑‍💻', '👨', '👩', '🧑', '👨‍🦱', '👩‍🦱', '👨‍🦰', '👩‍🦰', '👱‍♂️', '👱‍♀️', '👨‍🦳', '👩‍🦳', '🧔', '👴', '👵',
+    '🧑‍🎨', '🧑‍🔬', '🧑‍🏫', '🧑‍🔧', '🧑‍⚖️', '🧑‍🚀', '🕵️', '🦸', '🧙', '🥷', '🤖', '👽', '🐱', '🐶', '🦊', '🐼', '🦁', '🐸', '🦉',
+    '🧪', '🎨', '🛠️', '🤝', '📣', '💰', '🧭', '⭐', '🔥', '💎', '🚀', '📊',
+  ];
+  // colores para distinguir a cada persona en el panel izquierdo y en el chip de la terminal
+  const TEAM_COLORS = ['#f7768e', '#ff9e64', '#e0af68', '#9ece6a', '#73daca', '#2ac3de', '#7aa2f7', '#bb9af7', '#c0caf5', '#f472b6', '#a3e635', '#fb7185', '#38bdf8', '#facc15'];
+  /** Color de la persona: el elegido o uno fijo según su nombre. */
+  const teamColor = (p) => (p && /^#[0-9a-f]{6}$/i.test(p.color || '') ? p.color : TEAM_COLORS[[...String((p && p.name) || '')].reduce((a, c) => (a * 31 + c.codePointAt(0)) >>> 0, 7) % TEAM_COLORS.length]);
+  /** Ícono de la persona sobre un círculo de su color. */
+  const teamAvatar = (p, cls = '') => h(`span.team-av${cls}`, { style: `--pc:${teamColor(p)}` }, (p && p.icon) || '👤');
+  const teamOn = () => modOn('center.team');
+  const isAgentTerm = (t) => ['claude', 'codex', 'opencode'].includes(termKind(t)) || !!((t.info.meta || {}).agent);
+  const teamPerson = (id) => (teamInfo && id ? teamInfo.people.find((p) => p.id === id) || null : null);
+  async function loadTeam() {
+    if (!Bridge.ready || !teamOn()) { renderTeamChips(); return; }
+    try { teamInfo = await Bridge.call('team.list'); } catch (_) { teamInfo = teamInfo || { people: [], roles: [] }; }
+    renderTeamChips();
+  }
+  async function syncTeamSkill(force) {
+    if (!Bridge.ready) return;
+    const on = teamOn();
+    if (!force && teamSkillSynced === on) return;
+    try {
+      const r = await Bridge.call('team.setSkill', { on });
+      teamSkillSynced = on;
+      if (r.changed.length) toast(on ? 'Skill frap-equipo lista en claude y codex' : 'Skill frap-equipo quitada de claude y codex', 'ok');
+    } catch (e) { toast(`Skill frap-equipo: ${e.message}`, 'err'); }
+  }
+  /** Chip de la persona (o botón para asignar) arriba a la derecha de una terminal de IA. */
+  function renderTeamChip(t) {
+    let chip = t.pane.querySelector('.term-person');
+    if (!teamOn() || !isAgentTerm(t)) { if (chip) chip.remove(); return; }
+    if (!chip) { chip = h('div.term-person'); t.pane.append(chip); }
+    chip.classList.toggle('with-tools', !!t.pane.querySelector('.term-tools'));
+    const p = teamPerson((t.info.meta || {}).person);
+    chip.replaceChildren(p
+      ? h('button.term-person-btn', { style: `--pc:${teamColor(p)}`, title: `Sesión asignada a ${p.name} (${p.role})${p.descripcion ? `\n${p.descripcion}` : ''}\nLa IA lo sabe con la skill frap-equipo. Clic: cambiar`, onmousedown: (e) => e.preventDefault(), onclick: (e) => teamMenu(e, t) },
+        teamAvatar(p, '.term-person-ico'), h('span.term-person-name', { style: `color:${teamColor(p)}` }, p.name), h('span.muted.term-person-role', p.role))
+      : h('button.term-person-btn.unassigned', { title: 'Asignar esta sesión a una persona del equipo (p. ej. todo lo de tu jefe): la IA escribirá para ella', onmousedown: (e) => e.preventDefault(), onclick: (e) => teamMenu(e, t) }, '＋ Asignar sesión'));
+  }
+  function renderTeamChips() { for (const t of terms.values()) renderTeamChip(t); }
+  /** Menú del equipo por rol: asignar, quitar, agregar persona o ver el equipo. */
+  function teamMenu(ev, t) {
+    const cur = (t.info.meta || {}).person || null;
+    const people = (teamInfo && teamInfo.people) || [];
+    const roles = (teamInfo && teamInfo.roles) || [];
+    const items = [];
+    for (const r of roles) {
+      const of = people.filter((p) => p.role === r);
+      if (!of.length) continue;
+      items.push({ label: r, disabled: true });
+      for (const p of of) items.push({ label: `${p.id === cur ? '✓ ' : ''}${p.icon || '👤'} ${p.name}`, hint: p.descripcion ? p.descripcion.split('\n')[0].slice(0, 40) : '', action: () => teamAssign(t, p.id) });
+    }
+    if (!people.length) items.push({ label: 'Todavía no hay nadie en el equipo', disabled: true });
+    items.push('-');
+    if (cur) items.push({ label: 'Quitar asignación', action: () => teamAssign(t, null) });
+    items.push({ label: '＋ Agregar persona…', action: () => teamModal(null, t) });
+    if (people.length) items.push({ label: '👥 Ver equipo…', action: () => teamModal() });
+    const r = ev.currentTarget.getBoundingClientRect();
+    popMenu({ clientX: r.left, clientY: r.bottom + 4, preventDefault() {}, stopPropagation() {} }, items);
+  }
+  async function teamAssign(t, personId) {
+    try {
+      const info = await Bridge.call('session.meta', { sid: t.sid, meta: { person: personId } });
+      t.info.meta = info.meta;
+      renderTeamChip(t);
+      renderProjects();
+      const p = teamPerson(personId);
+      toast(p ? `Sesión asignada a ${p.name}: la IA lo tendrá en cuenta (skill frap-equipo)` : 'Sesión sin asignar', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  /** Modal del equipo: lista por rol con editar/borrar y formulario para crear o editar. `assignTo`: al crear, asignar esa sesión. */
+  function teamModal(edit, assignTo) {
+    const people = (teamInfo && teamInfo.people) || [];
+    const roles = (teamInfo && teamInfo.roles) || [];
+    const p = edit || null;
+    const name = h('input', { value: p ? p.name : '', placeholder: 'Juan Pérez' });
+    const icon = h('input.team-icon-in', { value: p ? p.icon : '👤', maxlength: '8' });
+    const role = h('input', { value: p ? p.role : '', placeholder: 'Jefe, Project manager, Desarrollador…', list: 'team-roles' });
+    const desc = h('textarea.team-desc', { rows: '4', placeholder: 'Lo que la IA debe saber: cómo le gusta que le pidan las cosas, qué no hace (p. ej. no le gusta que le pidan cosas por ssh), idioma, nivel técnico…' });
+    desc.value = p ? p.descripcion || '' : '';
+    let color = p && p.color ? p.color : '';
+    const preview = h('span');
+    const paintPreview = () => preview.replaceChildren(teamAvatar({ name: name.value || 'x', icon: icon.value, color }, '.lg'));
+    const picks = h('div.icon-grid.team-icons', TEAM_ICONS.map((ic) => h('button.icon-pick', { type: 'button', onclick: () => { icon.value = ic; paintPreview(); } }, ic)));
+    const colors = h('div.team-colors');
+    const paintColors = () => colors.replaceChildren(
+      h('button.team-color.auto' + (!color ? '.sel' : ''), { type: 'button', title: 'Automático (según el nombre)', onclick: () => { color = ''; paintColors(); paintPreview(); } }, 'A'),
+      ...TEAM_COLORS.map((c) => h(`button.team-color${color === c ? '.sel' : ''}`, { type: 'button', style: `background:${c}`, title: c, onclick: () => { color = c; paintColors(); paintPreview(); } })));
+    paintColors();
+    name.addEventListener('input', paintPreview);
+    icon.addEventListener('input', paintPreview);
+    paintPreview();
+    const doSave = async () => {
+      try {
+        const saved = await Bridge.call('team.save', { person: { id: p ? p.id : undefined, name: name.value, icon: icon.value, role: role.value || 'Otro', descripcion: desc.value, color } });
+        await loadTeam();
+        if (assignTo && !p) await teamAssign(assignTo, saved.id);
+        toast(`${saved.name} ${p ? 'actualizado' : 'agregado al equipo'}`, 'ok');
+        teamModal(null, null); // vuelve a la lista
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    const del = async (x) => {
+      if (!(await confirmBox(`¿Quitar a ${x.name} del equipo?`, 'Las sesiones asignadas a esta persona quedan sin asignar.'))) { teamModal(); return; }
+      try { await Bridge.call('team.delete', { id: x.id }); await loadTeam(); } catch (e) { toast(e.message, 'err'); }
+      teamModal();
+    };
+    const list = people.length ? h('div.team-list', roles.filter((r) => people.some((x) => x.role === r)).map((r) => h('div.team-group',
+      h('div.team-role', r),
+      people.filter((x) => x.role === r).map((x) => h(`div.team-row${p && p.id === x.id ? '.editing' : ''}`,
+        teamAvatar(x, '.lg'),
+        h('div.team-row-main', h('b', { style: `color:${teamColor(x)}` }, x.name), x.descripcion ? h('div.muted.team-row-desc', x.descripcion) : null),
+        h('button.icon.mini', { title: 'Editar', onclick: () => teamModal(x, null) }, '✎'),
+        h('button.icon.mini', { title: 'Quitar del equipo', onclick: () => del(x) }, '✕')))))) : h('p.muted', 'Todavía no hay nadie. Agrega a tu jefe, PM, compañeros o clientes: la IA escribirá para cada uno respetando su descripción.');
+    openModal({
+      title: p ? `Editar · ${p.name}` : 'Equipo',
+      wide: true,
+      body: [
+        list,
+        h('div.team-form',
+          h('div.team-form-title', p ? `Editar a ${p.name}` : '＋ Nueva persona'),
+          h('div.field-row', h('div.team-preview', preview), h('div.field', { style: 'width:80px' }, h('label', 'Ícono'), icon), h('div.field.grow', h('label', 'Nombre'), name), h('div.field.grow', h('label', 'Rol'), role)),
+          h('datalist', { id: 'team-roles' }, roles.map((r) => h('option', { value: r }))),
+          picks,
+          h('label.muted.team-sub', 'Color (para distinguirla en el panel izquierdo)'), colors,
+          h('div.field', h('label', 'Descripción (la lee la IA)'), desc)),
+        h('p.muted', { style: 'font-size:11px;margin:6px 0 0' }, 'Se guarda en local/equipo (fuera de git) y viaja en el zip de local/. La IA lo consulta con la skill frap-equipo.'),
+      ],
+      foot: [p ? h('button', { onclick: () => teamModal(null, assignTo) }, 'Cancelar edición') : null, h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cerrar'), h('button.primary', { onclick: doSave }, p ? 'Guardar cambios' : 'Agregar')],
+    });
+    requestAnimationFrame(() => name.focus());
+  }
 
   // ---------- API: peticiones HTTP guardadas en local/api (como Postman) ----------
   // Árbol de carpetas y peticiones a la izquierda; a la derecha, pestañas con el editor (método, URL, parámetros,
@@ -9276,6 +9419,7 @@
       { key: 'center.db', launch: 'db', img: 'db', name: 'Bases de datos', desc: 'Consultas SQL (Alt+Shift+D)' },
       { key: 'center.notes', launch: 'notes', img: 'notes', name: 'Notas', desc: 'NOTES.md de la carpeta (Alt+Shift+N)' },
       { key: 'center.code', launch: 'code', img: 'code', name: 'Editor de código', desc: 'Alt+Shift+E · si se apaga, las rutas clicadas van al editor externo' },
+      { key: 'center.team', icon: '👥', name: 'Equipo', desc: 'Asignar cada sesión de IA a una persona (jefe, PM, cliente…) con su rol y descripción; la IA escribe para ella (skill frap-equipo)' },
       { key: 'center.api', launch: 'api', img: 'api', name: 'API', desc: 'Alt+Shift+R · peticiones HTTP guardadas en local/api (como Postman) y la skill frap-api para las IA' },
       { key: 'center.split', icon: '⊞', name: 'Pantalla dividida', desc: 'Botón para ver hasta 4 terminales a la vez' },
     ],
@@ -9337,6 +9481,8 @@
     syncWpSkill();
     syncAveSkill();
     syncApiSkill();
+    syncTeamSkill();
+    loadTeam();
   }
 
   /** Modal de Módulos: tres columnas (izquierdo, central, derecho) con un switch por módulo. */
@@ -9534,7 +9680,7 @@
   }
 
   async function openExport() {
-    if (Bridge.ready) await Promise.all([dbInfo ? null : loadDbs(), sshInfo ? null : loadSsh(), wpInfo ? null : loadWp(), aveInfo ? null : loadAve()]);
+    if (Bridge.ready) await Promise.all([dbInfo ? null : loadDbs(), sshInfo ? null : loadSsh(), wpInfo ? null : loadWp(), aveInfo ? null : loadAve(), teamInfo ? null : loadTeam()]);
     const projects = checkGroup('Proyectos y terminales', state.projects.map((p) => ({
       value: p.id, label: p.name, sub: p.folders.map(tilde).join(', '),
       children: sessionsOf(p.id).filter((t) => termKind(t) !== 'action').map((t) => ({ value: t.sid, label: termTitle(t), sub: termKind(t) })),
@@ -9548,6 +9694,8 @@
       { note: 'URL, interruptores Activa / IA y, con la clave de abajo, el token cifrado.' });
     const aves = checkGroup('Integraciones · Aveonline', ((aveInfo && aveInfo.sites) || []).map((c) => ({ value: c.id, label: c.name, sub: c.url })),
       { note: 'URL e interruptores; el token (dura minutos) solo cifrado con la clave. Lo normal es pegar uno nuevo al importar.' });
+    const teamGroup = checkGroup('Equipo', ((teamInfo && teamInfo.people) || []).map((x) => ({ value: x.id, label: `${x.icon || '👤'} ${x.name}`, sub: x.role })),
+      { note: 'Personas con su rol, ícono, color y descripción. Cada terminal exportada lleva además a quién está asignada.' });
     const withPw = h('input', { type: 'checkbox' });
     withPw.checked = true;
     const pass1 = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'clave para cifrar (mín. 6)' });
@@ -9571,12 +9719,14 @@
           id: p.id, name: p.name, folders: p.folders.slice(),
           terminals: children.map((sid) => terms.get(sid)).filter(Boolean).map((t) => {
             const m = t.info.meta || {};
-            return { kind: termKind(t), title: termTitle(t), cwd: m.cwd || p.folders[0], ...(m.named ? { named: true } : {}), ...(m.sshId ? { sshId: m.sshId } : {}), ...(m.agent && m.agent.session ? { agent: m.agent } : {}) };
+            return { kind: termKind(t), title: termTitle(t), cwd: m.cwd || p.folders[0], ...(m.named ? { named: true } : {}), ...(m.sshId ? { sshId: m.sshId } : {}), ...(m.agent && m.agent.session ? { agent: m.agent } : {}), ...(m.person ? { person: m.person } : {}) };
           }),
         };
       });
       out.config = {};
       for (const { value } of config.selected()) out.config[value] = pickConfig(state, value);
+      const selTeam = new Set(teamGroup.selected().map((x) => x.value));
+      if (selTeam.size) out.team = ((teamInfo && teamInfo.people) || []).filter((x) => selTeam.has(x.id)).map(({ id, name, icon, role, descripcion, color }) => ({ id, name, icon, role, descripcion, color }));
       if (selDb.length || selSsh.length || selWp.length || selAve.length) {
         if (!Bridge.ready) { toast('Bridge desconectado: no se pueden exportar BD, SSH ni integraciones', 'err'); return; }
         let passphrase = '';
@@ -9596,13 +9746,13 @@
       setTimeout(() => URL.revokeObjectURL(url), 5000);
       modalClose(true);
       const nTerms = out.projects.reduce((n, p) => n + p.terminals.length, 0);
-      toast(`Exportado: ${out.projects.length} proyecto(s), ${nTerms} terminal(es), ${Object.keys(out.config).length} sección(es) de configuración, ${(out.db || []).length} BD, ${(out.ssh || []).length} SSH, ${((out.integrations || {}).wordpress || []).length} WordPress, ${((out.integrations || {}).aveonline || []).length} Aveonline${out.secrets ? ' (contraseñas y tokens cifrados)' : ''}`, 'ok');
+      toast(`Exportado: ${out.projects.length} proyecto(s), ${nTerms} terminal(es), ${(out.team || []).length} persona(s) del equipo, ${Object.keys(out.config).length} sección(es) de configuración, ${(out.db || []).length} BD, ${(out.ssh || []).length} SSH, ${((out.integrations || {}).wordpress || []).length} WordPress, ${((out.integrations || {}).aveonline || []).length} Aveonline${out.secrets ? ' (contraseñas y tokens cifrados)' : ''}`, 'ok');
     };
     openModal({
       title: 'Exportar',
       wide: true,
       body: h('div.xp-cols',
-        h('div.xp-col', h('h4', 'Panel izquierdo'), projects.el, wps.el, aves.el),
+        h('div.xp-col', h('h4', 'Panel izquierdo'), projects.el, teamGroup.el, wps.el, aves.el),
         h('div.xp-col', h('h4', 'Panel derecho'), config.el, dbs.el, sshs.el, credsBox)),
       foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doExport }, '⇩ Exportar')],
     });
@@ -9636,6 +9786,9 @@
     const inWp = ((data.integrations || {}).wordpress || []).filter((c) => c && c.id);
     const wps = checkGroup('Integraciones · WordPress', inWp.map((c) => ({ value: c.id, label: c.name, sub: c.url })),
       { note: data.secrets ? 'El token viene cifrado: escribe la clave abajo.' : 'Sin token en el archivo: se conserva el que ya tengas o lo agregas en Editar.' });
+    const inTeam = (Array.isArray(data.team) ? data.team : []).filter((x) => x && x.id && x.name);
+    const teamGroup = checkGroup('Equipo', inTeam.map((x) => ({ value: x.id, label: `${x.icon || '👤'} ${x.name}`, sub: x.role })),
+      { note: 'Mismo id = se reemplaza. Las terminales que se reabran vuelven asignadas a su persona.' });
     const inAve = ((data.integrations || {}).aveonline || []).filter((c) => c && c.id);
     const aves = checkGroup('Integraciones · Aveonline', inAve.map((c) => ({ value: c.id, label: c.name, sub: c.url })),
       { note: 'Los tokens de Aveonline duran minutos: lo normal es pegar uno nuevo (📋) después de importar.' });
@@ -9659,6 +9812,16 @@
       const selWp = new Set(wps.selected().map((x) => x.value));
       const selAve = new Set(aves.selected().map((x) => x.value));
       const report = [];
+      // equipo primero: así las terminales que se reabren encuentran a su persona
+      const selTeam = new Set(teamGroup.selected().map((x) => x.value));
+      if (selTeam.size) {
+        if (!Bridge.ready) { toast('Bridge desconectado: no se puede importar el equipo', 'err'); return; }
+        try {
+          const r = await Bridge.call('team.import', { people: inTeam.filter((x) => selTeam.has(x.id)) });
+          report.push(`${r.added + r.replaced} persona(s) del equipo`);
+          await loadTeam();
+        } catch (e) { toast(e.message, 'err'); return; }
+      }
       if (selDb.size || selSsh.size || selWp.size || selAve.size) {
         if (!Bridge.ready) { toast('Bridge desconectado: no se pueden importar BD, SSH ni integraciones', 'err'); return; }
         try {
@@ -9729,7 +9892,7 @@
       body: [
         h('p.muted', { style: 'margin:0' }, `Exportado ${data.exportedAt ? new Date(data.exportedAt).toLocaleString() : ''}${data.from ? ' desde ' + data.from : ''}. Lo que ya existe con el mismo id se reemplaza.`),
         h('div.xp-cols',
-          h('div.xp-col', h('h4', 'Panel izquierdo'), projects.el, termOpts, wps.el, aves.el),
+          h('div.xp-col', h('h4', 'Panel izquierdo'), projects.el, termOpts, teamGroup.el, wps.el, aves.el),
           h('div.xp-col', h('h4', 'Panel derecho'), config.el, dbs.el, sshs.el, secretsBox)),
       ],
       foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doImport }, '⇧ Importar')],
@@ -9754,7 +9917,7 @@
         if (resume && claudeId) init = `${t.kind === 'claude' ? buildLaunch('claude', proj) : (state.settings.launchers.claude || { cmd: 'claude' }).cmd} --resume ${claudeId}`;
         else if (resume && t.kind === 'codex') init = `${(state.settings.launchers.codex || { cmd: 'codex' }).cmd} resume --last`;
         else if (resume && RESUME[t.kind]) init = buildLaunch(t.kind, proj) + RESUME[t.kind];
-        await launch(['shell', 'claude', 'codex', 'opencode'].includes(t.kind) ? t.kind : 'shell', { title: t.title, cwd: t.cwd, init, named: t.named });
+        await launch(['shell', 'claude', 'codex', 'opencode'].includes(t.kind) ? t.kind : 'shell', { title: t.title, cwd: t.cwd, init, named: t.named, person: t.person });
       }
     }
     if (prev && project(prev)) state.activeProject = prev;
@@ -9811,6 +9974,8 @@
     syncAveSkill(true);
     loadAve(true);
     syncApiSkill(true);
+    syncTeamSkill(true);
+    loadTeam();
     apiInfo = null;
     if (apiPane) { // al (re)conectar: lo que no pudo cargarse sin bridge
       for (const [k, d] of [...apiPane.docs]) if (d.error || d.loading) apiPane.docs.delete(k);

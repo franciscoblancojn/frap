@@ -111,6 +111,14 @@ navegador (file://src/index.html)                     máquina local
 - **UI:** colapsable «Aveonline» con 📋 (pegar token) y ＋. Cada tienda muestra estado, host y «vence en N min» (se refresca cada 30 s), interruptores y menú: pegar token nuevo, probar, últimos pedidos (modal con «⧉ IA» que copia la petición), editar, abrir la revisión por token en la tienda, abrir la tienda, copiar el comando y eliminar.
 - **Exportar / importar:** grupo «Integraciones · Aveonline»; token solo cifrado (`secrets.ave`). Como duran minutos, lo normal es pegar uno nuevo tras importar.
 
+## Equipo: a quién está asignada cada sesión de IA
+
+- Módulo `center.team`. Las personas (`{id, name, icon, role, descripcion}`) viven en `local/equipo/equipo.json` (fuera de git; viaja en el zip). Roles sugeridos: Jefe, Project manager, Desarrollador, QA, Diseño, Soporte, Cliente, Otro (se puede escribir uno propio).
+- **Asignación:** en la meta de la sesión (`meta.person`, con `session.meta`), así sobrevive a recargas, al bridge y a reabrir terminales (va en `state.lastTerms`).
+- **UI:** arriba a la derecha de cada terminal de IA (claude/codex/opencode, o una shell donde se detectó claude) un chip con la persona (ícono, nombre, rol) o «＋ Asignar sesión»; ambos abren el equipo por rol, con «Quitar asignación», «＋ Agregar persona…» (al crearla desde ahí queda asignada) y «👥 Ver equipo…» (modal: lista por rol, editar, quitar, formulario). El panel izquierdo muestra el ícono junto al nombre de la terminal.
+- **Exportar / importar (.json):** grupo «Equipo» en la columna del panel izquierdo (`team: [{id, name, icon, role, descripcion, color}]`; al importar, `team.import` conserva el id y el mismo id se reemplaza) y cada terminal exportada lleva `person`, así se reabre asignada. El equipo se importa antes de reabrir las terminales.
+- **IA:** `bridge/frap-team.js` (skill `frap-equipo`). `quien` sube por los procesos (`/proc/<pid>/stat`) hasta el pid de una sesión de FRAP (el helper `frap_pty.py`, cuya meta está en `<SOCK_DIR>/<sid>.json`; `sockDirFor` es común al bridge y al CLI) y muestra su persona. La skill pide consultarlo antes de redactar un mensaje para alguien y respetar su descripción (p. ej. no pedirle a quien no le gusta algo; eso se le dice al usuario).
+
 ## API: peticiones HTTP guardadas (vista del panel central)
 
 - Como Postman, dentro de FRAP. Lanzador «API» (Alt+Shift+R, módulo `center.api`). Todo vive en `local/api/` (fuera de git; viaja en el zip de `local/`):
@@ -337,6 +345,11 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `tunnel.ports` | — | servidores escuchando en el equipo (`ss -ltnp`), sin puertos no web, de las IA ni de FRAP: `[{port, host, pid, name, cmd, cwd}]` |
 | `tunnel.start` | `{id, name, target: {type:'url', url\|port} \| {type:'path', path}, provider, password?, hostRewrite?, rewriteUrls?}` | arranca la puerta local y el proveedor; la URL pública llega en el evento `tunnel` |
 | `tunnel.stop` | `{id}` | detiene el proveedor y cierra la puerta (también sus WebSocket) |
+| `team.list` | — | `{file, cli, skill, roles, people: [{id, name, icon, role, descripcion}]}` |
+| `team.save` | `{person: {id?, name, icon, role, descripcion}}` | crea (sin id; el id sale del nombre) o edita una persona |
+| `team.delete` | `{id}` | la borra y la quita de las sesiones asignadas (`meta.person`) |
+| `team.import` | `{people}` | importa personas de un export .json conservando su id (mismo id = se reemplaza). `{added, replaced}` |
+| `team.skill` / `team.setSkill` | — / `{on}` | estado / instala o quita la skill `frap-equipo` |
 | `api.tree` | — | `{dir, cli, skill, tree: [{name, path, type: folder\|request, method?, url?, hasRes?, vars?, children?}]}` |
 | `api.read` | `{path}` | `{path, request, response}` (la última respuesta guardada o null) |
 | `api.save` | `{path, request, create?}` | guarda (o crea) una petición normalizada |

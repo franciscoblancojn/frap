@@ -52,6 +52,8 @@ bridge/aveonline.js    integración Aveonline: tiendas (URL + token de la revisi
 bridge/frap-ave.js     CLI para agentes (skill frap-aveonline, solo lectura): info / pedidos / pedido / log en tiendas con ENABLED=1 y AI=1
 bridge/api.js          módulo "API" (como Postman): peticiones en local/api/<carpeta>/<nombre>.req.json, variables por carpeta (_carpeta.json) y globales (_globales.json), envío HTTP, skill frap-api
 bridge/frap-api.js     CLI para agentes (skill frap-api): list / new / run / show / vars / set-var
+bridge/team.js         módulo "Equipo": personas en local/equipo/equipo.json, sesión de IA asignada (meta.person), sockDirFor (carpeta de sesiones, común a bridge y CLI), skill frap-equipo
+bridge/frap-team.js    CLI para agentes (skill frap-equipo): quien (sube por sus procesos hasta su sesión de FRAP) / list / show
 integrations/wordpress/frap-wordpress/  plugin de WordPress (PHP) del lado del sitio: se publica en su propio repo con git subtree (ver su README)
 local/                 datos locales de FRAP (issues…): ignorada en git, nunca se sube
 tests/bridge.test.js   tests de integración del bridge (node:test)

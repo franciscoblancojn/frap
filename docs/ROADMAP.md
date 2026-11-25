@@ -8,6 +8,8 @@
 - [x] Panel central: pestañas y lanzadores shell/claude/codex/opencode (`--add-dir` para las carpetas extra)
 - [x] Terminales persistentes: sobreviven a recargar la página y se re-adjuntan con su scrollback
 - [x] Shell y SSH: botones arriba a la derecha para limpiar (también vacía el historial guardado: no vuelve al recargar ni al reiniciar el bridge) y copiar todo el contenido de la terminal
+- [x] Módulo «Equipo»: personas (nombre, ícono, rol, descripción) y cada sesión de IA asignada a una (chip arriba a la derecha de la terminal, menú por rol, modal del equipo); la IA lo lee con la skill `frap-equipo` (`frap-team quien` encuentra su sesión por el árbol de procesos) y escribe para esa persona respetando su descripción
+- [x] Equipo en el export .json (personas con rol, ícono, color y descripción) y la persona asignada a cada terminal: al importar vuelve el equipo y las terminales se reabren asignadas
 - [x] Vista «API» (como Postman): peticiones HTTP guardadas en local/api con carpetas, variables por carpeta y globales ({{var}}), cuerpo JSON/texto/formularios, última respuesta guardada, árbol con clic derecho, Ctrl+Enter; CLI `frap-api` y skill `frap-api` para que la IA guarde sus peticiones en la carpeta de la issue o del proyecto; viaja en el zip de local/
 - [x] Git: clic derecho en las ramas (locales y remotas): cambiar, abrir en línea, crear pull/merge request (GitHub, GitLab, Bitbucket), fusionar en la actual, comparar (commits de cada lado y diff --stat), crear rama desde aquí, renombrar, publicar (push -u), copiar nombre, eliminar (-d / -D) y eliminar del remoto
 - [x] Git: botón «↗ Repo» que abre el remoto (origin, o el primero) en el navegador; convierte URLs ssh (git@host:u/r.git) a https y nunca abre un token embebido

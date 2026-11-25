@@ -26,6 +26,7 @@ const scripts = require('./scripts');
 const wordpress = require('./wordpress');
 const aveonline = require('./aveonline');
 const apiReq = require('./api');
+const team = require('./team');
 
 const VERSION = '1.3.0';
 const STARTED_AT = Date.now();
@@ -298,10 +299,7 @@ function descendants(rows, rootPid) {
 // vivas y al arrancar se reconecta a ellas (rediscoverSessions).
 const sessions = new Map();
 const clients = new Set();
-const SOCK_DIR = path.join(
-  process.env.XDG_RUNTIME_DIR && fs.existsSync(process.env.XDG_RUNTIME_DIR) ? process.env.XDG_RUNTIME_DIR : os.tmpdir(),
-  `frap-${process.getuid ? process.getuid() : 'u'}-${crypto.createHash('sha1').update(path.resolve(FRAP_HOME)).digest('hex').slice(0, 8)}`
-);
+const SOCK_DIR = team.sockDirFor(FRAP_HOME); // misma fórmula que usan los CLI (frap-team quien) para encontrar su sesión
 fs.mkdirSync(SOCK_DIR, { recursive: true, mode: 0o700 });
 fs.chmodSync(SOCK_DIR, 0o700);
 const sockPath = (sid) => path.join(SOCK_DIR, `${sid}.sock`);
@@ -1518,6 +1516,22 @@ const ops = {
   'api.send': ({ path: p, request, vars, timeoutMs }) => apiReq.run(p, { request, vars, timeoutMs: Math.min(Number(timeoutMs) || 30000, 300000) }),
   'api.skill': () => apiReq.skillStatus(),
   'api.setSkill': ({ on }) => apiReq.setSkill(!!on),
+  // ----- módulo Equipo: personas (local/equipo/equipo.json) y a quién está asignada cada sesión (meta.person) -----
+  /** {file, cli, skill, roles, people: [{id, name, icon, role, descripcion}]} */
+  'team.list': () => ({ file: team.TEAM_FILE, cli: team.CLI, skill: team.skillStatus(), ...team.load() }),
+  /** Crea (sin id) o edita una persona. → la persona */
+  'team.save': ({ person }) => team.upsert(person),
+  /** Borra una persona y la quita de las sesiones asignadas a ella. */
+  'team.delete': ({ id }) => {
+    team.remove(id);
+    for (const s of sessions.values()) if (s.meta.person === id) { delete s.meta.person; saveMeta(s); }
+    broadcast({ ev: 'sessions' });
+    return true;
+  },
+  /** Importa personas de un export .json (mismo id = se reemplaza). {added, replaced} */
+  'team.import': ({ people }) => team.importPeople(people),
+  'team.skill': () => team.skillStatus(),
+  'team.setSkill': ({ on }) => team.setSkill(!!on),
   'scripts.list': () => scripts.listScripts(),
   /** Cambia los interruptores de un script. {path, user?, ai?} → {path, user, ai} */
   'scripts.set': ({ path: p, user, ai }) => scripts.setFlags(p, { user, ai }),
