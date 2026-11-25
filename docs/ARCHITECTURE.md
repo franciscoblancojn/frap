@@ -111,6 +111,13 @@ navegador (file://src/index.html)                     máquina local
 - **UI:** colapsable «Aveonline» con 📋 (pegar token) y ＋. Cada tienda muestra estado, host y «vence en N min» (se refresca cada 30 s), interruptores y menú: pegar token nuevo, probar, últimos pedidos (modal con «⧉ IA» que copia la petición), editar, abrir la revisión por token en la tienda, abrir la tienda, copiar el comando y eliminar.
 - **Exportar / importar:** grupo «Integraciones · Aveonline»; token solo cifrado (`secrets.ave`). Como duran minutos, lo normal es pegar uno nuevo tras importar.
 
+## Pendientes (pestaña del panel derecho)
+
+- Módulo `right.todos` (pestaña «Pendientes» del panel derecho): tareas locales del usuario en `local/pendientes/pendientes.json` (fuera de git; viaja en el zip). Cada una: `{id, title, descripcion, icon, priority (las 5 de las issues), estado (pendiente / en curso / bloqueado / hecho), depends: [ids], session: {sid, projectId, cwd, title, kind, agent}, created, updated}`.
+- **Orden** (`todos.list`, `bridge/todos.js`): topológico; entre los que ya no esperan a nadie, por prioridad y antigüedad. Lo que depende de un pendiente abierto va después de él (`blockedBy`); lo hecho al final. Las dependencias no pueden formar ciclos; borrar uno lo quita de las dependencias de los demás.
+- **Desde una sesión de IA:** `bridge/frap-todo.js` (skill `frap-pendientes`) `add` detecta su sesión de FRAP como `frap-team quien` y la guarda en `session`. El botón 📌 (arriba a la derecha de las terminales de IA, junto al chip de Equipo) escribe en la terminal la petición de guardar la última lista como pendientes, sin Enter. El bridge revisa el archivo cada 2 s y emite `{ev: 'todos'}` si cambió (la IA lo escribe sin pasar por el bridge).
+- **UI:** pestaña «Pendientes»: estado (clic: cambiarlo), prioridad (clic: cambiarla), ícono, nombre y «→». «→» activa la sesión si sigue abierta (con su proyecto); si no, la reabre en su carpeta con `claude --resume <conversación>` y el pendiente queda con la sesión nueva. Filtros: solo este proyecto y mostrar hechos. Clic: detalle; doble clic o «Editar»: modal (nombre, ícono, prioridad, estado, descripción, dependencias, vincular a la sesión activa o desvincular). Clic derecho: editar, ir a la sesión, estados, nuevo que dependa de este, borrar.
+
 ## Equipo: a quién está asignada cada sesión de IA
 
 - Módulo `center.team`. Las personas (`{id, name, icon, role, descripcion}`) viven en `local/equipo/equipo.json` (fuera de git; viaja en el zip). Roles sugeridos: Jefe, Project manager, Desarrollador, QA, Diseño, Soporte, Cliente, Otro (se puede escribir uno propio).
@@ -345,6 +352,10 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `tunnel.ports` | — | servidores escuchando en el equipo (`ss -ltnp`), sin puertos no web, de las IA ni de FRAP: `[{port, host, pid, name, cmd, cwd}]` |
 | `tunnel.start` | `{id, name, target: {type:'url', url\|port} \| {type:'path', path}, provider, password?, hostRewrite?, rewriteUrls?}` | arranca la puerta local y el proveedor; la URL pública llega en el evento `tunnel` |
 | `tunnel.stop` | `{id}` | detiene el proveedor y cierra la puerta (también sus WebSocket) |
+| `todos.list` | — | `{file, cli, skill, estados, todos: [… en orden, con n y blockedBy]}` |
+| `todos.save` | `{todo: {id?, title, descripcion, icon, priority, estado, depends, session}}` | crea (sin id) o edita; valida prioridad, estado, dependencias y ciclos. Emite `{ev: 'todos'}` |
+| `todos.delete` | `{id}` | lo borra y lo quita de las dependencias de los demás |
+| `todos.skill` / `todos.setSkill` | — / `{on}` | estado / instala o quita la skill `frap-pendientes` |
 | `team.list` | — | `{file, cli, skill, roles, people: [{id, name, icon, role, descripcion}]}` |
 | `team.save` | `{person: {id?, name, icon, role, descripcion}}` | crea (sin id; el id sale del nombre) o edita una persona |
 | `team.delete` | `{id}` | la borra y la quita de las sesiones asignadas (`meta.person`) |

@@ -428,7 +428,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -1862,6 +1862,7 @@
 
   function renderAll() {
     renderProjects();
+    renderTodos();
     renderIntegrations();
     renderTabs();
     renderPanes();
@@ -2157,6 +2158,7 @@
   // ======================================================================
   const RTABS = {
     procs: renderProcs,
+    todos: () => renderTodosTab(),
     prompts: renderPrompts,
     actions: renderActions,
     pages: renderPages,
@@ -5369,6 +5371,179 @@
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && popMenuEl) { closePopMenu(); e.stopPropagation(); } }, true);
   window.addEventListener('blur', closePopMenu);
 
+  // ---------- Pendientes (panel izquierdo): tareas locales con prioridad, estado, dependencias y su sesión de IA ----------
+  // Viven en local/pendientes/pendientes.json. La IA los crea desde su sesión con la skill frap-pendientes (frap-todo add):
+  // quedan vinculados a esa sesión, y el botón → la vuelve a abrir en el panel central (o la reabre si ya no existe).
+  let todosInfo = null;
+  let todosSkillSynced = null;
+  let todoOpen = null; // id del pendiente desplegado
+  const TODO_ESTADOS = [['pendiente', '○', 'Pendiente'], ['en curso', '◐', 'En curso'], ['bloqueado', '⛔', 'Bloqueado'], ['hecho', '✓', 'Hecho']];
+  const todoEstado = (e) => TODO_ESTADOS.find((x) => x[0] === e) || TODO_ESTADOS[0];
+  const TODO_ICONS = ['', '🔧', '🐛', '🚀', '📝', '🔍', '🧪', '📦', '🗄️', '🌐', '💬', '📞', '📧', '⚠️', '💡', '🔒', '🎨', '📊'];
+  async function loadTodos() {
+    if (!Bridge.ready || !rtabOn('todos')) { renderTodos(); return; }
+    try { todosInfo = await Bridge.call('todos.list'); } catch (e) { todosInfo = { error: e.message, todos: [] }; }
+    renderTodos();
+  }
+  async function syncTodosSkill(force) {
+    if (!Bridge.ready) return;
+    const on = rtabOn('todos');
+    if (!force && todosSkillSynced === on) return;
+    try {
+      const r = await Bridge.call('todos.setSkill', { on });
+      todosSkillSynced = on;
+      if (r.changed.length) toast(on ? 'Skill frap-pendientes lista en claude y codex' : 'Skill frap-pendientes quitada de claude y codex', 'ok');
+    } catch (e) { toast(`Skill frap-pendientes: ${e.message}`, 'err'); }
+  }
+  async function todoSave(todo, quiet) {
+    try { const t = await Bridge.call('todos.save', { todo }); await loadTodos(); if (!quiet) toast(`Pendiente #${t.id} guardado`, 'ok'); return t; } catch (e) { toast(e.message, 'err'); return null; }
+  }
+  /** Proyecto de un pendiente: el de su sesión o el que contiene su carpeta. */
+  function todoProject(t) {
+    const s = t.session;
+    if (!s) return null;
+    return project(s.projectId) || state.projects.find((p) => p.folders.some((f) => s.cwd === f || (s.cwd || '').startsWith(`${f.replace(/\/+$/, '')}/`))) || null;
+  }
+  /** → sesión: si sigue abierta la activa; si no, la reabre en su carpeta retomando su conversación de claude. */
+  async function todoGoSession(t) {
+    const s = t.session;
+    if (!s) { toast('Este pendiente no está vinculado a una sesión de IA', 'err'); return; }
+    if (s.sid && terms.has(s.sid)) {
+      const p = todoProject(t);
+      if (p && modOn('left.sections')) { const sec = activeSection(); if (!sectionProjects(sec).some((x) => x.id === p.id)) { state.ui.section = 'all'; } }
+      activate(s.sid);
+      return;
+    }
+    const p = todoProject(t);
+    if (!p) { toast(`La sesión ya no existe y su carpeta (${tilde(s.cwd || '?')}) no es de ningún proyecto`, 'err'); return; }
+    if (!(await confirmBox(`¿Reabrir la sesión «${s.title || 'claude'}»?`, `Ya no está abierta. Se abre una terminal de ${s.kind || 'claude'} en ${tilde(s.cwd || p.folders[0])}${s.agent && s.agent.session ? ' retomando su conversación (claude --resume)' : ''}.`))) return;
+    state.activeProject = p.id;
+    if (modOn('left.sections') && !sectionProjects(activeSection()).some((x) => x.id === p.id)) state.ui.section = 'all';
+    const kind = ['claude', 'codex', 'opencode'].includes(s.kind) ? s.kind : 'claude';
+    const resume = s.agent && s.agent.tool === 'claude' && /^[0-9a-f-]{36}$/i.test(s.agent.session || '') ? `${buildLaunch('claude', p)} --resume ${s.agent.session}` : undefined;
+    await launch(kind, { cwd: s.cwd || p.folders[0], title: s.title || undefined, init: resume });
+    const nt = activeTerm();
+    if (nt) await todoSave({ id: t.id, session: { ...s, sid: nt.sid, projectId: p.id } }, true); // el pendiente queda con la sesión nueva
+  }
+  /** 📌 en las terminales de IA: le pide a la IA guardar su última lista como pendientes (se escribe sin Enter). */
+  function todoAskSave(t) {
+    Bridge.send('session.input', { sid: t.sid, data: 'Guarda la lista de pasos que acabas de darme como pendientes (skill frap-pendientes): uno por paso, con prioridad y dependencias.' });
+    activate(t.sid);
+    toast('Escrito en la terminal: revísalo y pulsa Enter', 'ok');
+  }
+  function todoMenuEstado(ev, t) {
+    ev.stopPropagation();
+    popMenu(ev, TODO_ESTADOS.map(([k, ico, label]) => ({ label: `${t.estado === k ? '✓ ' : ''}${ico} ${label}`, action: () => todoSave({ id: t.id, estado: k }, true) })));
+  }
+  function todoMenuPrio(ev, t) {
+    ev.stopPropagation();
+    popMenu(ev, ISSUE_PRIORITIES.map((p) => ({ label: `${t.priority === p.key ? '✓ ' : ''}${p.icon} ${p.label}`, hint: p.en, action: () => todoSave({ id: t.id, priority: p.key }, true) })));
+  }
+  function todoModal(t, preset = {}) {
+    const all = (todosInfo && todosInfo.todos) || [];
+    const cur = t || { title: '', descripcion: '', icon: '', priority: 'none', estado: 'pendiente', depends: [], session: null, ...preset };
+    const title = h('input', { value: cur.title, placeholder: 'Qué hay que hacer (empieza por un verbo)' });
+    const icon = h('input.team-icon-in', { value: cur.icon || '', maxlength: '8', placeholder: '·' });
+    const prio = h('select', ISSUE_PRIORITIES.map((p) => h('option', { value: p.key }, `${p.icon} ${p.label}`)));
+    prio.value = cur.priority;
+    const estado = h('select', TODO_ESTADOS.map(([k, ico, label]) => h('option', { value: k }, `${ico} ${label}`)));
+    estado.value = cur.estado;
+    const desc = h('textarea.team-desc', { rows: '5', placeholder: 'Detalle para retomarlo: archivos, comandos, criterio de listo…' });
+    desc.value = cur.descripcion || '';
+    const deps = new Set(cur.depends || []);
+    const depList = h('div.todo-deps', all.filter((x) => !t || x.id !== t.id).length ? all.filter((x) => !t || x.id !== t.id).map((x) => h('label.todo-dep',
+      h('input', { type: 'checkbox', checked: deps.has(x.id), onchange: (e) => { if (e.target.checked) deps.add(x.id); else deps.delete(x.id); } }),
+      ` #${x.id} ${x.icon ? `${x.icon} ` : ''}${x.title}`, x.estado === 'hecho' ? h('span.muted', ' (hecho)') : null)) : h('span.muted', 'No hay otros pendientes.'));
+    let session = cur.session || null;
+    const sessBox = h('div.todo-sess');
+    const at = activeTerm();
+    const paintSess = () => sessBox.replaceChildren(
+      session ? h('span', `🤖 ${session.title || session.kind || 'sesión'} · ${tilde(session.cwd || '')}`) : h('span.muted', 'Sin sesión vinculada'),
+      at && isAgentTerm(at) && (!session || session.sid !== at.sid) ? h('button.mini', { type: 'button', onclick: () => { const m = at.info.meta || {}; session = { sid: at.sid, projectId: m.projectId || null, cwd: m.cwd || '', title: termTitle(at), kind: termKind(at), ...(m.agent ? { agent: m.agent } : {}) }; paintSess(); } }, `Vincular a «${termTitle(at)}»`) : null,
+      session ? h('button.mini', { type: 'button', onclick: () => { session = null; paintSess(); } }, 'Desvincular') : null);
+    paintSess();
+    const picks = h('div.icon-grid', TODO_ICONS.map((ic) => h('button.icon-pick', { type: 'button', title: ic ? '' : 'Sin ícono', onclick: () => { icon.value = ic; } }, ic || '∅')));
+    const doSave = async () => {
+      const saved = await todoSave({ ...(t ? { id: t.id } : {}), title: title.value, icon: icon.value, priority: prio.value, estado: estado.value, descripcion: desc.value, depends: [...deps], session });
+      if (saved) modalClose(true);
+    };
+    openModal({
+      title: t ? `Pendiente #${t.id}` : 'Nuevo pendiente',
+      wide: true,
+      body: [
+        h('div.field-row', h('div.field', { style: 'width:70px' }, h('label', 'Ícono'), icon), h('div.field.grow', h('label', 'Nombre'), title)),
+        picks,
+        h('div.field-row', h('div.field.grow', h('label', 'Prioridad'), prio), h('div.field.grow', h('label', 'Estado'), estado)),
+        h('div.field', h('label', 'Descripción'), desc),
+        h('div.field', h('label', 'Depende de (se hace después de estos)'), depList),
+        h('div.field', h('label', 'Sesión de IA'), sessBox),
+      ],
+      foot: [t ? h('button.danger', { onclick: async () => { if (!(await confirmBox(`¿Borrar el pendiente #${t.id}?`, t.title))) { todoModal(t); return; } try { await Bridge.call('todos.delete', { id: t.id }); await loadTodos(); } catch (e) { toast(e.message, 'err'); } } }, 'Borrar') : null,
+        h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
+    });
+    requestAnimationFrame(() => title.focus());
+  }
+  /** Repinta la pestaña Pendientes si está a la vista. */
+  function renderTodos() { if (state.ui.rtab === 'todos' && !state.ui.hideRight) renderRight(); }
+  /** Pestaña «Pendientes» del panel derecho. */
+  function renderTodosTab() {
+    const onlyProj = !!state.ui.todosOnlyProject;
+    const showDone = !!state.ui.todosShowDone;
+    const all = (todosInfo && todosInfo.todos) || [];
+    const proj = project();
+    const scoped = onlyProj && proj ? all.filter((t) => { const p = todoProject(t); return p && p.id === proj.id; }) : all;
+    const openN = scoped.filter((t) => t.estado !== 'hecho').length;
+    const flip = (k) => (e) => { e.stopPropagation(); state.ui[k] = !state.ui[k]; save(); renderTodos(); };
+    const head = section(`Pendientes${openN ? ` (${openN})` : ''}`,
+      h(`button.mini${onlyProj ? '.on' : ''}`, { title: onlyProj ? 'Mostrando solo los de este proyecto · clic: todos' : 'Mostrar solo los de este proyecto', onclick: flip('todosOnlyProject') }, onlyProj ? '📁 Este proyecto' : '📁 Todos'),
+      h(`button.mini${showDone ? '.on' : ''}`, { title: showDone ? 'Ocultar los hechos' : 'Mostrar también los hechos', onclick: flip('todosShowDone') }, showDone ? '✓ Con hechos' : '✓ Sin hechos'),
+      h('button.mini.primary', { title: 'Nuevo pendiente', onclick: (e) => { e.stopPropagation(); todoModal(null); } }, '＋ Nuevo'));
+    if (!todosInfo) { if (Bridge.ready) loadTodos(); return [head, h('div.empty-list', Bridge.ready ? 'Cargando…' : 'Bridge desconectado.')]; }
+    if (todosInfo.error) return [head, h('div.empty-list', todosInfo.error)];
+    const list = scoped.filter((t) => showDone || t.estado !== 'hecho');
+    const rows = list.map((t) => {
+      const pr = issuePrio(t.priority);
+      const [, eico, elabel] = todoEstado(t.estado);
+      const blocked = t.blockedBy && t.blockedBy.length;
+      const open = todoOpen === t.id;
+      const alive = t.session && t.session.sid && terms.has(t.session.sid);
+      const p = todoProject(t);
+      return h(`div.todo${t.estado === 'hecho' ? '.done' : ''}${blocked ? '.blocked' : ''}${open ? '.open' : ''}`, {
+        title: `#${t.id} · ${pr.label} · ${elabel}${blocked ? ` · espera a #${t.blockedBy.join(', #')}` : ''}${p ? `\nProyecto: ${p.name}` : ''}\nClic: ver detalle · doble clic: editar`,
+        onclick: () => { todoOpen = open ? null : t.id; renderTodos(); },
+        ondblclick: () => todoModal(t),
+        oncontextmenu: (e) => popMenu(e, [
+          { label: 'Editar…', action: () => todoModal(t) },
+          t.session && { label: alive ? '→ Ir a la sesión' : '→ Reabrir la sesión', action: () => todoGoSession(t) },
+          '-',
+          ...TODO_ESTADOS.map(([k, ico, label]) => ({ label: `${t.estado === k ? '✓ ' : ''}${ico} ${label}`, action: () => todoSave({ id: t.id, estado: k }, true) })),
+          '-',
+          { label: 'Nuevo pendiente que dependa de este…', action: () => todoModal(null, { depends: [t.id], session: t.session }) },
+          { label: 'Borrar…', danger: true, action: async () => { if (await confirmBox(`¿Borrar el pendiente #${t.id}?`, t.title)) { try { await Bridge.call('todos.delete', { id: t.id }); await loadTodos(); } catch (e) { toast(e.message, 'err'); } } } },
+        ]),
+      },
+      h('div.todo-row',
+        h('button.todo-estado', { title: `${elabel} · clic: cambiar estado`, onclick: (e) => todoMenuEstado(e, t) }, eico),
+        h('button.iss-prio', { title: `Prioridad: ${pr.label} · clic: cambiarla`, onclick: (e) => todoMenuPrio(e, t) }, pr.icon),
+        t.icon ? h('span.todo-ico', t.icon) : null,
+        h('span.todo-title', t.title),
+        t.session ? h(`button.icon.mini.todo-go${alive ? '.alive' : ''}`, { title: alive ? `Ir a la sesión «${t.session.title || 'IA'}»` : `Reabrir la sesión «${t.session.title || 'IA'}» (ya no está abierta)`, onclick: (e) => { e.stopPropagation(); todoGoSession(t); } }, '→') : null),
+      blocked ? h('div.todo-sub.muted', `⏳ espera a #${t.blockedBy.join(', #')}`) : null,
+      open ? h('div.todo-detail',
+        t.descripcion ? h('div.todo-desc', t.descripcion) : h('div.muted', 'Sin descripción.'),
+        t.depends && t.depends.length ? h('div.muted', `Depende de: ${t.depends.map((d) => { const x = all.find((y) => y.id === d); return `#${d}${x ? ` ${x.title}` : ''}${x && x.estado === 'hecho' ? ' ✓' : ''}`; }).join(' · ')}`) : null,
+        t.session ? h('div.muted', `🤖 ${t.session.title || t.session.kind} · ${tilde(t.session.cwd || '')}${p ? ` · ${p.name}` : ''}`) : null,
+        h('div.todo-acts',
+          h('button.mini', { onclick: (e) => { e.stopPropagation(); todoModal(t); } }, '✎ Editar'),
+          t.estado !== 'hecho' ? h('button.mini', { onclick: (e) => { e.stopPropagation(); todoSave({ id: t.id, estado: 'hecho' }, true); } }, '✓ Hecho') : null,
+          t.session ? h('button.mini', { onclick: (e) => { e.stopPropagation(); todoGoSession(t); } }, alive ? '→ Ir a la sesión' : '→ Reabrir sesión') : null)) : null);
+    });
+    return [head,
+      h('p.muted.todo-hint', 'Lo que espera a otro pendiente va después de él. «→» abre la sesión de IA donde salió. La IA los guarda con 📌 (arriba a la derecha de su terminal) o si le dices «guárdalo como pendientes».'),
+      rows.length ? h('div.todo-list', rows) : h('div.empty-list', all.length ? (onlyProj ? 'Nada pendiente en este proyecto.' : 'Todo hecho ✓') : 'Sin pendientes. Pídele a la IA «guárdalo como pendientes» (📌 en la terminal) o crea uno con ＋ Nuevo.')];
+  }
+  Bridge.on('todos', () => loadTodos());
+
   // ---------- Equipo: personas y a quién está asignada cada sesión de IA ----------
   // Arriba a la derecha de cada terminal de IA: la persona asignada (o «＋ Asignar sesión»). Ambos abren un menú con el
   // equipo por rol. El equipo vive en local/equipo/equipo.json y la asignación en la meta de la sesión (meta.person):
@@ -5407,14 +5582,17 @@
   /** Chip de la persona (o botón para asignar) arriba a la derecha de una terminal de IA. */
   function renderTeamChip(t) {
     let chip = t.pane.querySelector('.term-person');
-    if (!teamOn() || !isAgentTerm(t)) { if (chip) chip.remove(); return; }
+    const showPin = rtabOn('todos') && isAgentTerm(t);
+    const showPerson = teamOn() && isAgentTerm(t);
+    if (!showPin && !showPerson) { if (chip) chip.remove(); return; }
     if (!chip) { chip = h('div.term-person'); t.pane.append(chip); }
     chip.classList.toggle('with-tools', !!t.pane.querySelector('.term-tools'));
     const p = teamPerson((t.info.meta || {}).person);
-    chip.replaceChildren(p
+    const pin = showPin ? h('button.term-pin', { title: 'Guardar como pendientes la lista que te dio la IA (escribe la petición en la terminal; tú pulsas Enter)', onmousedown: (e) => e.preventDefault(), onclick: () => todoAskSave(t) }, '📌') : null;
+    chip.replaceChildren(...[pin, !showPerson ? null : p
       ? h('button.term-person-btn', { style: `--pc:${teamColor(p)}`, title: `Sesión asignada a ${p.name} (${p.role})${p.descripcion ? `\n${p.descripcion}` : ''}\nLa IA lo sabe con la skill frap-equipo. Clic: cambiar`, onmousedown: (e) => e.preventDefault(), onclick: (e) => teamMenu(e, t) },
         teamAvatar(p, '.term-person-ico'), h('span.term-person-name', { style: `color:${teamColor(p)}` }, p.name), h('span.muted.term-person-role', p.role))
-      : h('button.term-person-btn.unassigned', { title: 'Asignar esta sesión a una persona del equipo (p. ej. todo lo de tu jefe): la IA escribirá para ella', onmousedown: (e) => e.preventDefault(), onclick: (e) => teamMenu(e, t) }, '＋ Asignar sesión'));
+      : h('button.term-person-btn.unassigned', { title: 'Asignar esta sesión a una persona del equipo (p. ej. todo lo de tu jefe): la IA escribirá para ella', onmousedown: (e) => e.preventDefault(), onclick: (e) => teamMenu(e, t) }, '＋ Asignar sesión')].filter(Boolean));
   }
   function renderTeamChips() { for (const t of terms.values()) renderTeamChip(t); }
   /** Menú del equipo por rol: asignar, quitar, agregar persona o ver el equipo. */
@@ -9456,6 +9634,7 @@
       { key: 'right.commands', rtab: 'commands', icon: '⌘', name: 'Comandos', desc: 'Comandos / de las IA' },
       { key: 'right.hooks', rtab: 'hooks', icon: '🪝', name: 'Hooks', desc: 'Hooks de claude' },
       { key: 'right.memory', rtab: 'memory', icon: '🧠', name: 'Memoria', desc: 'CLAUDE.md / AGENTS.md' },
+      { key: 'right.todos', rtab: 'todos', icon: '📌', name: 'Pendientes', desc: 'Cosas por hacer con prioridad, estado y dependencias, vinculadas a su sesión de IA (skill frap-pendientes)' },
       { key: 'right.tunnels', rtab: 'tunnels', icon: '🚇', name: 'Túneles', desc: 'Compartir por URL pública un puerto, una IP o un archivo' },
       { key: 'right.voice', icon: '🎤', name: 'Voz (Hablar)', desc: 'Dictado a la IA, abajo del panel (Alt+Shift+V)' },
     ],
@@ -9502,6 +9681,9 @@
     syncApiSkill();
     syncTeamSkill();
     loadTeam();
+    syncTodosSkill();
+    loadTodos();
+    renderTeamChips();
   }
 
   /** Modal de Módulos: tres columnas (izquierdo, central, derecho) con un switch por módulo. */
@@ -9995,6 +10177,8 @@
     syncApiSkill(true);
     syncTeamSkill(true);
     loadTeam();
+    syncTodosSkill(true);
+    loadTodos();
     apiInfo = null;
     if (apiPane) { // al (re)conectar: lo que no pudo cargarse sin bridge
       for (const [k, d] of [...apiPane.docs]) if (d.error || d.loading) apiPane.docs.delete(k);

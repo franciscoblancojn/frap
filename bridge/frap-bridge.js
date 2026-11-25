@@ -27,6 +27,7 @@ const wordpress = require('./wordpress');
 const aveonline = require('./aveonline');
 const apiReq = require('./api');
 const team = require('./team');
+const todos = require('./todos');
 
 const VERSION = '1.3.0';
 const STARTED_AT = Date.now();
@@ -348,6 +349,14 @@ function readNotice(sid) {
   broadcast({ ev: 'notice', sid, notice: s.notice });
 }
 const noticeTimers = new Map();
+// ---------- pendientes: la IA los escribe con frap-todo (sin pasar por el bridge) → se avisa a la UI ----------
+const todosMtimeNow = () => { try { return fs.statSync(todos.TODO_FILE).mtimeMs; } catch (_) { return 0; } }; // 0 = aún no existe
+let todosMtime = todosMtimeNow();
+setInterval(() => {
+  const m = todosMtimeNow();
+  if (m !== todosMtime) { todosMtime = m; broadcast({ ev: 'todos' }); }
+}, 2000).unref();
+
 // ---------- conversación de claude de cada terminal ----------
 // Claude Code escribe ~/.claude/sessions/<pid>.json con el sessionId de cada proceso. Se busca el claude que corre
 // dentro de cada terminal y se guarda en su meta (`agent: {tool, session}`): al reabrir las terminales tras reiniciar
@@ -1532,6 +1541,14 @@ const ops = {
   'team.import': ({ people }) => team.importPeople(people),
   'team.skill': () => team.skillStatus(),
   'team.setSkill': ({ on }) => team.setSkill(!!on),
+  // ----- módulo Pendientes (local/pendientes/pendientes.json) -----
+  /** {file, cli, skill, estados, todos: [… en orden, con n y blockedBy]} */
+  'todos.list': () => ({ file: todos.TODO_FILE, cli: todos.CLI, skill: todos.skillStatus(), estados: todos.ESTADOS, todos: todos.list() }),
+  /** Crea (sin id) o edita un pendiente. → el pendiente */
+  'todos.save': ({ todo }) => { const t = todos.upsert(todo); broadcast({ ev: 'todos' }); return t; },
+  'todos.delete': ({ id }) => { todos.remove(id); broadcast({ ev: 'todos' }); return true; },
+  'todos.skill': () => todos.skillStatus(),
+  'todos.setSkill': ({ on }) => todos.setSkill(!!on),
   'scripts.list': () => scripts.listScripts(),
   /** Cambia los interruptores de un script. {path, user?, ai?} → {path, user, ai} */
   'scripts.set': ({ path: p, user, ai }) => scripts.setFlags(p, { user, ai }),

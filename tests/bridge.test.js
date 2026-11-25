@@ -264,6 +264,53 @@ test('team.*: equipo en local/equipo, sesión asignada (meta.person) y frap-team
   assert.ok(!fs.existsSync(skill));
 });
 
+test('todos.*: pendientes en local/pendientes, orden por dependencias y prioridad, vinculados a la sesión (frap-todo add)', async () => {
+  const { execFile } = require('child_process');
+  const a = await client.call('todos.save', { todo: { title: 'Revisar logs', priority: 'media' } });
+  const b = await client.call('todos.save', { todo: { title: 'Corregir cálculo', priority: 'alta', icon: '🔧' } });
+  const c = await client.call('todos.save', { todo: { title: 'Desplegar fix', priority: 'urgente', depends: [b.id] } });
+  const d = await client.call('todos.save', { todo: { title: 'Avisar al jefe', priority: 'baja', depends: [c.id] } });
+  await assert.rejects(client.call('todos.save', { todo: { title: '  ' } }), /obligatorio/);
+  await assert.rejects(client.call('todos.save', { todo: { title: 'x', priority: 'rarísima' } }), /Prioridad inválida/);
+  await assert.rejects(client.call('todos.save', { todo: { title: 'x', depends: [999] } }), /No existe el pendiente #999/);
+  await assert.rejects(client.call('todos.save', { todo: { id: b.id, depends: [d.id] } }), /ciclo/);
+  let l = (await client.call('todos.list')).todos;
+  assert.deepEqual(l.map((t) => t.title), ['Corregir cálculo', 'Desplegar fix', 'Revisar logs', 'Avisar al jefe'], 'lo que espera va después de aquello de lo que depende; si no, por prioridad');
+  assert.deepEqual(l.find((t) => t.id === c.id).blockedBy, [b.id]);
+  await client.call('todos.save', { todo: { id: b.id, estado: 'hecho' } });
+  l = (await client.call('todos.list')).todos;
+  assert.deepEqual(l.map((t) => t.title), ['Desplegar fix', 'Revisar logs', 'Avisar al jefe', 'Corregir cálculo'], 'hecho: al final y ya no bloquea');
+  assert.deepEqual(l[0].blockedBy, []);
+  await assert.rejects(client.call('todos.save', { todo: { id: a.id, estado: 'volando' } }), /Estado inválido/);
+  // borrar quita la dependencia de los demás
+  await client.call('todos.delete', { id: c.id });
+  assert.deepEqual((await client.call('todos.list')).todos.find((t) => t.id === d.id).depends, []);
+  assert.ok(fs.existsSync(path.join(root, 'local', 'pendientes', 'pendientes.json')));
+
+  // la IA crea pendientes desde su sesión: quedan vinculados (sid, proyecto, carpeta, conversación)
+  const cli = path.join(__dirname, '..', 'bridge', 'frap-todo.js');
+  const s = await client.call('session.create', { cwd: root, cmd: [process.execPath, cli, 'add', 'Probar en QA', '--prioridad', 'alta', '--depende', String(d.id), '--desc', 'con el pedido 547'], meta: { kind: 'claude', projectId: 'p1', title: 'sesión jefe', agent: { tool: 'claude', session: '11111111-1111-4111-8111-111111111111' } } });
+  await client.waitOutput(s.sid, /Creado #\d+/);
+  await client.waitFor((e) => e.ev === 'exit' && e.sid === s.sid, 8000).catch(() => {});
+  const made = (await client.call('todos.list')).todos.find((t) => t.title === 'Probar en QA');
+  assert.equal(made.priority, 'high');
+  assert.deepEqual(made.depends, [d.id]);
+  assert.equal(made.session.sid, s.sid);
+  assert.equal(made.session.projectId, 'p1');
+  assert.equal(made.session.title, 'sesión jefe');
+  assert.equal(made.session.agent.session, '11111111-1111-4111-8111-111111111111');
+  const out = await new Promise((resolve) => execFile(process.execPath, [cli, 'list'], { env: { ...process.env, FRAP_LOCAL: path.join(root, 'local') } }, (err, stdout) => resolve(stdout)));
+  assert.match(out, /#\d+\s+🔵 Avisar al jefe/);
+  assert.match(out, /Probar en QA\s+\[pendiente · espera a #\d+\]/);
+
+  // skill
+  const skill = path.join(root, '.claude', 'skills', 'frap-pendientes', 'SKILL.md');
+  assert.equal((await client.call('todos.setSkill', { on: true })).changed.length, 2);
+  assert.match(fs.readFileSync(skill, 'utf8'), /frap-todo\.js add/);
+  await client.call('todos.setSkill', { on: false });
+  assert.ok(!fs.existsSync(skill));
+});
+
 test('init escribe el comando inicial en la shell', async () => {
   const s = await client.call('session.create', { cwd: root, init: 'echo init-$((1+1))' });
   await client.waitOutput(s.sid, /init-2/);

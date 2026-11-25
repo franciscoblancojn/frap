@@ -13,7 +13,7 @@ const fail = (msg) => { failed++; console.error(`✗ ${msg}`); };
 const ok = (msg) => console.log(`✓ ${msg}`);
 
 // 1. Sintaxis JS
-for (const f of ['src/index.js', 'bridge/frap-bridge.js', 'bridge/ws.js', 'bridge/db.js', 'bridge/frap-db.js', 'bridge/ssh.js', 'bridge/frap-ssh.js', 'bridge/frap-askpass.js', 'bridge/wordpress.js', 'bridge/frap-wp.js', 'bridge/aveonline.js', 'bridge/frap-ave.js', 'bridge/api.js', 'bridge/frap-api.js', 'bridge/team.js', 'bridge/frap-team.js', 'scripts/check.js', 'tests/bridge.test.js', 'tests/db.test.js', 'tests/ssh.test.js']) {
+for (const f of ['src/index.js', 'bridge/frap-bridge.js', 'bridge/ws.js', 'bridge/db.js', 'bridge/frap-db.js', 'bridge/ssh.js', 'bridge/frap-ssh.js', 'bridge/frap-askpass.js', 'bridge/wordpress.js', 'bridge/frap-wp.js', 'bridge/aveonline.js', 'bridge/frap-ave.js', 'bridge/api.js', 'bridge/frap-api.js', 'bridge/team.js', 'bridge/frap-team.js', 'bridge/todos.js', 'bridge/frap-todo.js', 'scripts/check.js', 'tests/bridge.test.js', 'tests/db.test.js', 'tests/ssh.test.js']) {
   try { execFileSync(process.execPath, ['--check', path.join(ROOT, f)], { stdio: 'pipe' }); ok(`sintaxis ${f}`); } catch (e) { fail(`sintaxis ${f}\n${e.stderr}`); }
 }
 
