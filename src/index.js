@@ -5400,7 +5400,27 @@
     } catch (e) { toast(`Skill frap-pendientes: ${e.message}`, 'err'); }
   }
   async function todoSave(todo, quiet) {
-    try { const t = await Bridge.call('todos.save', { todo }); await loadTodos(); if (!quiet) toast(`Pendiente #${t.id} guardado`, 'ok'); return t; } catch (e) { toast(e.message, 'err'); return null; }
+    const prev = todo.id != null && todosInfo ? (todosInfo.todos || []).find((x) => x.id === Number(todo.id)) : null;
+    try {
+      const t = await Bridge.call('todos.save', { todo });
+      await loadTodos();
+      if (!quiet) toast(`Pendiente #${t.id} guardado`, 'ok');
+      if (t.estado === 'hecho' && prev && prev.estado !== 'hecho') todoNotifyDone(t); // lo marcó el usuario: avisar a su sesión de IA
+      return t;
+    } catch (e) { toast(e.message, 'err'); return null; }
+  }
+  /** Avisa a la sesión de IA del pendiente que el usuario lo marcó como hecho (y qué pendientes de esa sesión quedan libres). */
+  function todoNotifyDone(t) {
+    const sid = t.session && t.session.sid;
+    if (!sid) return;
+    const term = terms.get(sid);
+    if (!term || term.info.alive === false) { toast(`#${t.id} hecho · su sesión de IA ya no está abierta: no se le avisó`); return; }
+    const all = (todosInfo && todosInfo.todos) || [];
+    const freed = all.filter((x) => x.estado !== 'hecho' && (x.depends || []).includes(t.id) && !(x.blockedBy || []).length && x.session && x.session.sid === sid);
+    const msg = `✅ Aviso de FRAP: el usuario marcó como hecho el pendiente #${t.id} «${t.title}» (skill frap-pendientes).${freed.length ? ` Ya se pueden empezar: ${freed.map((x) => `#${x.id} «${x.title}»`).join(', ')}.` : ''} Tenlo en cuenta; si estabas trabajando en él, no sigas con eso.`;
+    Bridge.send('session.input', { sid, data: msg });
+    setTimeout(() => Bridge.send('session.input', { sid, data: '\r' }), 120);
+    toast(`#${t.id} hecho · aviso enviado a «${termTitle(term)}»`, 'ok');
   }
   /** Proyecto de un pendiente: el de su sesión o el que contiene su carpeta. */
   function todoProject(t) {
