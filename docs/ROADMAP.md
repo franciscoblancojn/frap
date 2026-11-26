@@ -8,6 +8,7 @@
 - [x] Panel central: pestañas y lanzadores shell/claude/codex/opencode (`--add-dir` para las carpetas extra)
 - [x] Terminales persistentes: sobreviven a recargar la página y se re-adjuntan con su scrollback
 - [x] Shell y SSH: botones arriba a la derecha para limpiar (también vacía el historial guardado: no vuelve al recargar ni al reiniciar el bridge) y copiar todo el contenido de la terminal
+- [x] El botón del mensaje dice para quién es («Copiar mensaje para Andrés»), sacado del propio mensaje (cómo lo presenta la IA o el nombre del archivo), nunca de la persona asignada a la sesión
 - [x] Al copiar un mensaje, va primero el nombre de la sesión (el del panel izquierdo) y un salto de línea
 - [x] Varios mensajes en una respuesta: un botón por mensaje con «persona · tema» (como los presenta la IA o según el nombre del archivo), cada uno se copia y marca por separado
 - [x] Mensajes y PR detectados se muestran encima de «Hablar», solo para la sesión de IA activa; copiar pasa a naranja «✓ Mensaje copiado» (se puede volver a copiar) y un mensaje nuevo vuelve a verde
@@ -24,6 +25,7 @@
 - [x] Git: botón «↗ Repo» que abre el remoto (origin, o el primero) en el navegador; convierte URLs ssh (git@host:u/r.git) a https y nunca abre un token embebido
 - [x] Git: clic derecho en los archivos con cambios: ver diff, abrir en el editor de código, explorador o editor externo, copiar ruta, enviar a la IA, agregar/quitar/descartar, historial del archivo (git log --follow) y git blame
 - [x] Git: el selector incluye los repos de subcarpetas (la carpeta del proyecto puede no tener git) y 🔍 vuelve a buscarlos; botón «🚀 Versión X.Y.Z» si el repo tiene `npm run push-v` (o `deploy` con bump-version): modal patch/minor/major con la versión siguiente y aviso de cambios sin commit; se ejecuta en el bridge y su salida aparece en vivo en la pestaña «Salida» de Git
+- [x] «Retomar conversación…» (↺ o clic derecho en el proyecto): lista las conversaciones de claude de sus carpetas con tema, último mensaje, respuesta de la IA e issues, con buscador; las reabre con claude --resume o lleva a la terminal donde ya están abiertas
 - [x] Reabrir terminales tras reiniciar: cada terminal de claude retoma SU conversación (`claude --resume <id>`, leído de `~/.claude/sessions/<pid>.json`), no la última de la carpeta
 - [x] Cerrar una terminal (✕) la cierra de verdad aunque el programa capture SIGHUP (claude): escalada a SIGTERM/SIGKILL de toda su sesión; ya no reaparece al recargar
 - [x] Terminales: se repintan al volver a mostrarse, tras re-adjuntar (recargar la página o el bridge), al cargar la fuente y al volver a la pestaña; al re-adjuntar se manda un SIGWINCH (tamaño de ida y vuelta) para que claude/codex se redibujen enteras

@@ -386,6 +386,68 @@ async function scanAgentSessions() {
   }
   if (changed) broadcast({ ev: 'sessions' });
 }
+/**
+ * Conversaciones de claude de una carpeta (~/.claude/projects/<carpeta con "-">/<id>.jsonl), las más recientes
+ * primero: tema (primer mensaje del usuario o el resumen), último mensaje, issues mencionadas y si ya está abierta
+ * en una terminal de FRAP. Se lee solo el principio y el final de cada archivo (pueden pesar decenas de MB).
+ */
+const CLAUDE_PROJECTS_DIR = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(HOME, '.claude'), 'projects');
+function readSlice(file, start, len) {
+  const fd = fs.openSync(file, 'r');
+  try { const b = Buffer.alloc(len); const n = fs.readSync(fd, b, 0, len, start); return b.subarray(0, n).toString('utf8'); } finally { fs.closeSync(fd); }
+}
+function userText(j) {
+  if (!j || j.type !== 'user' || !j.message) return '';
+  const c = j.message.content;
+  const t = typeof c === 'string' ? c : Array.isArray(c) ? (c.find((x) => x && x.type === 'text') || {}).text || '' : '';
+  const s = String(t).trim();
+  if (!s || /^(Base directory for this skill|<|\[Request interrupted|Caveat:)/.test(s)) return '';
+  return s.replace(/\s+/g, ' ');
+}
+function claudeConversations(cwd, limit = 40) {
+  const dir = path.join(CLAUDE_PROJECTS_DIR, path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, '-'));
+  let files = [];
+  try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl') && UUID_RE.test(f.slice(0, -6))); } catch (_) { return []; }
+  const open = new Map();
+  for (const s of sessions.values()) if (s.alive && s.meta.agent && s.meta.agent.session) open.set(s.meta.agent.session, { sid: s.sid, title: s.meta.title || '' });
+  const list = files.map((f) => { const full = path.join(dir, f); const st = fs.statSync(full); return { id: f.slice(0, -6), file: full, mtime: st.mtimeMs, size: st.size }; })
+    .sort((a, b) => b.mtime - a.mtime).slice(0, Math.min(200, Math.max(1, Number(limit) || 40)));
+  const out = [];
+  for (const c of list) {
+    const HEAD = 512 * 1024;
+    const head = readSlice(c.file, 0, Math.min(c.size, HEAD));
+    const tail = c.size > HEAD ? readSlice(c.file, Math.max(0, c.size - 256 * 1024), 256 * 1024) : head;
+    let first = '';
+    let summary = '';
+    let skill = '';
+    let last = '';
+    let userCount = 0;
+    const issues = new Set();
+    for (const l of head.split('\n')) {
+      let j; try { j = JSON.parse(l); } catch (_) { continue; }
+      if (j.type === 'summary' && j.summary && !summary) summary = String(j.summary);
+      const raw = j.type === 'user' && j.message ? JSON.stringify(j.message.content).slice(0, 4000) : '';
+      if (!skill) { const m = raw.match(/skills\/([\w.-]+)/); if (m && /Base directory for this skill/.test(raw)) skill = m[1]; }
+      const t = userText(j);
+      if (t) { userCount++; if (!first) first = t; }
+      for (const m of (t.match(/\b[A-Z]{2,6}-\d{1,6}\b/g) || [])) issues.add(m);
+    }
+    let lastAi = '';
+    for (const l of tail.split('\n')) {
+      let j; try { j = JSON.parse(l); } catch (_) { continue; }
+      const t = userText(j);
+      if (t) last = t;
+      if (j.type === 'assistant' && j.message && Array.isArray(j.message.content)) { const x = j.message.content.find((y) => y && y.type === 'text' && String(y.text).trim()); if (x) lastAi = String(x.text).replace(/\s+/g, ' ').trim(); }
+    }
+    if (!first && !summary && !last) continue; // vacía o solo interna
+    for (const m of (`${last} ${lastAi}`.match(/\b[A-Z]{2,6}-\d{1,6}\b/g) || [])) issues.add(m);
+    out.push({
+      id: c.id, mtime: c.mtime, size: c.size, title: summary || (first || last).slice(0, 120), first: first.slice(0, 200), last: last.slice(0, 200), lastAi: lastAi.slice(0, 220),
+      skill, issues: [...issues].slice(0, 6), open: open.get(c.id) || null,
+    });
+  }
+  return out;
+}
 setInterval(() => { scanAgentSessions().catch(() => {}); }, Number(process.env.FRAP_AGENT_SCAN_MS) || 15000).unref();
 
 function watchNotices() {
@@ -1547,6 +1609,8 @@ const ops = {
   /** Crea (sin id) o edita un pendiente. → el pendiente */
   'todos.save': ({ todo }) => { const t = todos.upsert(todo); broadcast({ ev: 'todos' }); return t; },
   'todos.delete': ({ id }) => { todos.remove(id); broadcast({ ev: 'todos' }); return true; },
+  /** Conversaciones recientes de claude en una carpeta (para «Retomar conversación…»). */
+  'claude.conversations': ({ cwd, limit }) => claudeConversations(safePath(cwd), limit),
   'todos.skill': () => todos.skillStatus(),
   'todos.setSkill': ({ on }) => todos.setSkill(!!on),
   'scripts.list': () => scripts.listScripts(),

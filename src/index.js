@@ -432,7 +432,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -691,15 +691,33 @@
     const okFiles = stats.filter((st) => st.exists && !st.dir).map((st) => st.path);
     if (okFiles.length) msgOffer(t, okFiles, text);
   }
-  /** Nombre que distingue cada mensaje: como lo presenta la IA ("Juan: /ruta…") o el del archivo (fecha-persona-tema). */
-  function msgLabel(file, text) {
+  /**
+   * Para quién es un mensaje, SOLO a partir del mensaje (nunca de la persona asignada a la sesión: puede ser para otra):
+   * 1) como lo presenta la IA junto a la ruta ("Andrés: /ruta", "… para Andrés: /ruta", "para Andrés → /ruta");
+   * 2) el nombre del archivo (fecha-persona-tema): si coincide con alguien del Equipo, con su nombre tal cual (tildes).
+   * → {who, topic}
+   */
+  function msgRecipient(file, text) {
+    const norm = (x) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
     const esc = file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const m = String(text || '').match(new RegExp(`([A-ZÁÉÍÓÚÑ][\\wáéíóúñü]+(?: [A-ZÁÉÍÓÚÑ][\\wáéíóúñü]+)?)\\**\\s*:\\s*\\**\\s*${esc}`));
-    const base = basename(file).replace(/\.(md|txt)$/i, '').replace(/^\d{4}-\d{2}-\d{2}[-_]?/, '');
-    const parts = base.split(/[-_]+/).filter(Boolean);
-    const topic = (m ? parts.slice(1) : parts.slice(1)).join(' ');
-    const who = m ? m[1] : parts[0] ? parts[0].charAt(0).toUpperCase() + parts[0].slice(1) : base;
-    return topic ? `${who} · ${topic}` : who;
+    const NAME = '([A-ZÁÉÍÓÚÑ][\\wáéíóúñü]+(?: [A-ZÁÉÍÓÚÑ][\\wáéíóúñü]+)?)';
+    const t = String(text || '');
+    const m = t.match(new RegExp(`${NAME}\\**\\s*:\\s*\\**\\s*${esc}`)) || t.match(new RegExp(`para ${NAME}[^\\n]{0,40}?${esc}`));
+    const base = basename(file).replace(/\.(md|txt)$/i, '');
+    const dated = base.match(/^\d{4}-\d{2}-\d{2}[-_]?(.*)$/);
+    const parts = (dated ? dated[1] : base).split(/[-_]+/).filter(Boolean);
+    const people = (teamInfo && teamInfo.people) || [];
+    const fromTeam = (tok) => { const p = people.find((x) => norm(x.name).split(/\s+/)[0] === norm(tok) || norm(x.id) === norm(tok)); return p ? p.name.split(' ')[0] : ''; };
+    // palabras que suelen ir antes de ":" y no son personas ("Listo: /ruta", "Archivo: /ruta"…)
+    const STOP = new Set(['listo', 'lista', 'aqui', 'ruta', 'archivo', 'mensaje', 'mensajes', 'respuesta', 'nota', 'ojo', 'hecho', 'guardado', 'guardada', 'esta', 'en', 'texto', 'borrador', 'resultado', 'resumen', 'link', 'enlace', 'path', 'file', 'final', 'nuevo', 'nueva', 'copia', 'importante', 'detalle', 'detalles']);
+    let who = m && !STOP.has(norm(m[1].split(' ')[0])) ? m[1] : '';
+    let topicParts = parts;
+    if (!who && dated && parts.length) {
+      who = fromTeam(parts[0]) || (parts.length > 1 ? parts[0].charAt(0).toUpperCase() + parts[0].slice(1) : '');
+      if (who) topicParts = parts.slice(1);
+    } else if (who && parts.length && norm(parts[0]) === norm(who.split(' ')[0])) topicParts = parts.slice(1);
+    if (who) who = fromTeam(who.split(' ')[0]) || who;
+    return { who, topic: topicParts.join(' ') };
   }
   /** Enlace de PR detectado en una sesión: se guarda en ella (los 3 más recientes) y se muestra en el panel derecho. */
   function linkOffer(t, url, info) {
@@ -715,7 +733,8 @@
     let list = fresh ? [] : (t.msgs || []).slice();
     for (const file of files) {
       if (list.some((x) => x.file === file)) continue;
-      list.push({ file, label: msgLabel(file, text), copied: false });
+      const r = msgRecipient(file, text);
+      list.push({ file, who: r.who, label: r.who ? (r.topic ? `${r.who} · ${r.topic}` : r.who) : r.topic || basename(file), copied: false });
     }
     if (list.length > 8) list = list.slice(-8);
     t.msgs = list;
@@ -748,11 +767,11 @@
                 const name = String((tm.named && tm.title) || termTitle(t) || '').replace(/^[^\p{L}\p{N}]+/u, '').trim(); // sin el ✳ de actividad de claude
                 copyText(`${name ? `${name}\n` : ''}${r.content.replace(/\s+$/, '')}`);
                 m.copied = true;
-                toast(`Mensaje copiado${one ? '' : ` (${m.label})`}: pégalo donde lo vayas a enviar`, 'ok');
+                toast(`Mensaje${m.who ? ` para ${m.who}` : ''} copiado: pégalo donde lo vayas a enviar`, 'ok');
                 renderMsgDock();
               } catch (e) { toast(e.message, 'err'); }
             },
-          }, one ? (m.copied ? '✓ Mensaje copiado' : '📋 Copiar último mensaje') : (m.copied ? `✓ ${m.label} · copiado` : `📋 ${m.label}`)),
+          }, one ? (m.copied ? `✓ Mensaje${m.who ? ` para ${m.who}` : ''} copiado` : `📋 Copiar mensaje${m.who ? ` para ${m.who}` : ''}`) : (m.copied ? `✓ ${m.label} · copiado` : `📋 ${m.label}`)),
           h('button.icon.mini', { title: 'Abrir el archivo en el editor', onclick: () => (launchOn('code') ? openInFrap(m.file) : openExternal(m.file)) }, '✎'),
           h('button.icon.mini', { title: 'Quitar', onclick: () => { t.msgs = t.msgs.filter((x) => x !== m); renderMsgDock(); } }, '✕'))));
     }
@@ -1182,6 +1201,56 @@
     projTip.style.top = `${Math.max(8, Math.min(r.top - 6, window.innerHeight - tr.height - 8))}px`;
   }
   function hideProjectTip() { if (projTip) { projTip.remove(); projTip = null; } }
+  /** «Retomar conversación…»: las conversaciones de claude de las carpetas del proyecto, para reabrir la que elijas. */
+  async function resumeConversationModal(p) {
+    if (!Bridge.ready) { toast('Bridge desconectado', 'err'); return; }
+    let convs = [];
+    try {
+      for (const f of p.folders) for (const c of await Bridge.call('claude.conversations', { cwd: f, limit: 60 })) convs.push({ ...c, folder: f });
+    } catch (e) { toast(e.message, 'err'); return; }
+    convs.sort((a, b) => b.mtime - a.mtime);
+    const q = h('input', { placeholder: 'Buscar por tema, issue o mensaje…', spellcheck: 'false' });
+    const list = h('div.conv-list');
+    const when = (ms) => { const d = new Date(ms); const today = new Date(); const y = new Date(Date.now() - 86400000); const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); return d.toDateString() === today.toDateString() ? `hoy ${hm}` : d.toDateString() === y.toDateString() ? `ayer ${hm}` : d.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }); };
+    const kb = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+    const paint = () => {
+      const t = q.value.trim().toLowerCase();
+      const shown = convs.filter((c) => !t || `${c.title} ${c.first} ${c.last} ${c.lastAi} ${c.issues.join(' ')} ${c.skill}`.toLowerCase().includes(t));
+      list.replaceChildren(...(shown.length ? shown.map((c) => h(`div.conv${c.open ? '.is-open' : ''}`,
+        h('div.conv-main',
+          h('div.conv-title', c.title || '(sin tema)'),
+          c.last && c.last !== c.first && c.last !== c.title ? h('div.conv-last.muted', `Tú: ${c.last}`) : null,
+          c.lastAi ? h('div.conv-last.muted', `IA: ${c.lastAi}`) : null,
+          h('div.conv-meta.muted',
+            h('span', when(c.mtime)), h('span', kb(c.size)),
+            p.folders.length > 1 ? h('span', tilde(c.folder)) : null,
+            ...c.issues.map((i) => h('span.conv-issue', i)),
+            c.skill ? h('span', `skill ${c.skill}`) : null,
+            h('span.mono', c.id.slice(0, 8)))),
+        c.open
+          ? h('button.mini', { title: `Ya está abierta en «${c.open.title}»`, onclick: () => { modalClose(true); activate(c.open.sid); } }, '→ Ir')
+          : h('button.mini.primary', {
+            title: `claude --resume ${c.id}`,
+            onclick: async () => {
+              modalClose(true);
+              state.activeProject = p.id;
+              const topic = (c.title || 'claude').replace(/\b[A-Z]{2,6}-\d{1,6}\b/g, '').replace(/\s+/g, ' ').trim();
+              const title = c.issues[0] ? `${c.issues[0]} · ${topic}` : topic;
+              await launch('claude', { cwd: c.folder, title: title.slice(0, 50), named: true, init: `${buildLaunch('claude', p)} --resume ${c.id}` });
+              toast('Conversación retomada (renómbrala con doble clic si quieres)', 'ok');
+            },
+          }, '↺ Retomar'))) : [h('p.muted', convs.length ? 'Nada coincide.' : 'No hay conversaciones de claude en las carpetas de este proyecto.')]));
+    };
+    q.addEventListener('input', paint);
+    paint();
+    openModal({
+      title: `Retomar conversación · ${p.name}`,
+      wide: true,
+      body: [h('p.muted', { style: 'margin:0 0 8px' }, 'Conversaciones de claude en las carpetas del proyecto, las más recientes primero. «Retomar» abre una terminal con claude --resume; las que ya están abiertas llevan a su terminal.'), q, list],
+      foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cerrar')],
+    });
+    requestAnimationFrame(() => q.focus());
+  }
   async function deleteProject(p) {
     const live = sessionsOf(p.id);
     const ok = await confirmBox(
@@ -1725,7 +1794,18 @@
       const sum = collapsed ? projectNotice(p.id) : null;
       const cls = `project${active ? ' active' : ''}${collapsed ? ' collapsed' : ''}${sum ? ` notice-${sum.kind}` : ''}`;
       root.append(h('div.project', { class: cls, dataset: { drag: 'project', key: p.id }, ...dragEvents() },
-        h('div.project-head', { onclick: () => selectProject(p.id), ondblclick: () => renameProject(p) },
+        h('div.project-head', {
+          onclick: () => selectProject(p.id), ondblclick: () => renameProject(p),
+          oncontextmenu: (e) => popMenu(e, [
+            { label: '↺ Retomar conversación…', hint: 'claude --resume', action: () => resumeConversationModal(p) },
+            '-',
+            { label: 'Agregar carpeta…', action: () => addFolder(p) },
+            { label: 'Editar (nombre, descripción, URL)…', action: () => renameProject(p) },
+            { label: collapsed ? 'Expandir' : 'Colapsar', action: () => toggleCollapse(p) },
+            '-',
+            { label: 'Eliminar proyecto…', danger: true, action: () => deleteProject(p) },
+          ]),
+        },
           dragHandle(),
           h('span.pname.grow', {
             title: `${p.folders.join('\n')}\nClic: ${collapsed ? 'abrir' : active ? 'colapsar' : 'seleccionar'} · doble clic: editar`,
@@ -1746,6 +1826,7 @@
           }, '👁') : null,
           p.url ? h('button.icon.pinfo', { title: `Abrir ${p.url} en otra pestaña`, onclick: stop(() => openProjectUrl(p)) }, '🌐') : null,
           h('span.acts',
+            h('button.icon', { title: 'Retomar una conversación de claude de este proyecto', onclick: stop(() => resumeConversationModal(p)) }, '↺'),
             h('button.icon', { title: 'Agregar carpeta', onclick: stop(() => addFolder(p)) }, '⊕'),
             h('button.icon', { title: 'Editar (nombre, descripción, URL)', onclick: stop(() => renameProject(p)) }, '✎'),
             h('button.icon.pcollapse', { title: collapsed ? 'Expandir' : 'Colapsar', onclick: stop(() => toggleCollapse(p)) }, collapsed ? '▸' : '▾'),

@@ -311,6 +311,39 @@ test('todos.*: pendientes en local/pendientes, orden por dependencias y priorida
   assert.ok(!fs.existsSync(skill));
 });
 
+test('claude.conversations: conversaciones de una carpeta (tema, último mensaje, issues) y si ya están abiertas', async () => {
+  const cwd = path.join(root, 'proj-conv');
+  fs.mkdirSync(cwd, { recursive: true });
+  const dir = path.join(root, '.claude', 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+  fs.mkdirSync(dir, { recursive: true });
+  const line = (o) => JSON.stringify(o);
+  const user = (text) => line({ type: 'user', message: { role: 'user', content: text } });
+  const A = '11111111-1111-4111-8111-1111111111aa';
+  const B = '22222222-2222-4222-8222-2222222222bb';
+  fs.writeFileSync(path.join(dir, `${A}.jsonl`), [line({ type: 'user', message: { content: [{ type: 'text', text: 'Base directory for this skill: /x/.claude/skills/frap-issues' }] } }), user('toma la issue AVE-2566 y revisa el PR'), line({ type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }), user('dame el mensaje para andres'), ''].join('\n'));
+  fs.writeFileSync(path.join(dir, `${B}.jsonl`), [line({ type: 'summary', summary: 'Referidos en c1appave' }), user('puedes mirar las tablas de referidos'), ''].join('\n'));
+  fs.writeFileSync(path.join(dir, 'no-uuid.jsonl'), user('ignorar') + '\n');
+  fs.writeFileSync(path.join(dir, '33333333-3333-4333-8333-333333333333.jsonl'), line({ type: 'assistant', message: { content: 'solo interna' } }) + '\n');
+  const now = Date.now() / 1000;
+  fs.utimesSync(path.join(dir, `${A}.jsonl`), now, now);
+  fs.utimesSync(path.join(dir, `${B}.jsonl`), now - 3600, now - 3600);
+  // A ya está abierta en una sesión de FRAP
+  const s = await client.call('session.create', { cwd, meta: { kind: 'claude', title: 'AVE-2566', agent: { tool: 'claude', session: A } } });
+  const list = await client.call('claude.conversations', { cwd });
+  assert.deepEqual(list.map((c) => c.id), [A, B], 'las más recientes primero; sin las vacías ni las que no son uuid');
+  assert.equal(list[0].title, 'toma la issue AVE-2566 y revisa el PR');
+  assert.equal(list[0].last, 'dame el mensaje para andres');
+  assert.deepEqual(list[0].issues, ['AVE-2566']);
+  assert.equal(list[0].skill, 'frap-issues');
+  assert.equal(list[0].open.sid, s.sid);
+  assert.equal(list[1].title, 'Referidos en c1appave', 'el resumen manda');
+  assert.equal(list[1].open, null);
+  assert.deepEqual(await client.call('claude.conversations', { cwd: path.join(root, 'sin-conv') }), []);
+  await assert.rejects(client.call('claude.conversations', { cwd: '/etc' }), /fuera/);
+  await client.call('session.kill', { sid: s.sid });
+  await client.waitFor((e) => e.ev === 'exit' && e.sid === s.sid, 8000);
+});
+
 test('init escribe el comando inicial en la shell', async () => {
   const s = await client.call('session.create', { cwd: root, init: 'echo init-$((1+1))' });
   await client.waitOutput(s.sid, /init-2/);

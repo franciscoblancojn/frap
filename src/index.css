@@ -1402,3 +1402,13 @@ li.CodeMirror-hint-active { background: var(--accent); color: var(--bg); }
 .msg-item.copied .msg-copy { background: var(--orange, #ff9e64); }
 .msg-item.pr.open .msg-copy { background: var(--opencode); }
 .msg-item.pr.copied .msg-copy { background: var(--orange, #ff9e64); }
+
+/* «Retomar conversación…» */
+.conv-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; max-height: 60vh; overflow: auto; }
+.conv { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2); }
+.conv.is-open { border-color: color-mix(in srgb, var(--ok) 55%, var(--line)); }
+.conv-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.conv-title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.conv-last { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; }
+.conv-issue { color: var(--accent); }
