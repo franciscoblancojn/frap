@@ -104,8 +104,9 @@ navegador (file://src/index.html)                     máquina local
 
 - Tiendas WooCommerce con el **plugin de envíos Aveonline** (repo aparte: `aveonline`), que trae la «Revisión por token» (WordPress → Aveonline → Revisión por token): **un solo token por tienda**, de corta vida (10 min por defecto, máx. 24 h), siempre **solo lectura**. Cabecera `X-Avshme-Token`, rutas `aveonline/v1/review/…`:
   - `info` (versión, vencimiento, tipos de log), `orders` (últimos pedidos con Aveonline: guía y si tienen tramas; `per_page` ≤ 50, `page`, `status`, `aveonline=0`), `order/<id>` (tramas de cotización y guía con envío y respuesta, metadatos de envío) y `log` (`?type=`).
+- **Tipo de tienda** (`TYPE`, por defecto `wordpress`): `shopify` = app **Aveonline Connect** (repo aparte: `aveonline-connect-shopify`). Ahí `URL` es la de la app (por defecto `https://connect-crm-s.aveonline.co`) y `SHOP` el dominio `xxx.myshopify.com`; rutas `<app>/api/revision/log?shop=&type=` y `<app>/api/revision/pedido?shop=&pedido=` con la misma cabecera. `bridge/aveonline.js` traduce: `info` = log sin el detalle (`platform: 'shopify'`), `order/<n>` = pedido, `orders` no existe; `now`/`expires` llegan en ms y se pasan a segundos. «Pegar token» reconoce Shopify si el texto trae `xxx.myshopify.com` (o el endpoint de la app) y busca la tienda por su dominio. Si en la tienda se escribe el dominio propio (`https://mitienda.com`), `ave.save`/`ave.check` averiguan el `xxx.myshopify.com` con el `/meta.json` público de Shopify (`myshopify_domain`) y guardan el propio en `DOMAIN`.
   - `info` y `orders` existen desde la versión siguiente a 4.11.4; con un plugin anterior, FRAP comprueba con `log?type=` de un tipo inexistente (`legacy: true`) y solo funciona `log` y `order/<id>` (4.11.4).
-- **En FRAP** (`bridge/aveonline.js`): reutiliza el almacén y el cliente HTTP de WordPress (`envStore`, `restRequest`, `skillManager` en `bridge/wordpress.js`). Tiendas `FRAP_AVE_<ID>_{NAME,URL,TOKEN,ENABLED,AI}` en `FRAP_HOME/aveonline.env` (0600). El token nunca llega a la UI ni a la salida del CLI.
+- **En FRAP** (`bridge/aveonline.js`): reutiliza el almacén y el cliente HTTP de WordPress (`envStore`, `restRequest`, `skillManager` en `bridge/wordpress.js`). Tiendas `FRAP_AVE_<ID>_{NAME,URL,TOKEN,ENABLED,AI,TYPE,SHOP,DOMAIN}` (`envStore` acepta campos extra) en `FRAP_HOME/aveonline.env` (0600). El token nunca llega a la UI ni a la salida del CLI.
 - **«Pegar token»** (`ave.paste`): acepta el texto tal como se comparte («pedido 16322 token … tienda http://…»); el bridge saca URL, token y pedido. Si la tienda existe (por URL, o la elegida) le cambia el token; si no, la crea con el dominio como nombre e id (`chp.com.co` → `chp`). Devuelve el pedido para copiar la petición a la IA.
 - **CLI `bridge/frap-ave.js`** (skill `frap-aveonline`): `list`, `<id> info`, `<id> pedidos [per_page= page= status= aveonline=0] [--json]`, `<id> pedido <n>`, `<id> log [TIPO]`. Solo tiendas Activas, con IA y con token.
 - **UI:** colapsable «Aveonline» con 📋 (pegar token) y ＋. Cada tienda muestra estado, host y «vence en N min» (se refresca cada 30 s), interruptores y menú: pegar token nuevo, probar, últimos pedidos (modal con «⧉ IA» que copia la petición), editar, abrir la revisión por token en la tienda, abrir la tienda, copiar el comando y eliminar.
@@ -263,7 +264,7 @@ navegador (file://src/index.html)                     máquina local
 
 ## Exportar / importar
 
-Todo se arma en la UI (`openExport` / `openImport`) y se descarga como `frap-export-AAAA-MM-DD.json` (`format: "frap-export", version: 1`): `projects` (con `terminals: [{kind, title, cwd, sshId?}]`), `config` (prompts, actions, pages, timers, music —solo YouTube—, settings) y, vía bridge, `db`, `ssh` y `secrets`. Las contraseñas nunca pasan por la UI en claro: `export.creds` las cifra e `import.creds` las descifra dentro del bridge.
+Todo se arma en la UI (`openExport` / `openImport`) y se descarga como `frap-export-AAAA-MM-DD.json` (`format: "frap-export", version: 1`): `projects` (con `terminals: [{kind, title, cwd, sshId?}]`), `config` (prompts —con `icon`, `person` y `cat`—, promptCats, actions, pages, timers, music —solo YouTube—, settings) y, vía bridge, `db`, `ssh` y `secrets`. Las contraseñas nunca pasan por la UI en claro: `export.creds` las cifra e `import.creds` las descifra dentro del bridge.
 
 ## Avisos de agentes
 
@@ -398,12 +399,12 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `wp.skill` | — | `{claude, codex}`: `{installed, current, file}` de la skill `frap-wordpress` |
 | `wp.setSkill` | `{on}` | instala/actualiza o quita (solo la de FRAP) la skill `frap-wordpress`. `{on, changed}` |
 | `ave.list` | — | `{envFile, cli, skill, sites: [{id, name, url, enabled, ai, hasToken, tokenHint}]}` (sin tokens) |
-| `ave.save` | `{site: {id?, name, url, token?}}` | crea o edita una tienda Aveonline; token vacío al editar = conservar |
+| `ave.save` | `{site: {id?, name, type?, url, shop?, token?}}` | crea o edita una tienda Aveonline (`type`: `wordpress` o `shopify`; en Shopify `url` vacía = la app de producción); token vacío al editar = conservar |
 | `ave.paste` | `{text, id?}` | «Pegar token»: saca URL, token y pedido del texto; actualiza la tienda (por URL o `id`) o la crea. `{site, created, order}` (sin token) |
 | `ave.toggle` | `{id, enabled?, ai?}` | interruptores Activa / IA |
 | `ave.delete` | `{id}` | quita la tienda de FRAP |
 | `ave.check` | `{id}` o `{site}` | `GET /review/info` (o `log`, con plugin viejo): `{site, name, version, wordpress, woocommerce, now, expires, types, legacy, ms}` |
-| `ave.orders` | `{id, query?}` | `GET /review/orders` (`per_page`, `page`, `status`, `aveonline`): `{page, per_page, orders: [...]}` |
+| `ave.orders` | `{id, query?}` | `GET /review/orders` (`per_page`, `page`, `status`, `aveonline`): `{page, per_page, orders: [...]}`. Solo WordPress |
 | `ave.skill` / `ave.setSkill` | — / `{on}` | estado / instala o quita la skill `frap-aveonline` |
 | `issues.importDir` | `{path}` | copia carpetas `<ID>/` de otra carpeta (o de su `issues/`) sin pisar las existentes. `{from, copied, skipped}` |
 | `issues.skill` | — | `{claude, codex}`: `{installed, current, file}` de la skill `frap-issues` |

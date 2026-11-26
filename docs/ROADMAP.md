@@ -41,6 +41,7 @@
 - [x] Panel derecho:
   - [x] Procesos: árbol por terminal con CPU, memoria y tiempo, agentes resaltados, matar proceso
   - [x] Prompts estándar: clic para ejecutar en la terminal activa, insertar sin Enter, variables, importar y exportar
+  - [x] Prompts con ícono, persona del equipo y categorías (con ícono): en el panel derecho salen agrupados en bloques plegables, con «Sin categoría» al final; 🗂 para administrar las categorías
   - [x] Agentes, skills y comandos (claude/codex/opencode, usuario y proyecto): listar, editar y crear desde plantilla
   - [x] Hooks de Claude Code: listar, agregar, eliminar y editar el JSON
   - [x] Memoria: CLAUDE.md, AGENTS.md y settings.json (crear si faltan)
@@ -72,6 +73,7 @@
 - [x] Módulo Integraciones (panel izquierdo) con WordPress: plugin `frap-wordpress` (tokens de 24 h por defecto con permisos por recurso, solo lectura por defecto, API `frap/v1`, publicación en repo propio con git subtree), conexiones con interruptores Activa/IA, CLI `frap-wp` y skill `frap-wordpress`
 - [x] Issues: «In Review» (o «En revisión») en el estado general cuenta como cerrada en local, con la marca 👀 In Review; `frap-issues list` la muestra como «en revisión» y la skill indica cómo escribir ese estado
 - [x] Integraciones · Aveonline: tiendas con la revisión por token del plugin de envíos (solo lectura), «Pegar token» con el texto tal como se comparte, vencimiento en vivo, últimos pedidos, CLI `frap-ave` (info, pedidos, pedido con tramas, log) y skill `frap-aveonline`, export/import con token cifrado. En el plugin: rutas `/review/info` y `/review/orders`
+  - [x] Tipo de tienda (WordPress o Shopify): las de Shopify usan la revisión por token de la app Aveonline Connect (log y pedido con tramas de cotización y CRM)
 - [x] Módulos (Ajustes → Módulos): activar o desactivar cada lanzador, pestaña del panel derecho, la voz, la pantalla dividida y las secciones, agrupados por panel; todo activado por defecto y se exporta/importa
 - [x] Vista previa de archivos en el editor y en Notas: botón para Markdown, CSV, SVG y HTML (sandbox con recursos incrustados); imágenes, video, audio y PDF se abren directo en su visor
 - [x] Secciones en el panel izquierdo (como WhatsApp): "Todas" fija y secciones propias con ícono, título, descripción y vista (solo ícono, solo título o ambos); una carpeta puede estar en varias, se asignan arrastrando o con casillas, y cada chip muestra los avisos de sus carpetas

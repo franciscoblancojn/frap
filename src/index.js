@@ -109,6 +109,7 @@
     activeProject: null,
     activeSid: null,
     prompts: DEFAULT_PROMPTS.map((p) => ({ id: uid(), ...p })),
+    promptCats: [], // categorías de prompts: [{id, name, icon}] (en el panel derecho, cada una en un bloque plegable)
     actions: [], // {id, name, cmd, cwd, ready} comandos con nombre que se encienden/apagan
     pages: [], // {id, name, url, mode: 'default'|'tab'|'iframe'} accesos a páginas web
     openPages: [], // ids de páginas abiertas como pestaña interna (iframe)
@@ -188,6 +189,7 @@
         st.settings.editor = 'frap';
       }
     }
+    if (!Array.isArray(st.promptCats)) st.promptCats = [];
     if (!st.rtabs || typeof st.rtabs !== 'object') st.rtabs = { order: [], custom: {} };
     if (!Array.isArray(st.rtabs.order)) st.rtabs.order = [];
     if (!st.rtabs.custom || typeof st.rtabs.custom !== 'object') st.rtabs.custom = {};
@@ -783,7 +785,7 @@
                 // el nombre de la sesión (el que le pusiste en el panel izquierdo) va primero, con un salto de línea
                 const tm = t.info.meta || {};
                 const name = String((tm.named && tm.title) || termTitle(t) || '').replace(/^[^\p{L}\p{N}]+/u, '').trim(); // sin el ✳ de actividad de claude
-                copyText(`${name ? `${termIcon(t) || '📌'} *${name}*\n` : ''}${toWhatsApp(r.content.replace(/\s+$/, ''))}`);
+                copyText(`${name ? `${iconText(termIcon(t)) || '📌'} *${name}*\n` : ''}${toWhatsApp(r.content.replace(/\s+$/, ''))}`);
                 m.copied = true;
                 toast(`Mensaje${m.who ? ` para ${m.who}` : ''} copiado: pégalo donde lo vayas a enviar`, 'ok');
                 renderMsgDock();
@@ -957,7 +959,13 @@
     renderAll();
   }
 
-  const SESSION_ICONS = ['', '📌', '🚀', '🐞', '🔥', '⭐', '💼', '🛒', '🚚', '📦', '💰', '📊', '🧪', '🛠️', '🔒', '🌐', '📱', '🗄️', '📝', '💬', '📣', '🤝', '⏰', '🎯', '🧭', '🧩', '🎨', '✅', '⚠️', '❗', '🔔', '💡', '🟢', '🟡', '🔴', '🟣', '🔵'];
+  // logos de plataformas: no hay emoji, se guardan como código corto (≤ 8) y se dibujan con su SVG
+  const LOGO_ICONS = { '@shopify': { file: 'shopify', name: 'Shopify', emoji: '🛍️' }, '@wp': { file: 'wordpress', name: 'WordPress', emoji: '🌐' } };
+  /** Nodo de un ícono de sesión: el logo (img) o el emoji tal cual. */
+  const iconNode = (ic, cls = 'span.ticon') => (LOGO_ICONS[ic] ? h(`img.${cls.split('.').slice(1).join('.')}.ticon-logo`, { src: `vendor/icons/${LOGO_ICONS[ic].file}.svg`, alt: LOGO_ICONS[ic].name, title: LOGO_ICONS[ic].name }) : h(cls, ic));
+  /** Para texto (WhatsApp): el logo se cambia por un emoji. */
+  const iconText = (ic) => (LOGO_ICONS[ic] ? LOGO_ICONS[ic].emoji : ic);
+  const SESSION_ICONS = ['', '@shopify', '@wp', '📌', '🚀', '🐞', '🔥', '⭐', '💼', '🛒', '🚚', '📦', '💰', '📊', '🧪', '🛠️', '🔒', '🌐', '📱', '🗄️', '📝', '💬', '📣', '🤝', '⏰', '🎯', '🧭', '🧩', '🎨', '✅', '⚠️', '❗', '🔔', '💡', '🟢', '🟡', '🔴', '🟣', '🔵'];
   /** Ícono propio de una sesión (se ve antes de su nombre y encabeza los mensajes que se copian). */
   const termIcon = (t) => String(((t && t.info.meta) || {}).icon || '');
   /** Renombrar una sesión: nombre (vacío = título automático) e ícono. */
@@ -967,7 +975,7 @@
     const m = t.info.meta || {};
     const name = h('input', { value: m.named ? m.title : termTitle(t), placeholder: 'Vacío: el título automático de la terminal' });
     const icon = h('input.team-icon-in', { value: m.icon || '', maxlength: '8', placeholder: '·' });
-    const picks = h('div.icon-grid', SESSION_ICONS.map((ic) => h('button.icon-pick', { type: 'button', title: ic ? '' : 'Sin ícono', onclick: () => { icon.value = ic; } }, ic || '∅')));
+    const picks = h('div.icon-grid', SESSION_ICONS.map((ic) => h('button.icon-pick', { type: 'button', title: ic ? (LOGO_ICONS[ic] ? LOGO_ICONS[ic].name : '') : 'Sin ícono', onclick: () => { icon.value = ic; } }, ic ? (LOGO_ICONS[ic] ? iconNode(ic, 'span.pick-logo') : ic) : '∅')));
     const doSave = async () => {
       const n = name.value.trim();
       const ic = icon.value.trim();
@@ -1376,7 +1384,7 @@
     pid ? dragHandle() : null,
     h('span', { class: dotClass(t) }),
     grouped ? h('span.slot', { title: `Pantalla dividida: panel ${slot + 1}` }, String(slot + 1)) : null,
-    termIcon(t) ? h('span.ticon', termIcon(t)) : null,
+    termIcon(t) ? iconNode(termIcon(t)) : null,
     h('span.tname', termTitle(t)),
     teamOn() && teamPerson((t.info.meta || {}).person) ? h('span.tperson', { title: `Asignada a ${teamPerson(t.info.meta.person).name} (${teamPerson(t.info.meta.person).role})` }, teamAvatar(teamPerson(t.info.meta.person), '.sm'), h('span.tperson-name', { style: `color:${teamColor(teamPerson(t.info.meta.person))}` }, teamPerson(t.info.meta.person).name.split(' ')[0])) : null,
     noticeBadge(t),
@@ -1885,7 +1893,19 @@
     }
   }
 
+  /** Arriba a la izquierda de cada terminal: su ícono y su nombre (clic: renombrar), como la persona a la derecha. */
+  function renderTermName(t) {
+    let chip = t.pane.querySelector('.term-name');
+    if (!chip) { chip = h('div.term-name'); t.pane.append(chip); }
+    const name = termTitle(t);
+    const ic = termIcon(t);
+    if (chip.dataset.key === `${ic}|${name}`) return;
+    chip.dataset.key = `${ic}|${name}`;
+    chip.replaceChildren(h('button.term-name-btn', { title: `${termLiveHint(t)}${name}\nClic: renombrar o cambiar el ícono`, onmousedown: (e) => e.preventDefault(), onclick: () => renameTerm(t.sid) },
+      ic ? iconNode(ic, 'span.term-name-ico') : null, h('span.term-name-txt', name)));
+  }
   function renderTabs() {
+    for (const t of terms.values()) renderTermName(t);
     const tabs = $('#tabs');
     const keepLeft = tabs.scrollLeft; // al vaciar, el scroll vuelve a 0: se restaura al final
     const prevActive = tabs.dataset.active || '';
@@ -1913,7 +1933,7 @@
       h('span', { class: dotClass(t) }),
       slot != null ? h('span.slot', String(slot + 1)) : null,
       kindIcon(termKind(t)),
-      termIcon(t) ? h('span.ticon', termIcon(t)) : null,
+      termIcon(t) ? iconNode(termIcon(t)) : null,
       h('span.tname', termTitle(t)),
       t.info.notice ? h(`span.notice-dot.${t.info.notice.kind}`, { title: t.info.notice.kind === 'done' ? 'Terminó' : 'Espera tu respuesta' }) : null,
       h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeTerm(t.sid); } }, '✕')));
@@ -2526,46 +2546,123 @@
   function runPrompt(pr, enter = true) {
     if (sendToTerminal(expandPrompt(pr.body), enter)) toast(`${enter ? 'Ejecutado' : 'Insertado'}: ${pr.title}`, 'ok');
   }
+  const PROMPT_ICONS = ['', '💬', '📌', '🚀', '🐞', '🔍', '🧪', '📝', '📣', '🤝', '✅', '⚠️', '📊', '🛠️', '🔒', '💡', '🎯', '📦', '🛒', '🚚', '💰', '🗄️', '🌐', '⭐'];
+  const promptCat = (id) => state.promptCats.find((c) => c.id === id) || null;
+  /** Persona del Equipo de un prompt (solo para distinguirlo; el texto no cambia). */
+  const promptPerson = (pr) => (pr.person ? teamPerson(pr.person) : null);
+  function promptCard(pr, q) {
+    const per = promptPerson(pr);
+    const key = `${pr.title}\n${pr.body}\n${per ? per.name : ''}`.toLowerCase();
+    return h(`div.card.clickable.prompt-card${key.includes(q) ? '' : '.hidden'}`, {
+      dataset: { q: key },
+      title: 'Ejecutar en la terminal activa',
+      onclick: () => runPrompt(pr, true),
+    },
+    h('div.title',
+      h('span.name', pr.icon ? h('span.prompt-ico', pr.icon) : '▶ ', pr.title),
+      per ? h('span.prompt-person', { title: `Para ${per.name} (${per.role})` }, teamAvatar(per, '.sm'), h('span', { style: `color:${teamColor(per)}` }, per.name.split(' ')[0])) : null,
+      h('button.icon.mini', { title: 'Insertar sin Enter', onclick: (e) => { e.stopPropagation(); runPrompt(pr, false); } }, '⇥'),
+      h('button.icon.mini', { title: 'Editar', onclick: (e) => { e.stopPropagation(); editPrompt(pr); } }, '✎'),
+      h('button.icon.mini', { title: 'Eliminar', onclick: (e) => { e.stopPropagation(); deletePrompt(pr); } }, '✕')),
+    h('div.body', pr.body));
+  }
   function renderPrompts() {
     const filter = h('input.filter', { placeholder: 'Filtrar prompts…', value: promptFilter });
     filter.addEventListener('input', () => {
       promptFilter = filter.value;
-      const q = promptFilter.toLowerCase();
-      for (const el of $$('.prompt-card')) el.classList.toggle('hidden', !el.dataset.q.includes(q));
+      const qq = promptFilter.toLowerCase();
+      for (const el of $$('.prompt-card')) el.classList.toggle('hidden', !el.dataset.q.includes(qq));
+      for (const g of $$('.prompt-group')) g.classList.toggle('hidden', !!qq && !g.querySelector('.prompt-card:not(.hidden)'));
     });
     const q = promptFilter.toLowerCase();
+    const cats = state.promptCats;
+    const collapsed = new Set(state.ui.promptCatsCollapsed || []);
+    const flip = (id) => { const set = new Set(state.ui.promptCatsCollapsed || []); if (set.has(id)) set.delete(id); else set.add(id); state.ui.promptCatsCollapsed = [...set]; save(); renderRight(); };
+    const group = (id, icon, name, list) => {
+      const col = collapsed.has(id) && !q;
+      return h('div.prompt-group', { class: `prompt-group${q && !list.some((pr) => `${pr.title}\n${pr.body}`.toLowerCase().includes(q)) ? ' hidden' : ''}` },
+        h('div.prompt-ghead', { onclick: () => flip(id), title: col ? 'Desplegar' : 'Plegar' },
+          h('span.integ-caret', col ? '▸' : '▾'), icon ? h('span.prompt-ico', icon) : null, h('span.grow', name), h('span.integ-count', String(list.length)),
+          id !== '__none' ? h('button.icon.mini', { title: 'Nuevo prompt en esta categoría', onclick: (e) => { e.stopPropagation(); editPrompt(null, { cat: id }); } }, '＋') : null),
+        col ? null : list.map((pr) => promptCard(pr, q)));
+    };
+    const known = new Set(cats.map((c) => c.id));
+    const none = state.prompts.filter((pr) => !pr.cat || !known.has(pr.cat));
     return [
       section('Prompts estándar',
+        h('button.mini', { title: 'Categorías: crear, editar íconos y nombres', onclick: () => promptCatsModal() }, '🗂'),
         h('button.mini', { title: 'Exportar JSON', onclick: exportPrompts }, '⇩'),
         h('button.mini', { title: 'Importar JSON', onclick: importPrompts }, '⇧'),
         h('button.mini.primary', { onclick: () => editPrompt() }, '+ Nuevo')),
       filter,
       h('p.muted', { style: 'margin:0 2px 8px;font-size:11px' }, 'Clic = ejecutar en la terminal activa · ⇥ = insertar sin Enter · variables: {{project}} {{folder}} {{folders}}'),
-      ...state.prompts.map((pr) => {
-        const key = `${pr.title}\n${pr.body}`.toLowerCase();
-        return h(`div.card.clickable.prompt-card${key.includes(q) ? '' : '.hidden'}`, {
-          dataset: { q: key },
-          title: 'Ejecutar en la terminal activa',
-          onclick: () => runPrompt(pr, true),
-        },
-        h('div.title', h('span.name', '▶ ' + pr.title),
-          h('button.icon.mini', { title: 'Insertar sin Enter', onclick: (e) => { e.stopPropagation(); runPrompt(pr, false); } }, '⇥'),
-          h('button.icon.mini', { title: 'Editar', onclick: (e) => { e.stopPropagation(); editPrompt(pr); } }, '✎'),
-          h('button.icon.mini', { title: 'Eliminar', onclick: (e) => { e.stopPropagation(); deletePrompt(pr); } }, '✕')),
-        h('div.body', pr.body));
-      }),
+      ...(cats.length
+        ? [...cats.map((c) => group(c.id, c.icon, c.name, state.prompts.filter((pr) => pr.cat === c.id))), none.length ? group('__none', '', 'Sin categoría', none) : null]
+        : state.prompts.map((pr) => promptCard(pr, q))),
     ];
   }
-  function editPrompt(pr) {
+  /** Categorías de prompts: nombre e ícono; borrar una deja sus prompts en «Sin categoría». */
+  function promptCatsModal() {
+    const rows = state.promptCats.map((c) => ({ ...c }));
+    const list = h('div.pcat-list');
+    const paint = () => list.replaceChildren(...(rows.length ? rows.map((c, i) => h('div.pcat-row',
+      h('input.team-icon-in', { value: c.icon || '', maxlength: '8', placeholder: '·', oninput: (e) => { c.icon = e.target.value.trim(); } }),
+      h('input.grow', { value: c.name, placeholder: 'Nombre', oninput: (e) => { c.name = e.target.value; } }),
+      h('span.muted', `${state.prompts.filter((pr) => pr.cat === c.id).length} prompt(s)`),
+      h('button.icon.mini', { title: 'Subir', onclick: () => { if (i > 0) { rows.splice(i - 1, 0, rows.splice(i, 1)[0]); paint(); } } }, '↑'),
+      h('button.icon.mini', { title: 'Bajar', onclick: () => { if (i < rows.length - 1) { rows.splice(i + 1, 0, rows.splice(i, 1)[0]); paint(); } } }, '↓'),
+      h('button.icon.mini', { title: 'Borrar (sus prompts quedan sin categoría)', onclick: () => { rows.splice(i, 1); paint(); } }, '✕'))) : [h('p.muted', 'Sin categorías. Agrega una abajo.')]));
+    paint();
+    const picks = h('div.icon-grid', PROMPT_ICONS.filter(Boolean).map((ic) => h('button.icon-pick', { type: 'button', title: 'Usar en la última categoría', onclick: () => { if (rows.length) { rows[rows.length - 1].icon = ic; paint(); } } }, ic)));
+    const doSave = () => {
+      const clean = rows.filter((c) => c.name.trim()).map((c) => ({ id: c.id, name: c.name.trim().slice(0, 40), icon: (c.icon || '').slice(0, 8) }));
+      const ids = new Set(clean.map((c) => c.id));
+      for (const pr of state.prompts) if (pr.cat && !ids.has(pr.cat)) delete pr.cat;
+      state.promptCats = clean;
+      save();
+      modalClose(true);
+      renderRight();
+    };
+    openModal({
+      title: 'Categorías de prompts',
+      body: [list, h('div.field-row', { style: 'margin-top:8px' }, h('button.mini', { onclick: () => { rows.push({ id: uid(), name: '', icon: '' }); paint(); requestAnimationFrame(() => { const ins = list.querySelectorAll('input.grow'); if (ins.length) ins[ins.length - 1].focus(); }); } }, '＋ Nueva categoría')),
+        h('p.muted', { style: 'font-size:11px;margin:8px 0 4px' }, 'Íconos rápidos (para la última de la lista):'), picks],
+      foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
+    });
+  }
+  function editPrompt(pr, preset = {}) {
     const isNew = !pr;
     const title = h('input', { value: pr ? pr.title : '', placeholder: 'Título' });
     const body = h('textarea.prompt-body', { spellcheck: 'false', placeholder: 'Texto del prompt…' });
     body.value = pr ? pr.body : '';
+    const icon = h('input.team-icon-in', { value: (pr && pr.icon) || '', maxlength: '8', placeholder: '·' });
+    const picks = h('div.icon-grid', PROMPT_ICONS.map((ic) => h('button.icon-pick', { type: 'button', title: ic ? '' : 'Sin ícono', onclick: () => { icon.value = ic; } }, ic || '∅')));
+    // categoría: las existentes, sin categoría o una nueva (nombre e ícono aquí mismo)
+    const cat = h('select', h('option', { value: '' }, 'Sin categoría'), ...state.promptCats.map((c) => h('option', { value: c.id }, `${c.icon ? `${c.icon} ` : ''}${c.name}`)), h('option', { value: '__new' }, '＋ Nueva categoría…'));
+    cat.value = (pr && pr.cat && promptCat(pr.cat) ? pr.cat : preset.cat) || '';
+    const newIcon = h('input.team-icon-in', { maxlength: '8', placeholder: '🗂' });
+    const newName = h('input.grow', { placeholder: 'Nombre de la categoría nueva' });
+    const newRow = h('div.field-row.hidden', newIcon, newName);
+    cat.addEventListener('change', () => { newRow.classList.toggle('hidden', cat.value !== '__new'); if (cat.value === '__new') newName.focus(); });
+    // persona del Equipo (solo para distinguirlo)
+    const people = (teamInfo && teamInfo.people) || [];
+    const person = h('select', h('option', { value: '' }, 'Nadie en particular'), ...people.map((x) => h('option', { value: x.id }, `${x.icon || '👤'} ${x.name} · ${x.role}`)));
+    person.value = (pr && pr.person) || '';
     const doSave = (run) => {
       if (!title.value.trim() || !body.value.trim()) { toast('Título y texto son obligatorios', 'err'); return; }
+      let catId = cat.value;
+      if (catId === '__new') {
+        if (!newName.value.trim()) { toast('Escribe el nombre de la categoría nueva', 'err'); newName.focus(); return; }
+        const c = { id: uid(), name: newName.value.trim().slice(0, 40), icon: newIcon.value.trim().slice(0, 8) };
+        state.promptCats.push(c);
+        catId = c.id;
+      }
       if (isNew) { pr = { id: uid() }; state.prompts.push(pr); }
       pr.title = title.value.trim();
       pr.body = body.value;
+      if (icon.value.trim()) pr.icon = icon.value.trim().slice(0, 8); else delete pr.icon;
+      if (catId) pr.cat = catId; else delete pr.cat;
+      if (person.value) pr.person = person.value; else delete pr.person;
       save();
       modalClose(true);
       renderRight();
@@ -2574,7 +2671,16 @@
     body.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') doSave(true); });
     openModal({
       title: isNew ? 'Nuevo prompt' : 'Editar prompt',
-      body: [h('div.field', h('label', 'Título'), title), h('div.field', h('label', 'Prompt'), body)],
+      wide: true,
+      body: [
+        h('div.field-row', h('div.field', { style: 'width:80px' }, h('label', 'Ícono'), icon), h('div.field.grow', h('label', 'Título'), title)),
+        picks,
+        h('div.field-row',
+          h('div.field.grow', h('label', 'Categoría'), cat),
+          people.length ? h('div.field.grow', h('label', 'Persona (para distinguirlo)'), person) : null),
+        newRow,
+        h('div.field', h('label', 'Prompt'), body),
+      ],
       foot: [
         h('button', { onclick: () => modalClose(true) }, 'Cancelar'),
         h('button', { onclick: () => doSave(true), title: 'Ctrl+Enter' }, 'Guardar y ejecutar'),
@@ -2589,7 +2695,7 @@
     renderRight();
   }
   function exportPrompts() {
-    const blob = new Blob([JSON.stringify(state.prompts.map(({ title, body }) => ({ title, body })), null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify(state.prompts.map(({ title, body, icon, cat, person }) => { const c = promptCat(cat); return { title, body, ...(icon ? { icon } : {}), ...(c ? { category: c.name, categoryIcon: c.icon || '' } : {}), ...(person ? { person } : {}) }; }), null, 2)], { type: 'application/json' });
     const a = h('a', { href: URL.createObjectURL(blob), download: 'frap-prompts.json' });
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
@@ -2603,7 +2709,12 @@
         let n = 0;
         for (const it of arr) {
           if (it && typeof it.title === 'string' && typeof it.body === 'string') {
-            state.prompts.push({ id: uid(), title: it.title, body: it.body });
+            let cat;
+            if (typeof it.category === 'string' && it.category.trim()) {
+              cat = state.promptCats.find((c) => c.name.toLowerCase() === it.category.trim().toLowerCase());
+              if (!cat) { cat = { id: uid(), name: it.category.trim().slice(0, 40), icon: String(it.categoryIcon || '').slice(0, 8) }; state.promptCats.push(cat); }
+            }
+            state.prompts.push({ id: uid(), title: it.title, body: it.body, ...(typeof it.icon === 'string' && it.icon ? { icon: it.icon.slice(0, 8) } : {}), ...(cat ? { cat: cat.id } : {}), ...(typeof it.person === 'string' && it.person ? { person: it.person } : {}) });
             n++;
           }
         }
@@ -5908,7 +6019,7 @@
       toast(p ? `Sesión asignada a ${p.name}: la IA lo tendrá en cuenta (skill frap-equipo)` : 'Sesión sin asignar', 'ok');
     } catch (e) { toast(e.message, 'err'); }
   }
-  /** Modal del equipo: lista por rol con editar/borrar y formulario para crear o editar. `assignTo`: al crear, asignar esa sesión. */
+  /** Modal del equipo: lista por rol con editar/borrar y formulario para crear o editar. `assignTo`: al crear, asignar esa sesión (solo si no tiene persona). */
   function teamModal(edit, assignTo) {
     const people = (teamInfo && teamInfo.people) || [];
     const roles = (teamInfo && teamInfo.roles) || [];
@@ -5934,7 +6045,8 @@
       try {
         const saved = await Bridge.call('team.save', { person: { id: p ? p.id : undefined, name: name.value, icon: icon.value, role: role.value || 'Otro', descripcion: desc.value, color } });
         await loadTeam();
-        if (assignTo && !p) await teamAssign(assignTo, saved.id);
+        // solo se asigna a la sesión desde la que se abrió si no tenía a nadie: nunca pisa una asignación
+        if (assignTo && !p && !(assignTo.info.meta || {}).person) await teamAssign(assignTo, saved.id);
         toast(`${saved.name} ${p ? 'actualizado' : 'agregado al equipo'}`, 'ok');
         teamModal(null, null); // vuelve a la lista
       } catch (e) { toast(e.message, 'err'); }
@@ -9278,7 +9390,7 @@
   }
   /** «Pegar token»: el texto que comparte la tienda o soporte. Con `s`, el token va a esa tienda. */
   function pasteAveToken(s) {
-    const text = h('textarea.mono', { rows: '4', spellcheck: 'false', autocomplete: 'off', placeholder: 'pedido 16322 token 6dbc0f96… tienda https://www.mitienda.com/' });
+    const text = h('textarea.mono', { rows: '4', spellcheck: 'false', autocomplete: 'off', placeholder: 'pedido 16322 token 6dbc0f96… tienda https://www.mitienda.com/\n(Shopify: pedido 1021 token … tienda mitienda.myshopify.com)' });
     const go = async () => {
       if (!text.value.trim()) return;
       try {
@@ -9304,7 +9416,7 @@
       body: [
         h('p.muted', { style: 'margin:0 0 8px' }, 'Pega el texto con la tienda, el token y (opcional) el pedido, tal como lo compartes hoy. ',
           s ? 'El token se guarda en esta tienda.' : 'Si la tienda ya está en FRAP se le cambia el token; si no, se agrega.',
-          ' El token se guarda en aveonline.env (0600) y no se muestra en la UI ni a la IA. En la tienda: Aveonline → Revisión por token.'),
+          ' El token se guarda en aveonline.env (0600) y no se muestra en la UI ni a la IA. En WordPress: Aveonline → Revisión por token. En Shopify: app Aveonline Connect → Revisión por token (si el texto trae xxx.myshopify.com, la tienda es de Shopify).'),
         text,
       ],
       foot: [h('span.muted', { style: 'font-size:11px' }, 'Ctrl+Enter'), h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: go }, 'Guardar token')],
@@ -9312,18 +9424,44 @@
     requestAnimationFrame(() => text.focus());
   }
   function editAveSite(s) {
+    const appDefault = (aveInfo && aveInfo.shopifyAppUrl) || 'https://connect-crm-s.aveonline.co';
+    const type = h('select', h('option', { value: 'wordpress' }, 'WordPress (WooCommerce + plugin Aveonline)'), h('option', { value: 'shopify' }, 'Shopify (app Aveonline Connect)'));
+    type.value = s && s.type === 'shopify' ? 'shopify' : 'wordpress';
     const name = h('input', { placeholder: 'Mi tienda', value: s ? s.name : '' });
-    const url = h('input.mono', { placeholder: 'https://www.mitienda.com', value: s ? s.url : '' });
-    const token = h('input.mono', { type: 'password', autocomplete: 'off', placeholder: s && s.hasToken ? `•••• ${s.tokenHint} (vacío = conservar el actual)` : '48 caracteres (Revisión por token)' });
+    const url = h('input.mono', { placeholder: 'https://www.mitienda.com', value: s && s.type !== 'shopify' ? s.url : '' });
+    const shop = h('input.mono', { placeholder: 'mitienda.myshopify.com o https://mitienda.com', value: s && s.shop ? s.shop : '' });
+    const appUrl = h('input.mono', { placeholder: appDefault, value: s && s.type === 'shopify' && s.url !== appDefault ? s.url : '' });
+    const token = h('input.mono', { type: 'password', autocomplete: 'off', placeholder: s && s.hasToken ? `•••• ${s.tokenHint} (vacío = conservar el actual)` : 'Token de la «Revisión por token»' });
     const result = h('div.wp-test.muted');
-    const read = () => ({ id: s ? s.id : undefined, name: name.value.trim() || (url.value.trim() ? url.value.trim().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '') : ''), url: url.value.trim(), token: token.value.trim() || null });
+    const help = h('p.muted', { style: 'margin:0 0 8px' });
+    const wpFields = h('div', h('div.field', h('label', 'URL de la tienda'), url));
+    const shFields = h('div',
+      h('div.field', h('label', 'Tienda de Shopify'), shop),
+      h('div.field', h('label', 'URL de la app ', h('span.muted', '(vacío = la de producción)')), appUrl));
+    const syncType = () => {
+      const sh = type.value === 'shopify';
+      wpFields.classList.toggle('hidden', sh);
+      shFields.classList.toggle('hidden', !sh);
+      help.textContent = sh
+        ? 'En Shopify: app Aveonline Connect → Revisión por token → «Generar token» y guardar (10 min por defecto, máximo 24 h). Es solo lectura. La tienda es su dominio xxx.myshopify.com; si escribes el dominio propio (https://mitienda.com), FRAP averigua el .myshopify.com. También sirve pegar el endpoint que muestra la app.'
+        : 'En la tienda: WordPress → Aveonline → Revisión por token → «Generar token» y «Guardar y activar» (10 min por defecto, máximo 24 h). Es solo lectura. Lo más rápido es «Pegar token» en la lista.';
+      result.textContent = '';
+    };
+    type.addEventListener('change', syncType);
+    syncType();
+    const read = () => {
+      const sh = type.value === 'shopify';
+      const guess = sh ? shop.value.trim().replace(/^https?:\/\//, '').replace(/\.myshopify\.com.*$/, '') : url.value.trim().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
+      return { id: s ? s.id : undefined, type: type.value, name: name.value.trim() || guess, url: sh ? appUrl.value.trim() : url.value.trim(), shop: sh ? shop.value.trim() : '', token: token.value.trim() || null };
+    };
     const test = async () => {
       result.className = 'wp-test muted';
       result.textContent = 'Probando…';
       try {
         const i = await Bridge.call('ave.check', { site: read() });
         result.className = 'wp-test ok';
-        result.replaceChildren(h('div', `✓ ${i.name || i.site} · plugin Aveonline ${i.version}${i.woocommerce ? ` · WooCommerce ${i.woocommerce}` : ''}`),
+        result.replaceChildren(
+          h('div', i.platform === 'shopify' ? `✓ ${i.shop}${shop.value.trim() && !/myshopify/i.test(shop.value) ? ` (de ${shop.value.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '')})` : ''} · app Aveonline Connect ${i.version}` : `✓ ${i.name || i.site} · plugin Aveonline ${i.version}${i.woocommerce ? ` · WooCommerce ${i.woocommerce}` : ''}`),
           h('div', `Token: vence ${aveLeft(i)}`), i.legacy ? h('div.muted', 'Plugin anterior a 4.11.4: solo el log (sin pedidos ni tramas por pedido).') : null);
       } catch (e) { result.className = 'wp-test err'; result.textContent = `✗ ${e.message}`; }
     };
@@ -9340,15 +9478,16 @@
     openModal({
       title: s ? `Aveonline · ${s.name}` : 'Nueva tienda Aveonline',
       body: [
-        h('p.muted', { style: 'margin:0 0 8px' }, 'En la tienda: WordPress → Aveonline → Revisión por token → «Generar token» y «Guardar y activar» (10 min por defecto, máximo 24 h). Es solo lectura. Lo más rápido es «Pegar token» en la lista.'),
+        help,
+        h('div.field', h('label', 'Tipo'), type),
         h('div.field', h('label', 'Nombre'), name),
-        h('div.field', h('label', 'URL de la tienda'), url),
+        wpFields, shFields,
         h('div.field', h('label', 'Token'), token),
         result,
       ],
       foot: [h('button', { onclick: test }, 'Probar'), h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
     });
-    requestAnimationFrame(() => (s ? token : url).focus());
+    requestAnimationFrame(() => (s ? token : type.value === 'shopify' ? shop : url).focus());
   }
   async function deleteAve(s) {
     if (!(await confirmBox(`¿Eliminar la tienda «${s.name}»?`, 'El token se borra de FRAP (en la tienda sigue activo hasta que venza o lo revoquen).'))) return;
@@ -9378,10 +9517,12 @@
     popMenu(ev, [
       { label: '📋 Pegar token nuevo', action: () => pasteAveToken(s) },
       { label: '⟳ Probar conexión', action: () => checkAve(s) },
-      s.hasToken && { label: '☰ Últimos pedidos', action: () => aveOrders(s) },
+      s.hasToken && s.type !== 'shopify' && { label: '☰ Últimos pedidos', action: () => aveOrders(s) },
       { label: '✎ Editar', action: () => editAveSite(s) },
-      { label: '↗ Revisión por token en la tienda', hint: 'activar token', action: () => openPageTab({ url: `${s.url}/wp-admin/admin.php?page=revision_token` }) },
-      { label: '↗ Abrir la tienda', action: () => openPageTab({ url: s.url }) },
+      s.type === 'shopify'
+        ? { label: '↗ Apps de la tienda en Shopify', hint: 'activar token', action: () => openPageTab({ url: `https://admin.shopify.com/store/${s.shop.replace(/\.myshopify\.com$/, '')}/apps` }) }
+        : { label: '↗ Revisión por token en la tienda', hint: 'activar token', action: () => openPageTab({ url: `${s.url}/wp-admin/admin.php?page=revision_token` }) },
+      { label: '↗ Abrir la tienda', action: () => openPageTab({ url: s.type === 'shopify' ? `https://${s.domain || s.shop}` : s.url }) },
       { label: '⧉ Copiar comando para la IA', hint: 'frap-ave', action: () => { const c = `node ${aveInfo.cli} ${s.id} info`; copyText(c); toast(`Copiado: ${c}`, 'ok'); } },
       '-',
       { label: '🗑 Eliminar tienda', danger: true, action: () => deleteAve(s) },
@@ -9409,14 +9550,15 @@
       const expired = c && c.ok && !aveSecs(c.info, c.at);
       const st = !s.enabled || !s.hasToken ? 'off' : !c || c.loading ? 'wait' : c.ok && !expired ? 'ok' : 'err';
       const title = !s.enabled ? 'Apagada' : !s.hasToken ? 'Sin token: «Pegar token nuevo»' : !c ? 'Sin probar' : c.loading ? 'Probando…'
-        : c.ok ? `Plugin Aveonline ${c.info.version} · token vence ${aveLeft(c.info, c.at)}${c.info.legacy ? '\nPlugin anterior a 4.11.4: solo log' : ''}` : c.error;
-      let host = s.url;
-      try { host = new URL(s.url).host; } catch (_) { /* se deja la URL */ }
+        : c.ok ? `${s.type === 'shopify' ? 'App Aveonline Connect' : 'Plugin Aveonline'} ${c.info.version} · token vence ${aveLeft(c.info, c.at)}${c.info.legacy ? '\nPlugin anterior a 4.11.4: solo log' : ''}` : c.error;
+      let host = s.type === 'shopify' ? (s.domain ? `${s.domain} · ${s.shop}` : s.shop) : s.url;
+      if (s.type !== 'shopify') try { host = new URL(s.url).host; } catch (_) { /* se deja la URL */ }
       const sub = !s.hasToken ? ' · sin token' : c && c.ok && s.enabled ? ` · ${expired ? 'token vencido' : `vence ${aveLeft(c.info, c.at)}`}` : c && !c.ok && s.enabled && !c.loading ? ' · token vencido o inválido' : '';
       return h(`div.integ-site${s.enabled ? '' : '.off'}`, { title, oncontextmenu: (e) => aveMenu(e, s) },
         h('div.integ-row',
           h(`span.integ-dot.${st}`),
           h('span.integ-name', s.name),
+          h(`span.ave-kind.${s.type === 'shopify' ? 'shopify' : 'wp'}`, { title: s.type === 'shopify' ? 'Shopify (app Aveonline Connect)' : 'WordPress (plugin Aveonline)' }, s.type === 'shopify' ? 'Shopify' : 'WP'),
           h('span.grow'),
           h('button.icon.mini', { title: 'Pegar token nuevo', onclick: (e) => { e.stopPropagation(); pasteAveToken(s); } }, '📋'),
           h('button.icon.mini', { title: 'Opciones', onclick: (e) => aveMenu(e, s) }, '⋯')),
@@ -10126,6 +10268,7 @@
 
   const CONFIG_PARTS = [
     { key: 'prompts', label: 'Prompts', count: (c) => (c.prompts || []).length },
+    { key: 'promptCats', label: 'Categorías de prompts', count: (c) => (c.promptCats || []).length },
     { key: 'actions', label: 'Acciones', count: (c) => (c.actions || []).length },
     { key: 'pages', label: 'Páginas', count: (c) => (c.pages || []).length },
     { key: 'timers', label: 'Temporizadores', count: (c) => (c.timers || []).length },

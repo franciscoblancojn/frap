@@ -21,8 +21,9 @@ const CLI = path.join(__dirname, 'frap-wp.js');
  * Conexiones "URL + token + interruptores" en un .env (0600) con el prefijo dado (FRAP_WP_, FRAP_AVE_…).
  * La comparten la integración WordPress y la de Aveonline.
  */
-function envStore(prefix, header) {
-  const keyRe = new RegExp(`^${prefix}([A-Z0-9_]+?)_(${FIELDS.join('|')})$`);
+function envStore(prefix, header, extra = []) {
+  // extra: campos propios de una integración ({key: 'TYPE', prop: 'type', def: 'wordpress'}); se guardan si tienen valor
+  const keyRe = new RegExp(`^${prefix}([A-Z0-9_]+?)_(${[...FIELDS, ...extra.map((x) => x.key)].join('|')})$`);
   function load(envFile) {
     let text = '';
     try { text = fs.readFileSync(envFile, 'utf8'); } catch (_) { return []; }
@@ -43,6 +44,7 @@ function envStore(prefix, header) {
       token: c.TOKEN || '',
       enabled: !db.isOff(c.ENABLED),
       ai: !db.isOff(c.AI),
+      ...Object.fromEntries(extra.map((x) => [x.prop, c[x.key] || x.def || ''])),
     }));
   }
   function save(envFile, sites) {
@@ -53,6 +55,7 @@ function envStore(prefix, header) {
       lines.push(`${p}NAME=${db.quoteEnvValue(c.name)}`);
       lines.push(`${p}URL=${db.quoteEnvValue(c.url)}`);
       lines.push(`${p}TOKEN=${db.quoteEnvValue(c.token)}`);
+      for (const x of extra) if (c[x.prop]) lines.push(`${p}${x.key}=${db.quoteEnvValue(c[x.prop])}`);
       lines.push(`${p}ENABLED=${c.enabled === false ? 0 : 1}`);
       lines.push(`${p}AI=${c.ai === false ? 0 : 1}`);
       lines.push('');
@@ -118,13 +121,18 @@ function request(site, method, apiPath, { query = {}, body, timeoutMs = 30000 } 
  * Petición JSON a la API REST de un WordPress por ?rest_route= (funciona sin enlaces permanentes).
  * `notApi`: el mensaje si responde HTML (URL equivocada o plugin inactivo). La usan WordPress y Aveonline.
  */
-function restRequest(siteUrl, route, { method = 'GET', query = {}, body, timeoutMs = 30000, headers: extra = {}, notApi } = {}) {
+function restRequest(siteUrl, route, { query = {}, ...opts } = {}) {
   const base = new URL(`${normalizeUrl(siteUrl)}/`);
   base.searchParams.set('rest_route', route);
   for (const [k, v] of Object.entries(query || {})) {
     if (v == null || k === 'rest_route') continue;
     base.searchParams.set(k, Array.isArray(v) ? v.join(',') : String(v));
   }
+  return httpJson(base, opts);
+}
+
+/** Petición HTTP(S) que espera JSON. {status, data, total?, totalPages?, ms}; `notApi` = mensaje si responde HTML. */
+function httpJson(base, { method = 'GET', body, timeoutMs = 30000, headers: extra = {}, notApi } = {}) {
   const m = String(method || 'GET').toUpperCase();
   if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(m)) throw new Error(`Método no soportado: ${method}`);
   const payload = body === undefined || m === 'GET' ? null : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
@@ -277,6 +285,6 @@ const setSkill = (on) => wpSkill.set(on);
 module.exports = {
   NAMESPACE, CLI,
   FIELDS, envStore, restRequest, skillManager,
-  loadSites, saveSites, publicSite, normalizeUrl, checkPath, request, apiError, info,
+  loadSites, saveSites, publicSite, normalizeUrl, checkPath, request, apiError, info, httpJson,
   skillText, skillStatus, setSkill,
 };

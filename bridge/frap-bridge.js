@@ -697,7 +697,20 @@ function wpNormalize(input, existing, { allowNoToken = false, tokenHelp = 'créa
 const AVE_ENV = path.join(FRAP_HOME, 'aveonline.env');
 function aveSites() { return aveonline.loadSites(AVE_ENV); }
 const AVE_TOKEN_HELP = 'actívalo en la tienda: Aveonline → Revisión por token';
-function aveNormalize(input, existing, opts = {}) { return wpNormalize(input, existing, { tokenHelp: AVE_TOKEN_HELP, ...opts }); }
+/** Como WordPress (nombre, token, interruptores) más el tipo: wordpress (URL de la tienda) o shopify (URL de la app + tienda). */
+function aveNormalize(input, existing, opts = {}) {
+  const kind = aveonline.normalizeKind(input, existing);
+  const c = wpNormalize({ ...input, url: kind.url }, existing, { tokenHelp: AVE_TOKEN_HELP, ...opts });
+  return { ...c, type: kind.type, shop: kind.shop, domain: kind.type === 'shopify' ? String(input.domain != null ? input.domain : existing && existing.shop === kind.shop ? existing.domain || '' : '').slice(0, 200) : '' };
+}
+/** Si la tienda de Shopify viene como su dominio propio (mitienda.com), lo cambia por su xxx.myshopify.com. */
+async function aveResolve(input) {
+  if (String(input.type || '') !== 'shopify') return input;
+  const raw = String(input.shop || '').trim();
+  if (!raw || /myshopify\.com|admin\.shopify\.com/i.test(raw)) return input;
+  const r = await aveonline.resolveShop(raw);
+  return { ...input, shop: r.shop, domain: r.domain };
+}
 function dbConn(id) {
   const c = dbConns().find((x) => x.id === id);
   if (!c) throw new Error(`Conexión no encontrada: ${id}`);
@@ -1490,10 +1503,11 @@ const ops = {
   /** on=true la instala/actualiza; on=false la quita (módulo Integraciones apagado). {on, changed} */
   'wp.setSkill': ({ on }) => wordpress.setSkill(!!on),
   // ----- integración Aveonline (revisión por token, solo lectura): URL + token por tienda en FRAP_HOME/aveonline.env -----
-  /** {envFile, cli, skill, sites: [{id, name, url, enabled, ai, hasToken, tokenHint}]} (sin tokens) */
-  'ave.list': () => ({ envFile: AVE_ENV, cli: aveonline.CLI, skill: aveonline.skillStatus(), sites: aveSites().map(aveonline.publicSite) }),
+  /** {envFile, cli, skill, shopifyAppUrl, sites: [{id, name, type, url, shop, enabled, ai, hasToken, tokenHint}]} (sin tokens) */
+  'ave.list': () => ({ envFile: AVE_ENV, cli: aveonline.CLI, shopifyAppUrl: aveonline.SHOPIFY_APP_URL, skill: aveonline.skillStatus(), sites: aveSites().map(aveonline.publicSite) }),
   /** Crea o edita. `token: null` (o vacío al editar) = conservar el guardado. */
-  'ave.save': ({ site }) => {
+  'ave.save': async ({ site: raw }) => {
+    const site = raw ? await aveResolve(raw) : raw;
     const sites = aveSites();
     const existing = site && site.id ? sites.find((c) => c.id === site.id) : null;
     if (site && site.id && !existing) throw new Error(`Tienda no encontrada: ${site.id}`);
@@ -1512,7 +1526,7 @@ const ops = {
     const parsed = aveonline.parsePaste(text);
     if (!parsed.token) throw new Error('No encontré el token en el texto (48 caracteres hex, después de "token")');
     const sites = aveSites();
-    const existing = id ? sites.find((c) => c.id === id) : parsed.url ? sites.find((c) => aveonline.normalizeUrl(c.url) === parsed.url) : null;
+    const existing = id ? sites.find((c) => c.id === id) : parsed.url ? sites.find((c) => aveonline.sameStore(c, parsed)) : null;
     if (id && !existing) throw new Error(`Tienda no encontrada: ${id}`);
     if (!existing && !parsed.url) throw new Error('No encontré la URL de la tienda en el texto (o elige la tienda a la que va el token)');
     let c;
@@ -1520,8 +1534,8 @@ const ops = {
       c = aveNormalize({ ...existing, token: parsed.token }, existing);
       sites[sites.indexOf(existing)] = c;
     } else {
-      const host = new URL(parsed.url).hostname.replace(/^www\./, '');
-      c = aveNormalize({ name: host, url: parsed.url, token: parsed.token }, null);
+      const host = parsed.type === 'shopify' ? parsed.shop.replace(/\.myshopify\.com$/, '') : new URL(parsed.url).hostname.replace(/^www\./, '');
+      c = aveNormalize({ name: host, type: parsed.type, url: parsed.url, shop: parsed.shop, token: parsed.token }, null);
       const label = host.split('.')[0];
       c.id = db.slugify(/^\d+$/.test(label) || !label ? 'tienda' : label, new Set(sites.map((x) => x.id))); // chp.com.co → chp; una IP → tienda
       sites.push(c);
@@ -1546,7 +1560,8 @@ const ops = {
     return true;
   },
   /** GET /review/info: de una tienda guardada (`id`) o de una sin guardar (`site`, para "Probar" en el formulario). */
-  'ave.check': ({ id, site }) => {
+  'ave.check': async ({ id, site: raw }) => {
+    const site = raw ? await aveResolve(raw) : raw;
     const existing = id ? aveSites().find((c) => c.id === id) : site && site.id ? aveSites().find((c) => c.id === site.id) : null;
     if (id && !existing) throw new Error(`Tienda no encontrada: ${id}`);
     const c = site ? aveNormalize(site, existing) : existing;

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
-// CLI para agentes (skill frap-aveonline): tiendas con el plugin de envíos Aveonline conectadas en FRAP por la
-// «Revisión por token». Solo lectura. Solo ve las tiendas con ENABLED=1 y AI=1. Nunca imprime el token.
+// CLI para agentes (skill frap-aveonline): tiendas Aveonline (WordPress con el plugin o Shopify con la app Aveonline
+// Connect) conectadas en FRAP por la «Revisión por token». Solo lectura. Solo ve las tiendas con ENABLED=1 y AI=1. Nunca imprime el token.
 // Uso:
 //   node frap-ave.js list
 //   node frap-ave.js <id> info
@@ -18,8 +18,8 @@ const ENV_FILE = path.join(FRAP_HOME, 'aveonline.env');
 const USAGE = `Uso:
   frap-ave list
   frap-ave <id> info                      versión del plugin y vencimiento del token
-  frap-ave <id> pedidos [clave=valor …]   per_page=20 page=2 status=processing aveonline=0 (todos) --json
-  frap-ave <id> pedido <número>           tramas de cotización y guía (envío y respuesta)
+  frap-ave <id> pedidos [clave=valor …]   (solo WordPress) per_page=20 page=2 status=processing aveonline=0 (todos) --json
+  frap-ave <id> pedido <número>           tramas del pedido (WordPress: cotización y guía; Shopify: cotización y CRM)
   frap-ave <id> log [TIPO]                log del plugin (p. ej. MULTIAGENTE_RESOLVE)`;
 
 const usable = () => ave.loadSites(ENV_FILE).filter((s) => s.enabled && s.ai && s.token);
@@ -53,13 +53,20 @@ async function main(argv) {
   if (first === 'list') {
     const list = usable();
     if (!list.length) { console.log(`Sin tiendas disponibles (activas, con "IA" y con token) en ${ENV_FILE}`); return; }
-    for (const s of list) console.log(`${s.id}\t${s.name}\t${s.url}`);
+    for (const s of list) console.log(`${s.id}\t${s.type}\t${s.name}\t${s.type === 'shopify' ? s.shop : s.url}`);
     return;
   }
   const s = site(first);
   if (!cmd || cmd === 'info') {
     const i = await ave.info(s);
     const types = Object.entries(i.types || {}).map(([k, n]) => `${k} (${n})`).join(', ');
+    if (s.type === 'shopify') {
+      console.log(`${s.name} — ${i.shop} (Shopify)
+App Aveonline Connect ${i.version} · ${s.url}
+Token: ${left(i)}
+Log: ${types || '(vacío)'}`);
+      return;
+    }
     console.log(`${i.name || s.name} — ${i.site}
 Plugin Aveonline ${i.version}${i.wordpress ? ` · WordPress ${i.wordpress}` : ''}${i.woocommerce ? ` · WooCommerce ${i.woocommerce}` : ''}${i.legacy ? '  (plugin anterior a 4.11.4: solo `log`)' : ''}
 Token: ${left(i)}
@@ -84,8 +91,8 @@ Log: ${types || '(vacío)'}`);
     return;
   }
   if (cmd === 'pedido' || cmd === 'order') {
-    const n = rest[0];
-    if (!/^\d{1,12}$/.test(n || '')) throw new Error('pedido necesita el número: frap-ave <id> pedido 16322');
+    const n = String(rest[0] || '').replace(/^#/, '');
+    if (!/^\d{1,12}$/.test(n)) throw new Error('pedido necesita el número: frap-ave <id> pedido 16322');
     console.log(JSON.stringify(await get(s, `order/${n}`), null, 2));
     return;
   }

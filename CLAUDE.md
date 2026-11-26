@@ -17,7 +17,7 @@ FRAP es una alternativa ligera a Warp que corre en el navegador: 3 paneles (proy
    - No debilites `assertReadOnly` ni las capas del motor: cualquier cambio necesita un test en `tests/db.test.js`.
 7. **SSH**: contraseñas solo en `FRAP_HOME/ssh.env` (0600) y se entregan a `ssh` por askpass, nunca en argv ni en el entorno de la terminal. Host y usuario se validan (nada que empiece por `-`) y van tras `--`. `frap-ssh.js` solo ve servidores con `ENABLED=1` y `AI=1`. Cambios aquí necesitan test en `tests/ssh.test.js`.
 8. **WordPress**: los tokens solo viven en `FRAP_HOME/wordpress.env` (0600): nunca en la UI (usa `publicSite`) ni en la salida de `frap-wp.js`, que solo ve sitios con `ENABLED=1` y `AI=1`. Los permisos los decide el token en el sitio (plugin `frap-wordpress`, por defecto solo lectura). El plugin y el cliente (`bridge/wordpress.js`) cambian juntos; el plugin tiene su propio `AGENTS.md` y `npm run check`.
-9. **Aveonline**: los tokens de la revisión por token solo viven en `FRAP_HOME/aveonline.env` (0600): nunca en la UI (usa `publicSite`; `ave.paste` no los devuelve) ni en la salida de `frap-ave.js`, que es de solo lectura y solo ve tiendas con `ENABLED=1` y `AI=1`. El plugin Aveonline es otro repo: no se toca sin pedirlo.
+9. **Aveonline**: los tokens de la revisión por token solo viven en `FRAP_HOME/aveonline.env` (0600): nunca en la UI (usa `publicSite`; `ave.paste` no los devuelve) ni en la salida de `frap-ave.js`, que es de solo lectura y solo ve tiendas con `ENABLED=1` y `AI=1`. El plugin Aveonline y la app de Shopify (Aveonline Connect, tipo `shopify`) son otros repos: no se tocan sin pedirlo.
 10. La UI está en español.
 
 ## Glosario (cómo habla el usuario)

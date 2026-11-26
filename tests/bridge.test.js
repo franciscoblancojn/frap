@@ -1470,6 +1470,7 @@ test('ave.*: tiendas Aveonline (revisión por token), pegar token, interruptores
   const TOKEN_A = 'a1'.repeat(24);
   const TOKEN_B = 'b2'.repeat(24);
   let current = TOKEN_A;
+  const TOKEN_S = 'Sx9'.repeat(12);
   const seen = [];
   const orders = [{ id: 547, number: '547', status: 'processing', created: '2026-11-23 17:42:23', city: 'Marinilla', shipping: { method_id: 'wc_aveonline_shipping', name: 'COORDINADORA', total: '16550' }, aveonline: true, tramas: { cotizacion: true, guia: true }, guia: { numguia: '86732804177', mensaje: 'Guia generada' } }];
   const srv = http.createServer((req, res) => {
@@ -1478,6 +1479,13 @@ test('ave.*: tiendas Aveonline (revisión por token), pegar token, interruptores
     seen.push({ path: u.pathname, route, query: Object.fromEntries(u.searchParams), token: req.headers['x-avshme-token'] });
     const json = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
     if (u.pathname.startsWith('/html')) { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<html>otra cosa</html>'); return; }
+    if (u.pathname === '/meta.json') return json(200, { name: 'Mi Tienda', domain: 'mitienda.com', myshopify_domain: 'mi-tienda.myshopify.com' }); // dominio propio de una tienda Shopify
+    if (u.pathname.startsWith('/shop-app/api/revision/')) { // app de Shopify (Aveonline Connect)
+      if (req.headers['x-avshme-token'] !== TOKEN_S || u.searchParams.get('shop') !== 'mi-tienda.myshopify.com') return json(401, { code: 'revision_denied', message: 'Token inválido o vencido.' });
+      const sb = { shop: 'mi-tienda.myshopify.com', version: '2.3.0', now: 1000000000000, expires: 1000000000000 + 9 * 60000 };
+      if (u.pathname.endsWith('/log')) return json(200, { ...sb, types: { COTIZAR: 3 }, log: { COTIZAR: [{ ok: 1 }] } });
+      if (u.pathname.endsWith('/pedido')) return u.searchParams.get('pedido') === '1021' ? json(200, { ...sb, pedido: { name: '#1021' }, estado: null, tramas: { cotizacion: { a: 1 }, crm: null } }) : json(404, { code: 'pedido_no_encontrado' });
+    }
     if (req.headers['x-avshme-token'] !== current) return json(401, { code: 'avshme_review_denied', message: 'Token inválido o vencido.' });
     const legacy = u.pathname.startsWith('/legacy');
     const base = { site: 'http://x', version: legacy ? '4.11.2' : '4.11.5', now: 1000, expires: 1000 + 7 * 60 + 5 };
@@ -1535,7 +1543,7 @@ test('ave.*: tiendas Aveonline (revisión por token), pegar token, interruptores
   // CLI: solo tiendas Activas, con IA y token; nunca imprime el token
   const cli = (...args) => new Promise((resolve) => execFile(process.execPath, [path.join(__dirname, '..', 'bridge', 'frap-ave.js'), ...args], { env: { ...process.env, FRAP_HOME: path.join(root, 'cfg') } }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stdout, stderr })));
   let r = await cli('list');
-  assert.match(r.stdout, /^tienda\tTienda Ave\thttp:\/\/127\.0\.0\.1:\d+$/m);
+  assert.match(r.stdout, /^tienda\twordpress\tTienda Ave\thttp:\/\/127\.0\.0\.1:\d+$/m);
   r = await cli('tienda', 'info');
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /Plugin Aveonline 4\.11\.5/);
@@ -1577,6 +1585,59 @@ test('ave.*: tiendas Aveonline (revisión por token), pegar token, interruptores
   await client.call('ave.setSkill', { on: false });
   assert.ok(!fs.existsSync(skill));
   await client.call('ave.delete', { id: 'tienda' });
+
+  // Shopify (app Aveonline Connect): la URL es la de la app y la tienda va aparte; pegar el endpoint de la app la crea
+  await assert.rejects(client.call('ave.save', { site: { name: 'X', type: 'shopify', url: '', shop: 'no valida!', token: TOKEN_S } }), /Tienda de Shopify inválida/);
+  await assert.rejects(client.call('ave.save', { site: { name: 'X', type: 'magento', url: base, token: TOKEN_S } }), /Tipo inválido/);
+  const def = await client.call('ave.save', { site: { name: 'Def', type: 'shopify', url: '', shop: 'otra', token: TOKEN_S } });
+  assert.equal(def.url, 'https://connect-crm-s.aveonline.co');
+  assert.equal(def.shop, 'otra.myshopify.com');
+  await client.call('ave.delete', { id: def.id });
+  p = await client.call('ave.paste', { text: `pedido #1021 token ${TOKEN_S} ${base}/shop-app/api/revision/log?shop=mi-tienda.myshopify.com` });
+  assert.equal(p.created, true);
+  assert.equal(p.order, '1021');
+  assert.deepEqual([p.site.id, p.site.type, p.site.url, p.site.shop], ['mi_tienda', 'shopify', `${base}/shop-app`, 'mi-tienda.myshopify.com']);
+  assert.match(fs.readFileSync(envFile, 'utf8'), /FRAP_AVE_MI_TIENDA_TYPE="?shopify"?\n.*FRAP_AVE_MI_TIENDA_SHOP="?mi-tienda\.myshopify\.com/s);
+  // otro token para la misma tienda (por su dominio): no la duplica
+  p = await client.call('ave.paste', { text: `token ${TOKEN_S} tienda mi-tienda.myshopify.com` });
+  assert.equal(p.created, false);
+  const si = await client.call('ave.check', { id: 'mi_tienda' });
+  assert.equal(si.platform, 'shopify');
+  assert.equal(si.expires - si.now, 9 * 60, 'now/expires en segundos');
+  assert.ok(!('log' in si));
+  await assert.rejects(client.call('ave.orders', { id: 'mi_tienda' }), /no tiene lista de pedidos/);
+  r = await cli('list');
+  assert.match(r.stdout, /^mi_tienda\tshopify\tmi-tienda\tmi-tienda\.myshopify\.com$/m);
+  r = await cli('mi_tienda', 'info');
+  assert.match(r.stdout, /App Aveonline Connect 2\.3\.0/);
+  assert.match(r.stdout, /vence en 9 min/);
+  assert.match(r.stdout, /COTIZAR \(3\)/);
+  r = await cli('mi_tienda', 'pedido', '#1021');
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).pedido.name, '#1021');
+  assert.equal(seen.at(-1).query.pedido, '1021');
+  r = await cli('mi_tienda', 'pedido', '999');
+  assert.match(r.stderr, /No existe el pedido 999/);
+  r = await cli('mi_tienda', 'log', 'COTIZAR');
+  assert.equal(seen.at(-1).query.type, 'COTIZAR');
+  assert.deepEqual(JSON.parse(r.stdout), { COTIZAR: [{ ok: 1 }] });
+  r = await cli('mi_tienda', 'pedidos');
+  assert.match(r.stderr, /no tiene lista de pedidos/);
+  for (const out of [r.stdout, r.stderr]) assert.ok(!out.includes(TOKEN_S));
+  // dominio propio en vez de .myshopify.com: se averigua con /meta.json de la tienda
+  const own = await client.call('ave.check', { site: { name: 'Propia', type: 'shopify', url: `${base}/shop-app`, shop: `${base}/productos`, token: TOKEN_S } });
+  assert.equal(own.shop, 'mi-tienda.myshopify.com');
+  await assert.rejects(client.call('ave.check', { site: { name: 'No', type: 'shopify', url: `${base}/shop-app`, shop: 'http://127.0.0.1:1', token: TOKEN_S } }), /No pude averiguar el dominio \.myshopify\.com/);
+  const saved = await client.call('ave.save', { site: { id: 'mi_tienda', name: 'mi-tienda', type: 'shopify', url: `${base}/shop-app`, shop: base, token: '' } });
+  assert.deepEqual([saved.shop, saved.domain, saved.hasToken], ['mi-tienda.myshopify.com', new URL(base).host, true]);
+  // export/import conserva el tipo y la tienda
+  const sx = await client.call('export.creds', { ave: ['mi_tienda'] });
+  assert.equal(sx.integrations.aveonline[0].type, 'shopify');
+  await client.call('ave.delete', { id: 'mi_tienda' });
+  await client.call('import.creds', { ave: sx.integrations.aveonline });
+  const back = (await client.call('ave.list')).sites.find((x) => x.id === 'mi_tienda');
+  assert.deepEqual([back.type, back.shop, back.hasToken], ['shopify', 'mi-tienda.myshopify.com', false]);
+  await client.call('ave.delete', { id: 'mi_tienda' });
 });
 
 test('wp.*: conexiones WordPress (plugin frap-wordpress), interruptores Activa/IA, CLI frap-wp y skill', async (t) => {
