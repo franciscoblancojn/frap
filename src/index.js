@@ -5953,6 +5953,19 @@
     tipo.addEventListener('change', syncTipo);
     syncTipo();
     const si = cur.session ? todoSessInfo(cur) : null;
+    // 👁 Previsualizar: el markdown renderizado (tablas, listas, negritas…) en lugar del texto; otro clic vuelve a editar
+    const mdDir = (cur.session && cur.session.cwd) || '';
+    const preview = h('div.md-body.msg-preview.hidden');
+    const prevBtn = h('button.mini.msg-prevbtn', { type: 'button', title: 'Ver el mensaje con el formato (markdown renderizado)' }, '👁 Previsualizar');
+    const setPreview = (on) => {
+      if (on) preview.replaceChildren(...(texto.value.trim() ? mdBlocks(texto.value, mdDir) : [h('p.muted', 'Sin texto.')]));
+      preview.classList.toggle('hidden', !on);
+      texto.classList.toggle('hidden', on);
+      prevBtn.textContent = on ? '✎ Editar' : '👁 Previsualizar';
+      prevBtn.classList.toggle('on', on);
+      if (!on) texto.focus();
+    };
+    prevBtn.addEventListener('click', () => setPreview(preview.classList.contains('hidden')));
     const doSave = async () => {
       const msg = { ...(m ? { id: m.id } : {}), tipo: tipo.value, titulo: titulo.value, texto: texto.value, para: para.value, estado: estado.value, ...(tipo.value === 'pr' ? { pr: { url: url.value, accion: accion.value } } : {}) };
       if (!m && activeTerm() && isAgentTerm(activeTerm())) { const at = activeTerm(); const mm = at.info.meta || {}; msg.session = { sid: at.sid, projectId: mm.projectId || null, cwd: mm.cwd || '', title: termTitle(at), kind: termKind(at), ...(mm.agent ? { agent: mm.agent } : {}), ...(mm.icon ? { icon: mm.icon } : {}), ...(mm.person ? { person: mm.person } : {}) }; }
@@ -5966,7 +5979,7 @@
         h('div.field-row', h('div.field', { style: 'width:190px' }, h('label', 'Tipo'), tipo), h('div.field.grow', h('label', 'Para'), para, dl), h('div.field', { style: 'width:190px' }, h('label', 'Estado'), estado)),
         prBox,
         h('div.field', h('label', 'Tema'), titulo),
-        h('div.field', h('label', 'Mensaje'), texto),
+        h('div.field', h('div.msg-lblrow', h('label', 'Mensaje'), h('span.grow'), prevBtn), texto, preview),
         si ? h('p.muted', { style: 'font-size:11px;margin:4px 0 0' }, `Sesión: ${si.icon ? `${iconText(si.icon)} ` : ''}${si.title}${si.alive ? '' : ' (cerrada)'}`) : null,
       ],
       foot: [
@@ -6068,7 +6081,7 @@
         h(`button.mini.msg-copy${msgCopied.has(m.id) ? '.done' : ''}`, { title: 'Copiar con formato de WhatsApp (con el nombre de la sesión arriba)', onclick: (e) => { e.stopPropagation(); msgCopy(m); } }, msgCopied.has(m.id) ? '✓ Copiado' : '📋 Copiar'),
         h(`button.icon.mini.msg-sent${sent ? '.on' : ''}`, { title: sent ? 'Enviado · clic: volver a pendiente' : 'Marcar como enviado', onclick: (e) => { e.stopPropagation(); msgSetSent(m, !sent); } }, sent ? '✓' : '○')),
       open ? h('div.msg-detail',
-        h('div.msg-body', m.texto),
+        h('div.msg-body.md-body', mdBlocks(m.texto, (m.session && m.session.cwd) || '')),
         h('div.msg-acts',
           h('button.mini', { onclick: (e) => { e.stopPropagation(); msgModal(m); } }, '✎ Editar'),
           m.session ? h('button.mini', { onclick: (e) => { e.stopPropagation(); msgGoSession(m); } }, si && si.alive ? '→ Ir a la sesión' : '→ Reabrir sesión') : null,

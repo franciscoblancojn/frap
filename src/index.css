@@ -132,9 +132,16 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .msg button.msg-sent { color: var(--fg-3); }
 .msg button.msg-sent.on { color: var(--ok); }
 .msg-detail { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; cursor: default; }
-.msg-body { white-space: pre-wrap; word-break: break-word; font-size: 11.5px; color: var(--fg); max-height: 220px; overflow-y: auto; }
+.msg-body { word-break: break-word; font-size: 11.5px; color: var(--fg); max-height: 260px; overflow-y: auto; }
 .msg-acts { display: flex; gap: 4px; margin-top: 6px; }
 .msg-text-in { width: 100%; font: 12.5px/1.45 var(--mono); resize: vertical; }
+.msg-lblrow { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.msg-lblrow label { margin: 0; }
+.msg-prevbtn.on { color: var(--accent); border-color: var(--accent); }
+.md-body.msg-preview { max-width: none; margin: 0; padding: 12px 16px; min-height: 180px; max-height: 55vh; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); font-size: 13.5px; }
+.md-body.msg-body { max-width: none; margin: 0; padding: 0; font-size: 12px; line-height: 1.5; }
+.md-body.msg-body h1, .md-body.msg-body h2, .md-body.msg-body h3 { font-size: 1.1em; margin: .6em 0 .3em; border: none; }
+.md-body.msg-body table { font-size: 11px; }
 .integ-head { display: flex; align-items: center; gap: 6px; padding: 4px 4px; cursor: pointer; user-select: none; color: var(--fg-2); text-transform: uppercase; font-size: 10.5px; letter-spacing: .06em; font-weight: 600; }
 .integ-caret { width: 10px; color: var(--fg-2); font-size: 10px; }
 .integ-group { border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2); }
