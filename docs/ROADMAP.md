@@ -8,6 +8,7 @@
 - [x] Panel central: pestañas y lanzadores shell/claude/codex/opencode (`--add-dir` para las carpetas extra)
 - [x] Terminales persistentes: sobreviven a recargar la página y se re-adjuntan con su scrollback
 - [x] Shell y SSH: botones arriba a la derecha para limpiar (también vacía el historial guardado: no vuelve al recargar ni al reiniciar el bridge) y copiar todo el contenido de la terminal
+- [x] Al copiar un mensaje, va primero el nombre de la sesión (el del panel izquierdo) y un salto de línea
 - [x] Varios mensajes en una respuesta: un botón por mensaje con «persona · tema» (como los presenta la IA o según el nombre del archivo), cada uno se copia y marca por separado
 - [x] Mensajes y PR detectados se muestran encima de «Hablar», solo para la sesión de IA activa; copiar pasa a naranja «✓ Mensaje copiado» (se puede volver a copiar) y un mensaje nuevo vuelve a verde
 - [x] Terminales: los enlaces de pull/merge request dan un botón «🔀 Generar PR · rama → base» o «↗ Abrir PR #N» (GitHub, GitLab, Bitbucket) que abre el enlace en otra pestaña

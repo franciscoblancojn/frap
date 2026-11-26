@@ -743,7 +743,10 @@
             onclick: async () => {
               try {
                 const r = await Bridge.call('fs.read', { path: m.file });
-                copyText(r.content.replace(/\s+$/, ''));
+                // el nombre de la sesión (el que le pusiste en el panel izquierdo) va primero, con un salto de línea
+                const tm = t.info.meta || {};
+                const name = String((tm.named && tm.title) || termTitle(t) || '').replace(/^[^\p{L}\p{N}]+/u, '').trim(); // sin el ✳ de actividad de claude
+                copyText(`${name ? `${name}\n` : ''}${r.content.replace(/\s+$/, '')}`);
                 m.copied = true;
                 toast(`Mensaje copiado${one ? '' : ` (${m.label})`}: pégalo donde lo vayas a enviar`, 'ok');
                 renderMsgDock();
