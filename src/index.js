@@ -979,7 +979,7 @@
   }
 
   // gancho de depuración (solo con localStorage frap.debug = true)
-  if (storeGet('frap.debug', false)) window.__frap = { terms, logicalLine, pathCandidates, resolvePaths, openInEditor, get state() { return state; } };
+  if (storeGet('frap.debug', false)) window.__frap = { terms, logicalLine, pathCandidates, resolvePaths, openInEditor, openImport: (d, n) => openImport(d, n), get state() { return state; } };
 
   const cmdName = (cmd) => {
     const e = basename((cmd || 'code').split(/\s+/)[0]);
@@ -10382,7 +10382,7 @@
       box.checked = true;
       const kids = (it.children || []).map((c) => {
         const kb = h('input', { type: 'checkbox' });
-        kb.checked = true;
+        kb.checked = c.checked !== false;
         kb.addEventListener('change', () => {
           if (kb.checked) box.checked = true;
           box.indeterminate = kids.some((k) => !k.box.checked) && kids.some((k) => k.box.checked);
@@ -10391,6 +10391,7 @@
         return { value: c.value, box: kb, el: h('label.xp-item.xp-kid', kb, h('span', c.label), c.sub ? h('span.muted', c.sub) : null) };
       });
       box.addEventListener('change', () => { box.indeterminate = false; for (const k of kids) k.box.checked = box.checked; sync(); });
+      if (kids.length && kids.some((k) => !k.box.checked)) box.indeterminate = kids.some((k) => k.box.checked);
       rows.push({ value: it.value, box, kids });
       list.append(h('label.xp-item', box, h('span', it.label), it.sub ? h('span.muted', it.sub) : null), ...kids.map((k) => k.el));
     }
@@ -10402,7 +10403,7 @@
       h('label.xp-head', all, h('span', title), h('span.muted', `(${items.length})`)),
       note ? h('div.muted.xp-note', note) : null,
       items.length ? list : h('div.muted.xp-note', 'Nada que mostrar.'));
-    if (!items.length) { all.checked = false; all.disabled = true; }
+    if (!items.length) { all.checked = false; all.disabled = true; } else sync();
     return {
       el,
       selected: () => rows.filter((r) => r.box.checked || r.box.indeterminate || r.kids.some((k) => k.box.checked))
@@ -10548,7 +10549,13 @@
     const cfg = data.config && typeof data.config === 'object' ? data.config : {};
     const projects = checkGroup('Proyectos y terminales', projs.map((p) => ({
       value: p.id, label: `${p.name}${project(p.id) ? ' (reemplaza)' : ''}`, sub: p.folders.map(tilde).join(', '),
-      children: (p.terminals || []).map((t, i) => ({ value: i, label: t.title || t.kind, sub: t.kind })),
+      children: (() => {
+        const used = new Set();
+        return (p.terminals || []).map((t, i) => {
+          const open = termOpenMatch(t, used);
+          return { value: i, label: `${t.title || t.kind}${open ? ' · ya abierta' : ''}`, sub: t.kind, checked: !open };
+        });
+      })(),
     })));
     const config = checkGroup('Configuración', CONFIG_PARTS.filter((c) => cfg[c.key] != null).map((c) => ({
       value: c.key, label: c.count ? `${c.label} (${c.count(cfg)})` : c.label, sub: c.key === 'settings' ? 'reemplaza tus ajustes' : 'se agrega; mismo id se reemplaza',
@@ -10676,13 +10683,34 @@
     });
   }
 
+  /**
+   * Terminal abierta que corresponde a una exportada o de la foto: la misma conversación de claude (agent.session) o,
+   * sin conversación, el mismo tipo, carpeta y nombre (y servidor si es ssh). `used`: las ya emparejadas (no se repiten).
+   */
+  function termOpenMatch(t, used = new Set()) {
+    const live = [...terms.values()].filter((x) => x.info.alive !== false && !used.has(x.sid) && termKind(x) !== 'action');
+    const conv = t.agent && t.agent.session;
+    let hit = conv ? live.find((x) => ((x.info.meta || {}).agent || {}).session === conv) : null;
+    if (!hit && !conv) {
+      hit = live.find((x) => {
+        const m = x.info.meta || {};
+        return termKind(x) === t.kind && (m.cwd || '') === (t.cwd || '') && (t.kind !== 'ssh' || m.sshId === t.sshId)
+          && (!t.named || (m.named && m.title === t.title));
+      });
+    }
+    if (hit) used.add(hit.sid);
+    return hit || null;
+  }
   /** Reabre las terminales importadas; las IA pueden retomar su última conversación. */
   async function reopenTerminals(chosen, resume) {
     if (!Bridge.ready) return;
     const prev = state.activeProject;
+    let skipped = 0;
     for (const { p, terminals } of chosen) {
       state.activeProject = p.id;
       for (const t of terminals) {
+        // la misma conversación de IA ya abierta: no se duplica (dos claude sobre la misma conversación se pisan)
+        if (t.agent && t.agent.session && termOpenMatch(t)) { skipped++; continue; }
         if (t.kind === 'ssh') {
           if (t.sshId && sshInfo && sshInfo.hosts.some((x) => x.id === t.sshId && x.enabled)) await connectSsh(t.sshId);
           continue;
@@ -10700,6 +10728,7 @@
     if (prev && project(prev)) state.activeProject = prev;
     save();
     renderAll();
+    if (skipped) toast(`${skipped} terminal(es) ya estaban abiertas con su conversación: no se duplicaron`, 'ok');
   }
 
   $('#btn-settings').onclick = openSettings;
