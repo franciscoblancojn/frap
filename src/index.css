@@ -1412,3 +1412,6 @@ li.CodeMirror-hint-active { background: var(--accent); color: var(--bg); }
 .conv-last { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; }
 .conv-issue { color: var(--accent); }
+
+/* ícono propio de la sesión, antes de su nombre (el punto de estado se mantiene) */
+.ticon { flex: none; font-size: 12px; line-height: 1; }

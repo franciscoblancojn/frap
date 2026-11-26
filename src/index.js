@@ -783,7 +783,7 @@
                 // el nombre de la sesión (el que le pusiste en el panel izquierdo) va primero, con un salto de línea
                 const tm = t.info.meta || {};
                 const name = String((tm.named && tm.title) || termTitle(t) || '').replace(/^[^\p{L}\p{N}]+/u, '').trim(); // sin el ✳ de actividad de claude
-                copyText(`${name ? `📌 *${name}*\n` : ''}${toWhatsApp(r.content.replace(/\s+$/, ''))}`);
+                copyText(`${name ? `${termIcon(t) || '📌'} *${name}*\n` : ''}${toWhatsApp(r.content.replace(/\s+$/, ''))}`);
                 m.copied = true;
                 toast(`Mensaje${m.who ? ` para ${m.who}` : ''} copiado: pégalo donde lo vayas a enviar`, 'ok');
                 renderMsgDock();
@@ -921,7 +921,7 @@
         cwd: opts.cwd || p.folders[0],
         cols: 120, rows: 32,
         init: opts.init != null ? opts.init : buildLaunch(kind, p),
-        meta: { projectId: p.id, kind, title: opts.title || (n > 1 ? `${kind} ${n}` : kind), ...(opts.named && opts.title ? { named: true } : {}), ...(opts.person ? { person: opts.person } : {}) },
+        meta: { projectId: p.id, kind, title: opts.title || (n > 1 ? `${kind} ${n}` : kind), ...(opts.named && opts.title ? { named: true } : {}), ...(opts.person ? { person: opts.person } : {}), ...(opts.icon ? { icon: String(opts.icon).slice(0, 8) } : {}) },
       });
       ensureTerm(info);
       activate(info.sid);
@@ -957,18 +957,39 @@
     renderAll();
   }
 
-  async function renameTerm(sid) {
+  const SESSION_ICONS = ['', '📌', '🚀', '🐞', '🔥', '⭐', '💼', '🛒', '🚚', '📦', '💰', '📊', '🧪', '🛠️', '🔒', '🌐', '📱', '🗄️', '📝', '💬', '📣', '🤝', '⏰', '🎯', '🧭', '🧩', '🎨', '✅', '⚠️', '❗', '🔔', '💡', '🟢', '🟡', '🔴', '🟣', '🔵'];
+  /** Ícono propio de una sesión (se ve antes de su nombre y encabeza los mensajes que se copian). */
+  const termIcon = (t) => String(((t && t.info.meta) || {}).icon || '');
+  /** Renombrar una sesión: nombre (vacío = título automático) e ícono. */
+  function renameTerm(sid) {
     const t = terms.get(sid);
     if (!t) return;
     const m = t.info.meta || {};
-    const name = await askText('Renombrar terminal', 'Nombre (déjalo vacío para volver al título automático de la terminal)', m.named ? m.title : termTitle(t));
-    if (name == null) return; // cancelado
-    try {
-      // con nombre: queda fijo aunque claude/codex cambien el título. Vacío: vuelve al título automático
-      const info = await Bridge.call('session.meta', { sid, meta: name ? { title: name, named: true } : { named: false } });
-      t.info.meta = info.meta;
-    } catch (e) { toast(e.message, 'err'); }
-    renderAll();
+    const name = h('input', { value: m.named ? m.title : termTitle(t), placeholder: 'Vacío: el título automático de la terminal' });
+    const icon = h('input.team-icon-in', { value: m.icon || '', maxlength: '8', placeholder: '·' });
+    const picks = h('div.icon-grid', SESSION_ICONS.map((ic) => h('button.icon-pick', { type: 'button', title: ic ? '' : 'Sin ícono', onclick: () => { icon.value = ic; } }, ic || '∅')));
+    const doSave = async () => {
+      const n = name.value.trim();
+      const ic = icon.value.trim();
+      try {
+        // con nombre: queda fijo aunque claude/codex cambien el título. Vacío: vuelve al título automático
+        const info = await Bridge.call('session.meta', { sid, meta: { ...(n ? { title: n, named: true } : { named: false }), icon: ic || null } });
+        t.info.meta = info.meta;
+        modalClose(true);
+      } catch (e) { toast(e.message, 'err'); }
+      renderAll();
+    };
+    name.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSave(); });
+    openModal({
+      title: 'Renombrar terminal',
+      body: [
+        h('div.field-row', h('div.field', { style: 'width:80px' }, h('label', 'Ícono'), icon), h('div.field.grow', h('label', 'Nombre'), name)),
+        picks,
+        h('p.muted', { style: 'font-size:11px;margin:6px 0 0' }, 'El ícono se ve antes del nombre (en el panel izquierdo y en la pestaña) y encabeza los mensajes que copias de esta sesión (WhatsApp).'),
+      ],
+      foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar')],
+    });
+    requestAnimationFrame(() => name.select());
   }
 
   /** Envía texto a la terminal activa. Multilínea va como bracketed paste. */
@@ -1355,6 +1376,7 @@
     pid ? dragHandle() : null,
     h('span', { class: dotClass(t) }),
     grouped ? h('span.slot', { title: `Pantalla dividida: panel ${slot + 1}` }, String(slot + 1)) : null,
+    termIcon(t) ? h('span.ticon', termIcon(t)) : null,
     h('span.tname', termTitle(t)),
     teamOn() && teamPerson((t.info.meta || {}).person) ? h('span.tperson', { title: `Asignada a ${teamPerson(t.info.meta.person).name} (${teamPerson(t.info.meta.person).role})` }, teamAvatar(teamPerson(t.info.meta.person), '.sm'), h('span.tperson-name', { style: `color:${teamColor(teamPerson(t.info.meta.person))}` }, teamPerson(t.info.meta.person).name.split(' ')[0])) : null,
     noticeBadge(t),
@@ -1891,6 +1913,7 @@
       h('span', { class: dotClass(t) }),
       slot != null ? h('span.slot', String(slot + 1)) : null,
       kindIcon(termKind(t)),
+      termIcon(t) ? h('span.ticon', termIcon(t)) : null,
       h('span.tname', termTitle(t)),
       t.info.notice ? h(`span.notice-dot.${t.info.notice.kind}`, { title: t.info.notice.kind === 'done' ? 'Terminó' : 'Espera tu respuesta' }) : null,
       h('span.x', { title: 'Cerrar', onclick: (e) => { e.stopPropagation(); closeTerm(t.sid); } }, '✕')));
@@ -2123,7 +2146,7 @@
       .filter((t) => termKind(t) !== 'action' && t.info.alive !== false)
       .map((t) => {
         const m = t.info.meta || {};
-        return { sid: t.sid, projectId: m.projectId, kind: termKind(t), title: m.title || termKind(t), cwd: m.cwd || '', ...(m.named ? { named: true } : {}), ...(m.sshId ? { sshId: m.sshId } : {}), ...(m.agent && m.agent.session ? { agent: m.agent } : {}), ...(m.person ? { person: m.person } : {}) };
+        return { sid: t.sid, projectId: m.projectId, kind: termKind(t), title: m.title || termKind(t), cwd: m.cwd || '', ...(m.named ? { named: true } : {}), ...(m.sshId ? { sshId: m.sshId } : {}), ...(m.agent && m.agent.session ? { agent: m.agent } : {}), ...(m.person ? { person: m.person } : {}), ...(m.icon ? { icon: m.icon } : {}) };
       });
   }
   function snapshotTerms() {
@@ -10181,7 +10204,7 @@
           id: p.id, name: p.name, folders: p.folders.slice(),
           terminals: children.map((sid) => terms.get(sid)).filter(Boolean).map((t) => {
             const m = t.info.meta || {};
-            return { kind: termKind(t), title: termTitle(t), cwd: m.cwd || p.folders[0], ...(m.named ? { named: true } : {}), ...(m.sshId ? { sshId: m.sshId } : {}), ...(m.agent && m.agent.session ? { agent: m.agent } : {}), ...(m.person ? { person: m.person } : {}) };
+            return { kind: termKind(t), title: termTitle(t), cwd: m.cwd || p.folders[0], ...(m.named ? { named: true } : {}), ...(m.sshId ? { sshId: m.sshId } : {}), ...(m.agent && m.agent.session ? { agent: m.agent } : {}), ...(m.person ? { person: m.person } : {}), ...(m.icon ? { icon: m.icon } : {}) };
           }),
         };
       });
@@ -10384,7 +10407,7 @@
         if (resume && claudeId) init = `${t.kind === 'claude' ? buildLaunch('claude', proj) : (state.settings.launchers.claude || { cmd: 'claude' }).cmd} --resume ${claudeId}`;
         else if (resume && t.kind === 'codex') init = `${(state.settings.launchers.codex || { cmd: 'codex' }).cmd} resume --last`;
         else if (resume && RESUME[t.kind]) init = buildLaunch(t.kind, proj) + RESUME[t.kind];
-        await launch(['shell', 'claude', 'codex', 'opencode'].includes(t.kind) ? t.kind : 'shell', { title: t.title, cwd: t.cwd, init, named: t.named, person: t.person });
+        await launch(['shell', 'claude', 'codex', 'opencode'].includes(t.kind) ? t.kind : 'shell', { title: t.title, cwd: t.cwd, init, named: t.named, person: t.person, icon: t.icon });
       }
     }
     if (prev && project(prev)) state.activeProject = prev;
