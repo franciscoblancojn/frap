@@ -139,6 +139,11 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .integ-caret { width: 10px; color: var(--fg-2); font-size: 10px; }
 .integ-group { border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2); }
 .integ-ghead { display: flex; align-items: center; gap: 6px; padding: 4px 6px; cursor: pointer; user-select: none; font-weight: 600; }
+/* al hacer scroll dentro de Integraciones, su encabezado y el del grupo que se está viendo quedan fijos arriba
+   (para plegarlos sin volver a subir) */
+.integrations > .integ-head { position: sticky; top: -4px; z-index: 3; background: var(--bg-2); margin: -4px -6px 0; padding: 8px 10px 4px; }
+.integ-group > .integ-ghead { position: sticky; top: 23px; z-index: 2; background: var(--bg-2); border-radius: var(--radius) var(--radius) 0 0; }
+.integ-group > .integ-ghead:hover { background: var(--bg-hover); }
 .integ-ghead:hover { background: var(--bg-hover); }
 .integ-logo { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: #21759b; color: #fff; font: 700 10px/1 var(--sans, sans-serif); }
 .integ-logo.ave { background: #e8501c; }
