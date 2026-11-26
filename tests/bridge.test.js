@@ -357,6 +357,42 @@ test('msgs.*: mensajes para personas y de PR en local/mensajes, estados, vincula
   r = await run(['pr', '--texto', 'x']);
   assert.match(r.stderr, /Falta --url/);
 
+  // respaldo: un mensaje que la IA dejó en un archivo …/mensajes/*.md se importa una vez, con PR, acción y persona
+  const mdir = path.join(root, 'proj-msgs', 'mensajes');
+  fs.mkdirSync(mdir, { recursive: true });
+  const prFile = path.join(mdir, '2026-11-26-pr-2297-approve.md');
+  fs.writeFileSync(prFile, '<!-- Destino: GitHub → https://github.com/org/app/pull/2297/files -->\nRe-revisado: **se puede aprobar**.\n');
+  let imp = await client.call('msgs.importFile', { path: prFile, session: { sid: 'x1', cwd: root, title: 'sesión PRs', icon: '🔀' } });
+  assert.equal(imp.created, true);
+  assert.deepEqual([imp.msg.tipo, imp.msg.pr.accion, imp.msg.pr.numero, imp.msg.texto, imp.msg.session.title], ['pr', 'aprobado', 2297, 'Re-revisado: **se puede aprobar**.', 'sesión PRs'], 'sin el comentario HTML; PR y acción del nombre');
+  imp = await client.call('msgs.importFile', { path: prFile, session: null });
+  assert.equal(imp.created, false, 'no se importa dos veces');
+  const pFile = path.join(mdir, '2026-11-26-marta-qa.md');
+  fs.writeFileSync(pFile, 'Hola Marta, QA listo.\n');
+  imp = await client.call('msgs.importFile', { path: pFile });
+  assert.deepEqual([imp.msg.tipo, imp.msg.person], ['persona', marta.id], 'la persona sale del nombre del archivo');
+  fs.writeFileSync(pFile, 'Hola Marta, QA listo (corregido).\n');
+  imp = await client.call('msgs.importFile', { path: pFile });
+  assert.equal(imp.msg.texto, 'Hola Marta, QA listo (corregido).', 'si cambió, actualiza el texto');
+  fs.writeFileSync(path.join(root, 'proj-msgs', 'notas.md'), 'x');
+  await assert.rejects(client.call('msgs.importFile', { path: path.join(root, 'proj-msgs', 'notas.md') }), /carpeta mensajes/);
+  await assert.rejects(client.call('msgs.importFile', { path: '/etc/mensajes/x.md' }), /fuera de/);
+  r = await run(['import', prFile]);
+  assert.match(r.stdout, /Ya estaba: mensaje #\d+ \(PR #2297\)/);
+  // respaldo: enlace de PR que muestra la IA → mensaje de PR (crear PR con la descripción pr-*.md, o uno existente)
+  const desc = path.join(root, 'proj-msgs', 'pr-api-stock-bodega.md');
+  fs.writeFileSync(desc, '## Control de stock por bodega\n\n- valida unidades\n');
+  const cmp = 'https://github.com/org/api-shopify/compare/main...feat/ofertas-stock-bodega?expand=1';
+  imp = await client.call('msgs.importPr', { url: cmp, session: { sid: 'x2', cwd: root, title: 'api' }, desc });
+  assert.deepEqual([imp.created, imp.msg.pr.accion, imp.msg.titulo, imp.msg.texto], [true, 'nuevo', 'Crear PR feat/ofertas-stock-bodega → main (api-shopify)', '## Control de stock por bodega\n\n- valida unidades']);
+  assert.equal((await client.call('msgs.importPr', { url: cmp })).created, false, 'una vez por enlace');
+  imp = await client.call('msgs.importPr', { url: 'https://github.com/org/app/pull/2297/files#diff' });
+  assert.equal(imp.created, false, 'el PR #2297 ya estaba (importado del archivo): no se duplica');
+  imp = await client.call('msgs.importPr', { url: 'https://github.com/org/app/pull/31' });
+  assert.deepEqual([imp.created, imp.msg.pr.accion, imp.msg.pr.numero, imp.msg.titulo], [true, 'review', 31, 'PR #31 (app)']);
+  await assert.rejects(client.call('msgs.importPr', { url: 'https://github.com/org/app/issues/3' }), /pull request/);
+  await assert.rejects(client.call('msgs.importPr', { url: cmp + '&x', desc: '/etc/passwd' }), /fuera de|\.md/);
+
   // skill
   const skill = path.join(root, '.claude', 'skills', 'frap-mensajes', 'SKILL.md');
   assert.equal((await client.call('msgs.setSkill', { on: true })).changed.length, 2);

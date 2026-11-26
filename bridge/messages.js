@@ -26,7 +26,7 @@ const PR_ACCIONES = [
   ['cambios', '✏️', 'Pedir cambios'],
   ['comentario', '💬', 'Comentario'],
   ['merge', '🔀', 'Merge'],
-  ['nuevo', '🆕', 'PR nuevo'],
+  ['nuevo', '🆕', 'Crear PR'],
 ];
 const PR_KEYS = PR_ACCIONES.map((a) => a[0]);
 
@@ -155,6 +155,91 @@ function remove(id) {
   return true;
 }
 
+// ---------- respaldo: mensajes que la IA escribió en un archivo (mensajes/AAAA-MM-DD-<persona>-<tema>.md) ----------
+const MSG_FILE_RE = /\/mensajes?\/[^/]+\.(md|txt)$/i;
+const isMsgFile = (f) => MSG_FILE_RE.test(String(f || ''));
+/**
+ * Mensaje a partir de un archivo: los comentarios HTML (<!-- destino… -->) no van en el texto; si el archivo o sus
+ * comentarios traen un enlace de PR es de tipo pr (la acción sale del nombre: approve/aprob → aprobado, review,
+ * changes/cambios, comment, merge); la persona, del nombre (fecha-persona-tema) si está en el Equipo.
+ * Si ese archivo ya se importó, actualiza el texto (si cambió y sigue pendiente). → {msg, created}
+ */
+function importFile(file, content, session) {
+  const raw = String(content || '').slice(0, 20000);
+  const texto = raw.replace(/<!--[\s\S]*?-->\s*/g, '').trim();
+  if (!texto) throw new Error('El archivo del mensaje está vacío');
+  const all = loadRaw();
+  const prev = all.find((m) => m.file === file);
+  if (prev) {
+    if (prev.texto === texto || prev.estado === 'enviado') return { msg: prev, created: false };
+    return { msg: upsert({ id: prev.id, texto }), created: false };
+  }
+  const base = path.basename(file).replace(/\.(md|txt)$/i, '');
+  const parts = base.replace(/^\d{4}-\d{2}-\d{2}[-_]?/, '').split(/[-_]+/).filter(Boolean);
+  const prUrl = (raw.match(/https?:\/\/[^\s"'<>)\]]+?\/(?:pull|merge_requests|pull-requests)\/\d+/) || [])[0] || '';
+  let para = '';
+  if (parts.length && !/^(pr|mr)$/i.test(parts[0])) { const p = team.find(parts[0]); if (p) para = p.name; }
+  const input = { texto, para, session, estado: 'pendiente' };
+  if (prUrl) {
+    const n = norm(base);
+    const accion = /approv|aprob|lgtm/.test(n) ? 'aprobado' : /change|cambio/.test(n) ? 'cambios' : /comment|coment/.test(n) ? 'comentario' : /merge/.test(n) ? 'merge' : /review|revis/.test(n) ? 'review' : 'comentario';
+    Object.assign(input, { tipo: 'pr', pr: { url: prUrl, accion } });
+  }
+  const m = upsert(input);
+  // el archivo de origen queda anotado (así no se importa dos veces)
+  const fresh = loadRaw();
+  const saved = fresh.find((x) => x.id === m.id);
+  saved.file = file;
+  saveRaw(fresh);
+  return { msg: { ...m, file }, created: true };
+}
+
+/**
+ * Enlace de PR que mostró la IA (respaldo, como el antiguo «🔀 Generar PR»): para crearlo (compare/base...rama,
+ * pull/new/rama, -/merge_requests/new, pull-requests/new) o uno existente (pull/N, merge_requests/N, pull-requests/N).
+ * → {url, kind: 'new'|'open', numero, base, rama} o null
+ */
+function prLink(url) {
+  let u;
+  try { u = new URL(String(url)); } catch (_) { return null; }
+  if (!/^https?:$/.test(u.protocol)) return null;
+  const p = decodeURIComponent(u.pathname);
+  let m;
+  if ((m = p.match(/^\/[^/]+\/[^/]+\/compare\/(.+?)\.\.\.?(.+)$/))) return { url: u.toString(), kind: 'new', base: m[1], rama: m[2] };
+  if ((m = p.match(/^\/[^/]+\/[^/]+\/compare\/(.+)$/))) return { url: u.toString(), kind: 'new', base: '', rama: m[1] };
+  if ((m = p.match(/^\/[^/]+\/[^/]+\/pull\/new\/(.+)$/))) return { url: u.toString(), kind: 'new', base: '', rama: m[1] };
+  if (/\/-\/merge_requests\/new$/.test(p)) return { url: u.toString(), kind: 'new', base: u.searchParams.get('merge_request[target_branch]') || '', rama: u.searchParams.get('merge_request[source_branch]') || '' };
+  if (/^\/[^/]+\/[^/]+\/pull-requests\/new$/.test(p)) return { url: u.toString(), kind: 'new', base: '', rama: u.searchParams.get('source') || '' };
+  if ((m = p.match(/^\/[^/]+\/[^/]+\/pull\/(\d+)(?:\/|$)/)) || (m = p.match(/\/-\/merge_requests\/(\d+)(?:\/|$)/)) || (m = p.match(/^\/[^/]+\/[^/]+\/pull-requests\/(\d+)(?:\/|$)/))) {
+    const clean = new URL(u.toString()); clean.hash = ''; clean.search = '';
+    clean.pathname = p.replace(/^(.*?\/(?:pull|merge_requests|pull-requests)\/\d+).*$/, '$1');
+    return { url: clean.toString(), kind: 'open', numero: Number(m[1]) };
+  }
+  return null;
+}
+/**
+ * Crea el mensaje de PR de un enlace que mostró la IA, una vez por enlace (si ya hay uno con esa URL, lo devuelve).
+ * Para crear un PR: acción «nuevo» (Crear PR), con `desc` (la descripción del PR que escribió la IA) como texto si la
+ * hay. Para uno existente: acción review. → {msg, created}
+ */
+function importPrLink(url, session, desc) {
+  const info = prLink(url);
+  if (!info) throw new Error('No es un enlace de pull request');
+  const all = loadRaw();
+  const prev = all.find((m) => m.pr && m.pr.url === info.url);
+  if (prev) return { msg: prev, created: false };
+  const repo = (() => { try { return new URL(info.url).pathname.split('/').filter(Boolean).slice(0, 2).join('/'); } catch (_) { return ''; } })();
+  const body = String(desc || '').replace(/<!--[\s\S]*?-->\s*/g, '').trim().slice(0, 20000);
+  const titulo = info.kind === 'new'
+    ? `Crear PR${info.rama ? ` ${info.rama}` : ''}${info.base ? ` → ${info.base}` : ''}${repo ? ` (${repo.split('/')[1]})` : ''}`
+    : `PR #${info.numero}${repo ? ` (${repo.split('/')[1]})` : ''}`;
+  const texto = body || (info.kind === 'new'
+    ? `Crear el pull request${info.rama ? ` de \`${info.rama}\`` : ''}${info.base ? ` hacia \`${info.base}\`` : ''}${repo ? ` en ${repo}` : ''}.`
+    : `Pull request #${info.numero}${repo ? ` de ${repo}` : ''}.`);
+  const m = upsert({ tipo: 'pr', titulo, texto, session, estado: 'pendiente', pr: { url: info.url, accion: info.kind === 'new' ? 'nuevo' : 'review' } });
+  return { msg: m, created: true };
+}
+
 // ---------- skill frap-mensajes ----------
 const SKILL_MARK = 'frap-mensajes (FRAP)';
 function skillText() {
@@ -181,7 +266,7 @@ ${cli} enviado <n>             # marcarlo como enviado (solo si el usuario dice 
 \`\`\`
 
 Para textos largos o con comillas usa \`--texto -\` y pásalo por stdin (heredoc: \`<<'EOF' … EOF\`).
-Acciones de PR: review (pedir revisión), aprobado, cambios (pedir cambios), comentario, merge, nuevo (avisar que se abrió).
+Acciones de PR: review (pedir revisión), aprobado, cambios (pedir cambios), comentario, merge, nuevo (crear el PR: la URL es la de compare/…, FRAP muestra «Crear PR»).
 
 ## Reglas
 - **Guarda cada mensaje con este CLI** (no en archivos sueltos) y muéstralo también en tu respuesta. Un mensaje por persona:
@@ -197,6 +282,6 @@ Acciones de PR: review (pedir revisión), aprobado, cambios (pedir cambios), com
 const skill = require('./wordpress').skillManager('frap-mensajes', SKILL_MARK, skillText);
 
 module.exports = {
-  MSG_FILE, CLI, TIPOS, ESTADOS, PR_ACCIONES, list, upsert, remove, normAccion, prNumber,
+  MSG_FILE, CLI, TIPOS, ESTADOS, PR_ACCIONES, list, upsert, remove, normAccion, prNumber, isMsgFile, importFile, prLink, importPrLink,
   skillText, skillStatus: () => skill.status(), setSkill: (on) => skill.set(on),
 };

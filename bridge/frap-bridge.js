@@ -1640,6 +1640,35 @@ const ops = {
   /** Crea (sin id) o edita: {tipo, titulo, texto, para, person, pr: {url, accion}, session, estado}. → el mensaje */
   'msgs.save': ({ msg }) => { const m = messages.upsert(msg); broadcast({ ev: 'msgs' }); return m; },
   'msgs.delete': ({ id }) => { messages.remove(id); broadcast({ ev: 'msgs' }); return true; },
+  /**
+   * Respaldo: la IA escribió el mensaje en un archivo (…/mensajes/<…>.md) en vez de usar frap-msg. Lo importa (una vez
+   * por archivo; si cambió, actualiza el texto) vinculado a `session`. → {msg, created}
+   */
+  /**
+   * Respaldo: la IA mostró un enlace de PR (para crearlo o uno existente). Crea su mensaje de PR una vez por enlace.
+   * `desc`: ruta de la descripción del PR que escribió la IA (…/pr-*.md), que va como texto. → {msg, created}
+   */
+  'msgs.importPr': ({ url, session, desc }) => {
+    let text = '';
+    if (desc) {
+      const f = safePath(desc);
+      if (!/\.(md|txt)$/i.test(f)) throw new Error('La descripción debe ser .md o .txt');
+      const st = fs.statSync(f);
+      if (st.isFile() && st.size <= 200 * 1024) text = fs.readFileSync(f, 'utf8');
+    }
+    const r = messages.importPrLink(url, session, text);
+    if (r.created) broadcast({ ev: 'msgs' });
+    return r;
+  },
+  'msgs.importFile': ({ path: p, session }) => {
+    const f = safePath(p);
+    if (!messages.isMsgFile(f)) throw new Error('Solo archivos .md o .txt dentro de una carpeta mensajes/');
+    const st = fs.statSync(f);
+    if (!st.isFile() || st.size > 200 * 1024) throw new Error('No es un archivo de mensaje');
+    const r = messages.importFile(f, fs.readFileSync(f, 'utf8'), session);
+    broadcast({ ev: 'msgs' });
+    return r;
+  },
   'msgs.skill': () => messages.skillStatus(),
   'msgs.setSkill': ({ on }) => messages.setSkill(!!on),
   'scripts.list': () => scripts.listScripts(),

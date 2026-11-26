@@ -9,6 +9,7 @@
 //   node frap-msg.js show <n>
 //   node frap-msg.js edit <n> [--texto …] [--titulo …] [--para …] [--accion …] [--url …]
 //   node frap-msg.js enviado <n> | pendiente <n>
+//   node frap-msg.js import <archivo>     (un mensaje que quedó en un archivo …/mensajes/*.md)
 
 const fs = require('fs');
 const os = require('os');
@@ -23,7 +24,8 @@ const USAGE = `Uso:
   frap-msg list [--todos]
   frap-msg show <n>
   frap-msg edit <n> [--texto …] [--titulo …] [--para …] [--accion …] [--url …]
-  frap-msg enviado <n>    |    frap-msg pendiente <n>`;
+  frap-msg enviado <n>    |    frap-msg pendiente <n>
+  frap-msg import <archivo .md en mensajes/>   (un mensaje que quedó en un archivo)`;
 const ACC = Object.fromEntries(messages.PR_ACCIONES.map(([k, ico, label]) => [k, `${ico} ${label}`]));
 
 function parse(argv) {
@@ -65,6 +67,14 @@ function main(argv) {
     const session = sessionLink();
     const m = messages.upsert({ ...fields(opt), tipo: cmd === 'pr' ? 'pr' : 'persona', session });
     console.log(`Guardado el mensaje #${m.id}${m.para ? ` para ${m.para}` : ''}: ${m.titulo}${session ? ` (sesión «${session.title || session.sid}»)` : ''}. El usuario lo ve en FRAP → Mensajes.`);
+    return;
+  }
+  if (cmd === 'import') {
+    const f = path.resolve(String(pos[0] || '').replace(/^~(?=\/)/, os.homedir()));
+    if (!pos[0]) throw new Error(`Falta el archivo\n${USAGE}`);
+    if (!messages.isMsgFile(f)) throw new Error('Solo archivos .md o .txt dentro de una carpeta mensajes/');
+    const r = messages.importFile(f, fs.readFileSync(f, 'utf8'), sessionLink());
+    console.log(`${r.created ? 'Importado' : 'Ya estaba'}: mensaje #${r.msg.id}${r.msg.para ? ` para ${r.msg.para}` : ''}${r.msg.pr ? ` (PR #${r.msg.pr.numero || '?'})` : ''}`);
     return;
   }
   if (cmd === 'list') {

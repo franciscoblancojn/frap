@@ -434,7 +434,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'msgs.list', 'msgs.save', 'msgs.delete', 'msgs.setSkill', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'msgs.list', 'msgs.save', 'msgs.delete', 'msgs.importFile', 'msgs.importPr', 'msgs.setSkill', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -627,7 +627,7 @@
     if (!t) return;
     t.lastOut = Date.now();
     if (!t.attaching) {
-      t.term.write(d);
+      t.term.write(d, () => msgFileScanSoon(t));
       actionScan(t, d, false);
     }
   });
@@ -5835,7 +5835,7 @@
   let msgOpen = null; // id del mensaje desplegado
   const msgCopied = new Set(); // ids copiados en esta sesión de la página (el botón pasa a naranja)
   const msgsOn = () => rtabOn('msgs');
-  const MSG_PR_ACC = { review: ['👀', 'Pedir review'], aprobado: ['✅', 'Aprobado'], cambios: ['✏️', 'Pedir cambios'], comentario: ['💬', 'Comentario'], merge: ['🔀', 'Merge'], nuevo: ['🆕', 'PR nuevo'] };
+  const MSG_PR_ACC = { review: ['👀', 'Pedir review'], aprobado: ['✅', 'Aprobado'], cambios: ['✏️', 'Pedir cambios'], comentario: ['💬', 'Comentario'], merge: ['🔀', 'Merge'], nuevo: ['🆕', 'Crear PR'] };
   async function loadMsgs() {
     if (!Bridge.ready || !msgsOn()) { renderMessages(); return; }
     try { msgsInfo = await Bridge.call('msgs.list'); } catch (e) { msgsInfo = { error: e.message, mensajes: [] }; }
@@ -5852,6 +5852,60 @@
     } catch (e) { toast(`Skill frap-mensajes: ${e.message}`, 'err'); }
   }
   Bridge.on('msgs', () => loadMsgs());
+  // Respaldo: si la IA escribió el mensaje en un archivo (…/mensajes/<…>.md, como pedía antes la skill frap-equipo)
+  // en vez de usar frap-msg, al ver su ruta en la terminal se importa a Mensajes vinculado a esa sesión.
+  const MSG_FILE_PATH_RE = /(?:^|[\s'"`(<\[])((?:~|\/)[^\s'"`)<>\]]*\/mensajes?\/[^\s'"`)<>\]/]+\.(?:md|txt))(?=$|[\s'"`)>\].,;:])/g;
+  const MSG_PR_URL_RE = /^https?:\/\/[^/]+\/[^/]+\/[^/]+\/(?:compare\/.+|pull\/(?:new\/.+|\d+)|pull-requests\/(?:new|\d+)|-\/merge_requests\/(?:new|\d+))/;
+  const MSG_PR_DESC_RE = /(?:^|[\s'"`(<\[])((?:~|\/)[^\s'"`)<>\]]*\/(?:pr|mr)[-_][^\s'"`)<>\]/]*\.md)(?=$|[\s'"`)>\].,;:])/gi;
+  const msgFileScanSoon = (t) => { if (!isAgentTerm(t) || !msgsOn()) return; clearTimeout(t.msgTimer); t.msgTimer = setTimeout(() => msgFileScan(t), 600); };
+  async function msgFileScan(t) {
+    if (!terms.has(t.sid) || !Bridge.ready) return;
+    const b = t.term.buffer.active;
+    const end = Math.min(b.length, b.baseY + b.cursorY + 1);
+    const lines = [];
+    for (let i = Math.max(0, end - 60); i < end; i++) {
+      const l = b.getLine(i);
+      if (!l) continue;
+      const txt = l.translateToString(true);
+      if (l.isWrapped && lines.length) lines[lines.length - 1] += txt; else lines.push(txt);
+    }
+    t.msgFiles = t.msgFiles || new Set();
+    const found = new Set();
+    let m;
+    const text = lines.join('\n');
+    MSG_FILE_PATH_RE.lastIndex = 0;
+    while ((m = MSG_FILE_PATH_RE.exec(text))) found.add(m[1]);
+    const mm = t.info.meta || {};
+    const session = { sid: t.sid, projectId: mm.projectId || null, cwd: mm.cwd || '', title: termTitle(t), kind: termKind(t), ...(mm.agent ? { agent: mm.agent } : {}), ...(mm.icon ? { icon: mm.icon } : {}), ...(mm.person ? { person: mm.person } : {}) };
+    for (const f of found) {
+      if (t.msgFiles.has(f)) continue;
+      t.msgFiles.add(f);
+      try {
+        const r = await Bridge.call('msgs.importFile', { path: f, session });
+        if (r.created) toast(`✉ Mensaje guardado en Mensajes${r.msg.para ? ` (para ${r.msg.para})` : ''}${r.msg.pr ? ` · PR #${r.msg.pr.numero || ''}` : ''}`, 'ok');
+      } catch (_) { // aún no existe o no es un mensaje: se reintenta un par de veces si vuelve a salir
+        t.msgFail = t.msgFail || new Map();
+        const n = (t.msgFail.get(f) || 0) + 1;
+        t.msgFail.set(f, n);
+        if (n < 3) t.msgFiles.delete(f);
+      }
+    }
+    // después de los archivos (traen más datos): enlaces de PR (para crearlo o uno existente): su mensaje de PR, con la descripción pr-*.md que nombre la IA
+    t.prSeen = t.prSeen || new Set();
+    const descs = [];
+    MSG_PR_DESC_RE.lastIndex = 0;
+    while ((m = MSG_PR_DESC_RE.exec(text))) descs.push(m[1]);
+    for (const raw of text.match(/https?:\/\/[^\s'"`<>)\]]+/g) || []) {
+      const url = raw.replace(/[.,;:!?]+$/, '');
+      if (t.prSeen.has(url) || !MSG_PR_URL_RE.test(url)) continue;
+      t.prSeen.add(url);
+      const isNew = /\/compare\/|\/pull\/new\/|\/merge_requests\/new|\/pull-requests\/new/.test(url);
+      try {
+        const r = await Bridge.call('msgs.importPr', { url, session, ...(isNew && descs.length ? { desc: descs[descs.length - 1] } : {}) });
+        if (r.created) toast(`🔀 ${r.msg.titulo} · en Mensajes`, 'ok');
+      } catch (_) { /* no es un PR */ }
+    }
+  }
   async function msgSave(msg, quiet) {
     try {
       const m = await Bridge.call('msgs.save', { msg });
@@ -5946,8 +6000,10 @@
     if (msgsInfo.error) return [head, h('div.empty-list', msgsInfo.error)];
     const personKey = (m) => m.person || (m.para ? `@${m.para.toLowerCase()}` : '__none');
     const sessKey = (m) => (m.session ? m.session.sid || m.session.cwd || '?' : '__none');
-    const secProjects = modOn('left.sections') ? new Set(sectionProjects(activeSection()).map((p) => p.id)) : null;
-    const inSection = (m) => { const p = todoProject(m); return !!p && (!secProjects || secProjects.has(p.id)); };
+    // «🗂 Sección»: solo los de las carpetas de la sección activa (con «Todas», no filtra)
+    const sec = modOn('left.sections') ? activeSection() : null;
+    const secProjects = sec && sec.id !== 'all' ? new Set(sectionProjects(sec).map((p) => p.id)) : null;
+    const inSection = (m) => { if (!secProjects) return true; const p = todoProject(m); return !!p && secProjects.has(p.id); };
     const base = all.filter((m) => (f.sent || m.estado !== 'enviado') && (!f.tipo || m.tipo === f.tipo) && (!f.section || inSection(m)));
     // opciones de persona y sesión: las de los mensajes visibles con los demás filtros
     const people = new Map();
@@ -6007,7 +6063,7 @@
         si && si.icon ? iconNode(si.icon, 'span.msg-sess-ico') : null),
       h('div.msg-row2',
         p ? h('span.msg-to', { style: tp ? `color:${teamColor(tp)}` : '' }, tp ? teamAvatar(tp, '.sm') : '👤', ` ${p.name.split(' ')[0]}`) : null,
-        m.pr ? h('a.msg-pr', { href: m.pr.url, title: `Abrir ${m.pr.url}`, onclick: (e) => { e.preventDefault(); e.stopPropagation(); openPageTab({ url: m.pr.url }); } }, `↗ PR${m.pr.numero ? ` #${m.pr.numero}` : ''}`) : null,
+        m.pr ? h('a.msg-pr', { href: m.pr.url, title: `Abrir ${m.pr.url}`, onclick: (e) => { e.preventDefault(); e.stopPropagation(); openPageTab({ url: m.pr.url }); } }, m.pr.accion === 'nuevo' && !m.pr.numero ? '🔀 Crear PR' : `↗ PR${m.pr.numero ? ` #${m.pr.numero}` : ''}`) : null,
         h('span.grow'),
         h(`button.mini.msg-copy${msgCopied.has(m.id) ? '.done' : ''}`, { title: 'Copiar con formato de WhatsApp (con el nombre de la sesión arriba)', onclick: (e) => { e.stopPropagation(); msgCopy(m); } }, msgCopied.has(m.id) ? '✓ Copiado' : '📋 Copiar'),
         h(`button.icon.mini.msg-sent${sent ? '.on' : ''}`, { title: sent ? 'Enviado · clic: volver a pendiente' : 'Marcar como enviado', onclick: (e) => { e.stopPropagation(); msgSetSent(m, !sent); } }, sent ? '✓' : '○')),
