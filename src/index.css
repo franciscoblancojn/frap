@@ -311,9 +311,12 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .term-pane { position: absolute; inset: 0; }
 /* El margen va en .xterm, no en el panel: FitAddon descuenta el padding de .xterm, pero toma la altura del panel
    con su padding incluido (border-box). Con el padding en el panel, la última fila quedaba fuera de la vista. */
-.term-pane .xterm { padding: 6px 0 0 10px; }
+/* Arriba va una franja con fondo propio (nombre de la sesión, persona, herramientas): el texto empieza debajo, así
+   los botones nunca tapan la conversación. */
+.term-pane .xterm { padding: 42px 0 0 10px; }
 /* dividida: también a la derecha y abajo, para que el borde (::after) no tape la última fila ni la última columna */
-.term-pane.split .xterm { padding: 6px 8px 6px 10px; }
+.term-pane.split .xterm { padding: 42px 8px 6px 10px; }
+.term-pane::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 36px; z-index: 19; background: var(--bg-2); border-bottom: 1px solid var(--line); pointer-events: none; }
 /* pantalla dividida: el borde va en ::after para no restarle espacio al cálculo de fit */
 .term-pane.split::after {
   content: '';
