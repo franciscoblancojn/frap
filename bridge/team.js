@@ -156,9 +156,9 @@ ${cli} show <nombre>    # una persona (por nombre o id)
   con el detalle técnico necesario.
 - No inventes personas ni datos: si la persona no está en el equipo, dilo y redacta neutro.
 - La descripción es información privada del usuario: no la copies tal cual en el mensaje.
-- **Guarda el mensaje en un archivo** listo para enviar (solo el texto del mensaje, sin notas para el usuario):
-  \`<carpeta de la issue o del proyecto>/mensajes/AAAA-MM-DD-<persona>-<tema>.md\` (p. ej. \`local/issues/AVE-2507/mensajes/2026-11-25-andres-capacidad.md\`)
-  y escribe su ruta completa en tu respuesta: FRAP muestra un botón «📋 Copiar mensaje para <persona>» en el panel derecho (si el mensaje es para alguien distinto de la persona asignada a la sesión, igual se nombra por el archivo).
+- **Guarda el mensaje en FRAP** con la skill frap-mensajes (\`node ${path.join(__dirname, 'frap-msg.js')} add --para "<persona>" --texto -\`,
+  solo el texto del mensaje, sin notas para el usuario): el usuario lo ve en FRAP (pestaña Mensajes del panel derecho), lo copia y
+  lo marca como enviado. Muéstralo también en tu respuesta.
 `;
 }
 const skill = require('./wordpress').skillManager('frap-equipo', SKILL_MARK, skillText);

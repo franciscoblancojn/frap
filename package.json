@@ -5,7 +5,7 @@
   "description": "Terminal ligera en el navegador para trabajar con claude, codex y opencode sobre tus proyectos.",
   "license": "MIT",
   "engines": { "node": ">=18" },
-  "bin": { "frap-db": "bridge/frap-db.js", "frap-ssh": "bridge/frap-ssh.js", "frap-issues": "bridge/frap-issues.js", "frap-scripts": "bridge/frap-scripts.js", "frap-wp": "bridge/frap-wp.js", "frap-ave": "bridge/frap-ave.js", "frap-api": "bridge/frap-api.js", "frap-team": "bridge/frap-team.js", "frap-todo": "bridge/frap-todo.js" },
+  "bin": { "frap-db": "bridge/frap-db.js", "frap-ssh": "bridge/frap-ssh.js", "frap-issues": "bridge/frap-issues.js", "frap-scripts": "bridge/frap-scripts.js", "frap-wp": "bridge/frap-wp.js", "frap-ave": "bridge/frap-ave.js", "frap-api": "bridge/frap-api.js", "frap-team": "bridge/frap-team.js", "frap-todo": "bridge/frap-todo.js", "frap-msg": "bridge/frap-msg.js" },
   "scripts": {
     "bridge": "node bridge/frap-bridge.js",
     "start": "node bridge/frap-bridge.js --open",

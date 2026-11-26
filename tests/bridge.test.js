@@ -289,7 +289,7 @@ test('todos.*: pendientes en local/pendientes, orden por dependencias y priorida
 
   // la IA crea pendientes desde su sesión: quedan vinculados (sid, proyecto, carpeta, conversación)
   const cli = path.join(__dirname, '..', 'bridge', 'frap-todo.js');
-  const s = await client.call('session.create', { cwd: root, cmd: [process.execPath, cli, 'add', 'Probar en QA', '--prioridad', 'alta', '--depende', String(d.id), '--desc', 'con el pedido 547'], meta: { kind: 'claude', projectId: 'p1', title: 'sesión jefe', agent: { tool: 'claude', session: '11111111-1111-4111-8111-111111111111' } } });
+  const s = await client.call('session.create', { cwd: root, cmd: [process.execPath, cli, 'add', 'Probar en QA', '--prioridad', 'alta', '--depende', String(d.id), '--desc', 'con el pedido 547'], meta: { kind: 'claude', projectId: 'p1', title: 'sesión jefe', icon: '@shopify', person: 'juan', agent: { tool: 'claude', session: '11111111-1111-4111-8111-111111111111' } } });
   await client.waitOutput(s.sid, /Creado #\d+/);
   await client.waitFor((e) => e.ev === 'exit' && e.sid === s.sid, 8000).catch(() => {});
   const made = (await client.call('todos.list')).todos.find((t) => t.title === 'Probar en QA');
@@ -299,6 +299,7 @@ test('todos.*: pendientes en local/pendientes, orden por dependencias y priorida
   assert.equal(made.session.projectId, 'p1');
   assert.equal(made.session.title, 'sesión jefe');
   assert.equal(made.session.agent.session, '11111111-1111-4111-8111-111111111111');
+  assert.deepEqual([made.session.icon, made.session.person], ['@shopify', 'juan'], 'guarda el ícono y la persona de la sesión');
   const out = await new Promise((resolve) => execFile(process.execPath, [cli, 'list'], { env: { ...process.env, FRAP_LOCAL: path.join(root, 'local') } }, (err, stdout) => resolve(stdout)));
   assert.match(out, /#\d+\s+🔵 Avisar al jefe/);
   assert.match(out, /Probar en QA\s+\[pendiente · espera a #\d+\]/);
@@ -309,6 +310,61 @@ test('todos.*: pendientes en local/pendientes, orden por dependencias y priorida
   assert.match(fs.readFileSync(skill, 'utf8'), /frap-todo\.js add/);
   await client.call('todos.setSkill', { on: false });
   assert.ok(!fs.existsSync(skill));
+});
+
+test('msgs.*: mensajes para personas y de PR en local/mensajes, estados, vinculados a la sesión (frap-msg add / pr)', async () => {
+  const { execFile } = require('child_process');
+  const marta = await client.call('team.save', { person: { name: 'Marta Gómez', role: 'QA' } });
+  const a = await client.call('msgs.save', { msg: { para: 'marta', texto: 'Hola Marta, **QA** listo.\n\nGracias' } });
+  assert.deepEqual([a.tipo, a.para, a.person, a.titulo, a.estado], ['persona', 'Marta Gómez', marta.id, 'Hola Marta, QA listo.', 'pendiente'], 'persona del equipo por nombre; tema = primera línea; pendiente por defecto');
+  const b = await client.call('msgs.save', { msg: { tipo: 'pr', para: 'Andrés', titulo: 'Review envío gratis', texto: 'Andrés, ¿me revisas el PR?', pr: { url: 'https://github.com/org/repo/pull/42', accion: 'revisar' } } });
+  assert.deepEqual([b.para, b.person, b.pr.accion, b.pr.numero], ['Andrés', '', 'review', 42], 'alguien fuera del equipo queda con su nombre; acción y número del PR');
+  await assert.rejects(client.call('msgs.save', { msg: { texto: '   ' } }), /obligatorio/);
+  await assert.rejects(client.call('msgs.save', { msg: { tipo: 'pr', texto: 'x' } }), /URL del PR/);
+  await assert.rejects(client.call('msgs.save', { msg: { tipo: 'pr', texto: 'x', pr: { url: 'javascript:alert(1)' } } }), /http o https|inválida/);
+  await assert.rejects(client.call('msgs.save', { msg: { tipo: 'pr', texto: 'x', pr: { url: 'https://x/pull/1', accion: 'bailar' } } }), /Acción de PR inválida/);
+  await assert.rejects(client.call('msgs.save', { msg: { id: a.id, estado: 'volando' } }), /Estado inválido/);
+  // enviado: va al final con su fecha; volver a pendiente la quita
+  const sent = await client.call('msgs.save', { msg: { id: a.id, estado: 'enviado' } });
+  assert.ok(sent.sentAt);
+  let l = (await client.call('msgs.list')).mensajes;
+  assert.deepEqual(l.map((m) => m.id), [b.id, a.id], 'los enviados van después');
+  const back = await client.call('msgs.save', { msg: { id: a.id, estado: 'pendiente' } });
+  assert.equal(back.sentAt, undefined);
+  assert.ok(fs.existsSync(path.join(root, 'local', 'mensajes', 'mensajes.json')));
+
+  // la IA los guarda desde su sesión: quedan vinculados (sid, proyecto, ícono, persona de la sesión)
+  const cli = path.join(__dirname, '..', 'bridge', 'frap-msg.js');
+  const s = await client.call('session.create', { cwd: root, cmd: [process.execPath, cli, 'pr', '--url', 'https://github.com/org/repo/pull/7', '--accion', 'aprobado', '--para', 'Marta', '--texto', 'Aprobé el PR #7'], meta: { kind: 'claude', projectId: 'p1', title: 'sesión PRs', icon: '🔀', person: marta.id } });
+  await client.waitOutput(s.sid, /Guardado el mensaje #\d+/);
+  await client.waitFor((e) => e.ev === 'exit' && e.sid === s.sid, 8000).catch(() => {});
+  await client.call('session.kill', { sid: s.sid }).catch(() => {});
+  const made = (await client.call('msgs.list')).mensajes.find((m) => m.texto === 'Aprobé el PR #7');
+  assert.deepEqual([made.tipo, made.pr.accion, made.pr.numero, made.person], ['pr', 'aprobado', 7, marta.id]);
+  assert.deepEqual([made.session.sid, made.session.projectId, made.session.title, made.session.icon, made.session.person], [s.sid, 'p1', 'sesión PRs', '🔀', marta.id]);
+  // stdin y edit desde el CLI
+  const run = (args, input) => new Promise((resolve) => { const ch = execFile(process.execPath, [cli, ...args], { env: { ...process.env, FRAP_LOCAL: path.join(root, 'local') } }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stdout, stderr })); if (input != null) ch.stdin.end(input); });
+  let r = await run(['add', '--para', 'Andrés', '--titulo', 'Largo', '--texto', '-'], 'Línea "uno"\nLínea dos\n');
+  assert.equal(r.code, 0, r.stderr);
+  const id = Number(r.stdout.match(/#(\d+)/)[1]);
+  r = await run(['edit', String(id), '--texto', 'Corregido']);
+  assert.equal((await client.call('msgs.list')).mensajes.find((m) => m.id === id).texto, 'Corregido');
+  r = await run(['enviado', `#${id}`]);
+  assert.match(r.stdout, /enviado/);
+  r = await run(['list']);
+  assert.ok(!r.stdout.includes(`#${id} `), 'list sin --todos oculta los enviados');
+  assert.match(r.stdout, /✅ Aprobado PR #7 Aprobé el PR #7 {2}→ Marta Gómez/);
+  r = await run(['pr', '--texto', 'x']);
+  assert.match(r.stderr, /Falta --url/);
+
+  // skill
+  const skill = path.join(root, '.claude', 'skills', 'frap-mensajes', 'SKILL.md');
+  assert.equal((await client.call('msgs.setSkill', { on: true })).changed.length, 2);
+  assert.match(fs.readFileSync(skill, 'utf8'), /frap-msg\.js add --para/);
+  await client.call('msgs.setSkill', { on: false });
+  assert.ok(!fs.existsSync(skill));
+  for (const m of (await client.call('msgs.list')).mensajes) await client.call('msgs.delete', { id: m.id });
+  await client.call('team.delete', { id: marta.id });
 });
 
 test('claude.conversations: conversaciones de una carpeta (tema, último mensaje, issues) y si ya están abiertas', async () => {

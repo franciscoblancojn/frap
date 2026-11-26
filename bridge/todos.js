@@ -1,7 +1,7 @@
 'use strict';
 // Módulo "Pendientes": tareas locales (como las issues, pero solo en local) en local/pendientes/pendientes.json.
 // Cada pendiente: {id, title, descripcion, icon, priority, estado, depends: [ids], session: {sid, projectId, cwd,
-// title, kind, agent}, created, updated}. Salen ordenados: primero lo que no espera a nada, por prioridad y antigüedad;
+// title, kind, agent, icon, person}, created, updated}. Salen ordenados: primero lo que no espera a nada, por prioridad y antigüedad;
 // lo que depende de otro pendiente sin hacer va después de él (bloqueado); lo hecho al final.
 // La IA los crea con frap-todo.js (skill frap-pendientes) desde su sesión, que queda vinculada (la detecta como
 // frap-team quien): así desde el panel izquierdo se vuelve a esa sesión con su carpeta. Solo librería estándar.
@@ -76,6 +76,7 @@ function normalize(input, prev, all) {
     session = s && typeof s === 'object' && (s.sid || s.cwd) ? {
       sid: String(s.sid || ''), projectId: s.projectId ? String(s.projectId) : null, cwd: String(s.cwd || ''),
       title: String(s.title || '').slice(0, 120), kind: String(s.kind || 'claude'),
+      ...(s.icon ? { icon: String(s.icon).slice(0, 16) } : {}), ...(s.person ? { person: String(s.person).slice(0, 60) } : {}),
       ...(s.agent && s.agent.session ? { agent: { tool: String(s.agent.tool || 'claude'), session: String(s.agent.session) } } : {}),
     } : null;
   }

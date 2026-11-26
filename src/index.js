@@ -434,7 +434,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'msgs.list', 'msgs.save', 'msgs.delete', 'msgs.setSkill', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -627,100 +627,11 @@
     if (!t) return;
     t.lastOut = Date.now();
     if (!t.attaching) {
-      t.term.write(d, () => msgScanSoon(t)); // durante attach el buffer ya trae esta salida
+      t.term.write(d);
       actionScan(t, d, false);
     }
   });
 
-  // ----- mensajes listos para enviar: «📋 Copiar último mensaje» encima de «Hablar» (sesión activa) -----
-  // Cuando la IA escribe la ruta de un archivo de mensaje (carpeta mensajes/, o "mensaje"/"respuesta" en el nombre,
-  // .md o .txt) y existe, se ofrece copiarlo. Sin nombre de persona: el mensaje puede ser para otra que la asignada.
-  const MSG_PATH_RE = /(?:^|[\s'"`(<\[])(\/[^\s'"`)<>\]]+?\.(?:md|txt))(?=$|[\s'"`)>\].,;:])/g;
-  const isMsgPath = (p) => /\/mensajes?\//i.test(p) || /(mensaje|respuesta|reply|message)[^/]*\.(md|txt)$/i.test(p);
-  const msgScanSoon = (t) => { clearTimeout(t.msgTimer); t.msgTimer = setTimeout(() => msgScan(t), 250); };
-  /** Últimas líneas escritas de la terminal, hasta el cursor (debajo solo hay filas vacías); las partidas por ancho se unen. */
-  function termTail(t, n = 40) {
-    const b = t.term.buffer.active;
-    const end = Math.min(b.length, b.baseY + b.cursorY + 1);
-    const out = [];
-    for (let i = Math.max(0, end - n); i < end; i++) {
-      const l = b.getLine(i);
-      if (!l) continue;
-      const txt = l.translateToString(true);
-      if (l.isWrapped && out.length) out[out.length - 1] += txt; else out.push(txt);
-    }
-    return out.join('\n');
-  }
-  /** Enlace de pull/merge request → {kind: 'new'|'open', label, title} o null (GitHub, GitLab, Bitbucket). */
-  function prLinkInfo(url) {
-    let u;
-    try { u = new URL(url); } catch (_) { return null; }
-    const p = decodeURIComponent(u.pathname);
-    let m;
-    if ((m = p.match(/^\/[^/]+\/[^/]+\/compare\/(.+?)\.\.\.?(.+)$/))) return { kind: 'new', label: `🔀 Generar PR · ${m[2]} → ${m[1]}`, title: `Crear el pull request de ${m[2]} hacia ${m[1]}` };
-    if ((m = p.match(/^\/[^/]+\/[^/]+\/compare\/(.+)$/))) return { kind: 'new', label: `🔀 Generar PR · ${m[1]}`, title: `Crear el pull request de ${m[1]}` };
-    if ((m = p.match(/^\/[^/]+\/[^/]+\/pull\/new\/(.+)$/))) return { kind: 'new', label: `🔀 Generar PR · ${m[1]}`, title: `Crear el pull request de ${m[1]}` };
-    if ((m = p.match(/^\/.+\/-\/merge_requests\/new$/))) { const src = u.searchParams.get('merge_request[source_branch]') || ''; return { kind: 'new', label: `🔀 Generar MR${src ? ` · ${src}` : ''}`, title: 'Crear el merge request' }; }
-    if ((m = p.match(/^\/[^/]+\/[^/]+\/pull-requests\/new$/))) { const src = u.searchParams.get('source') || ''; return { kind: 'new', label: `🔀 Generar PR${src ? ` · ${src}` : ''}`, title: 'Crear el pull request' }; }
-    if ((m = p.match(/^\/[^/]+\/[^/]+\/pull\/(\d+)(\/|$)/)) || (m = p.match(/\/-\/merge_requests\/(\d+)(\/|$)/)) || (m = p.match(/^\/[^/]+\/[^/]+\/pull-requests\/(\d+)(\/|$)/))) return { kind: 'open', label: `↗ Abrir PR #${m[1]}`, title: `Abrir el pull request #${m[1]}` };
-    return null;
-  }
-  async function msgScan(t) {
-    if (!terms.has(t.sid)) return;
-    const text = termTail(t);
-    // enlaces de pull request (cualquier terminal: también el "Create a pull request" de git push)
-    t.linkSeen = t.linkSeen || new Set();
-    const urls = text.match(/https?:\/\/[^\s'"`<>)\]]+/g) || [];
-    for (const raw of urls) {
-      const url = raw.replace(/[.,;:!?]+$/, '');
-      if (t.linkSeen.has(url)) continue;
-      const info = prLinkInfo(url);
-      if (!info) continue;
-      t.linkSeen.add(url);
-      linkOffer(t, url, info);
-    }
-    if (!isAgentTerm(t)) return; // los mensajes listos, solo en las terminales de IA
-    const found = [];
-    let m;
-    MSG_PATH_RE.lastIndex = 0;
-    while ((m = MSG_PATH_RE.exec(text))) if (isMsgPath(m[1])) found.push(m[1]);
-    t.msgSeen = t.msgSeen || new Set();
-    const fresh = [...new Set(found)].filter((p) => !t.msgSeen.has(p));
-    if (!fresh.length || !Bridge.ready) return;
-    for (const p of fresh) t.msgSeen.add(p);
-    let stats = [];
-    try { stats = await Bridge.call('fs.stat', { paths: fresh }); } catch (_) { return; }
-    const okFiles = stats.filter((st) => st.exists && !st.dir).map((st) => st.path);
-    if (okFiles.length) msgOffer(t, okFiles, text);
-  }
-  /**
-   * Para quién es un mensaje, SOLO a partir del mensaje (nunca de la persona asignada a la sesión: puede ser para otra):
-   * 1) como lo presenta la IA junto a la ruta ("Andrés: /ruta", "… para Andrés: /ruta", "para Andrés → /ruta");
-   * 2) el nombre del archivo (fecha-persona-tema): si coincide con alguien del Equipo, con su nombre tal cual (tildes).
-   * → {who, topic}
-   */
-  function msgRecipient(file, text) {
-    const norm = (x) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-    const esc = file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const NAME = '([A-ZÁÉÍÓÚÑ][\\wáéíóúñü]+(?: [A-ZÁÉÍÓÚÑ][\\wáéíóúñü]+)?)';
-    const t = String(text || '');
-    const m = t.match(new RegExp(`${NAME}\\**\\s*:\\s*\\**\\s*${esc}`)) || t.match(new RegExp(`para ${NAME}[^\\n]{0,40}?${esc}`));
-    const base = basename(file).replace(/\.(md|txt)$/i, '');
-    const dated = base.match(/^\d{4}-\d{2}-\d{2}[-_]?(.*)$/);
-    const parts = (dated ? dated[1] : base).split(/[-_]+/).filter(Boolean);
-    const people = (teamInfo && teamInfo.people) || [];
-    const fromTeam = (tok) => { const p = people.find((x) => norm(x.name).split(/\s+/)[0] === norm(tok) || norm(x.id) === norm(tok)); return p ? p.name.split(' ')[0] : ''; };
-    // palabras que suelen ir antes de ":" y no son personas ("Listo: /ruta", "Archivo: /ruta"…)
-    const STOP = new Set(['listo', 'lista', 'aqui', 'ruta', 'archivo', 'mensaje', 'mensajes', 'respuesta', 'nota', 'ojo', 'hecho', 'guardado', 'guardada', 'esta', 'en', 'texto', 'borrador', 'resultado', 'resumen', 'link', 'enlace', 'path', 'file', 'final', 'nuevo', 'nueva', 'copia', 'importante', 'detalle', 'detalles']);
-    let who = m && !STOP.has(norm(m[1].split(' ')[0])) ? m[1] : '';
-    let topicParts = parts;
-    if (!who && dated && parts.length) {
-      who = fromTeam(parts[0]) || (parts.length > 1 ? parts[0].charAt(0).toUpperCase() + parts[0].slice(1) : '');
-      if (who) topicParts = parts.slice(1);
-    } else if (who && parts.length && norm(parts[0]) === norm(who.split(' ')[0])) topicParts = parts.slice(1);
-    if (who) who = fromTeam(who.split(' ')[0]) || who;
-    return { who, topic: topicParts.join(' ') };
-  }
   /**
    * Markdown → formato de WhatsApp (los mensajes se copian para pegarlos ahí): **negrita** → *negrita*,
    * *cursiva* → _cursiva_, ~~tachado~~ → ~tachado~, títulos "## x" → *x*, [texto](url) → texto (url).
@@ -738,71 +649,6 @@
         .replace(/~~(.+?)~~/g, '~$1~')
         .replace(/!?\[([^\]]+)\]\((https?:[^)\s]+)\)/g, (_, t, u) => (t === u ? u : `${t} (${u})`));
     }).join('');
-  }
-  /** Enlace de PR detectado en una sesión: se guarda en ella (los 3 más recientes) y se muestra en el panel derecho. */
-  function linkOffer(t, url, info) {
-    t.prs = (t.prs || []).filter((x) => x.url !== url);
-    t.prs.push({ url, info, opened: false });
-    while (t.prs.length > 3) t.prs.shift();
-    renderMsgDock();
-  }
-  /** Mensajes listos de una sesión: los que llegan juntos (en menos de 30 s) forman un grupo; uno nuevo reemplaza al anterior. */
-  function msgOffer(t, files, text) {
-    const now = Date.now();
-    const fresh = !t.msgAt || now - t.msgAt > 30000;
-    let list = fresh ? [] : (t.msgs || []).slice();
-    for (const file of files) {
-      if (list.some((x) => x.file === file)) continue;
-      const r = msgRecipient(file, text);
-      list.push({ file, who: r.who, label: r.who ? (r.topic ? `${r.who} · ${r.topic}` : r.who) : r.topic || basename(file), copied: false });
-    }
-    if (list.length > 8) list = list.slice(-8);
-    t.msgs = list;
-    t.msgAt = now;
-    renderMsgDock();
-  }
-  /** Encima de «Hablar»: el mensaje para copiar y los PR de la sesión de IA activa (si cambias de sesión, se va). */
-  function renderMsgDock() {
-    const dock = $('#msg-dock');
-    if (!dock) return;
-    const t = activeTerm();
-    const has = t && ((t.msgs && t.msgs.length) || (t.prs && t.prs.length));
-    dock.classList.toggle('hidden', !has);
-    if (!has) { dock.replaceChildren(); return; }
-    const items = [];
-    const msgs = t.msgs || [];
-    if (msgs.length > 1) items.push(h('div.msg-head', h('span.grow', `✉ ${msgs.length} mensajes listos`), h('button.icon.mini', { title: 'Quitar todos', onclick: () => { t.msgs = []; renderMsgDock(); } }, '✕')));
-    for (const m of msgs) {
-      const one = msgs.length === 1;
-      items.push(h(`div.msg-item${m.copied ? '.copied' : ''}`, { title: tilde(m.file) },
-        one ? h('div.msg-file', `✉ ${basename(m.file)}`) : null,
-        h('div.msg-row',
-          h('button.msg-copy', {
-            title: `${m.copied ? 'Ya lo copiaste · clic: copiar otra vez' : 'Copiar el mensaje al portapapeles'}\n${tilde(m.file)}`,
-            onclick: async () => {
-              try {
-                const r = await Bridge.call('fs.read', { path: m.file });
-                // el nombre de la sesión (el que le pusiste en el panel izquierdo) va primero, con un salto de línea
-                const tm = t.info.meta || {};
-                const name = String((tm.named && tm.title) || termTitle(t) || '').replace(/^[^\p{L}\p{N}]+/u, '').trim(); // sin el ✳ de actividad de claude
-                copyText(`${name ? `${iconText(termIcon(t)) || '📌'} *${name}*\n` : ''}${toWhatsApp(r.content.replace(/\s+$/, ''))}`);
-                m.copied = true;
-                toast(`Mensaje${m.who ? ` para ${m.who}` : ''} copiado: pégalo donde lo vayas a enviar`, 'ok');
-                renderMsgDock();
-              } catch (e) { toast(e.message, 'err'); }
-            },
-          }, one ? (m.copied ? `✓ Mensaje${m.who ? ` para ${m.who}` : ''} copiado` : `📋 Copiar mensaje${m.who ? ` para ${m.who}` : ''}`) : (m.copied ? `✓ ${m.label} · copiado` : `📋 ${m.label}`)),
-          h('button.icon.mini', { title: 'Abrir el archivo en el editor', onclick: () => (launchOn('code') ? openInFrap(m.file) : openExternal(m.file)) }, '✎'),
-          h('button.icon.mini', { title: 'Quitar', onclick: () => { t.msgs = t.msgs.filter((x) => x !== m); renderMsgDock(); } }, '✕'))));
-    }
-    for (const pr of (t.prs || []).slice().reverse()) {
-      items.push(h(`div.msg-item.pr.${pr.info.kind}${pr.opened ? '.copied' : ''}`, { title: pr.url },
-        h('div.msg-row',
-          h('button.msg-copy', { title: `${pr.info.title}: abre el enlace en otra pestaña`, onclick: () => { openPageTab({ url: pr.url }); pr.opened = true; renderMsgDock(); } }, pr.info.label),
-          h('button.icon.mini', { title: 'Copiar el enlace', onclick: () => { copyText(pr.url); toast('Enlace copiado', 'ok'); } }, '⧉'),
-          h('button.icon.mini', { title: 'Quitar', onclick: () => { t.prs = t.prs.filter((x) => x !== pr); renderMsgDock(); } }, '✕'))));
-    }
-    dock.replaceChildren(...items);
   }
   Bridge.on('exit', ({ sid, code }) => {
     const t = terms.get(sid);
@@ -2085,7 +1931,6 @@
   }
 
   function renderPanes() {
-    renderMsgDock(); // el aviso de mensaje/PR es de la sesión activa
     // el grupo solo se muestra si la terminal activa es parte de él (git, DB, páginas o una 5.ª terminal van solas)
     let group = splitGroup();
     if (!group.some((t) => t.sid === state.activeSid)) group = [];
@@ -2442,6 +2287,7 @@
   const RTABS = {
     procs: renderProcs,
     todos: () => renderTodosTab(),
+    msgs: () => renderMsgsTab(),
     prompts: renderPrompts,
     actions: renderActions,
     pages: renderPages,
@@ -5799,7 +5645,7 @@
     return project(s.projectId) || state.projects.find((p) => p.folders.some((f) => s.cwd === f || (s.cwd || '').startsWith(`${f.replace(/\/+$/, '')}/`))) || null;
   }
   /** → sesión: si sigue abierta la activa; si no, la reabre en su carpeta retomando su conversación de claude. */
-  async function todoGoSession(t) {
+  async function todoGoSession(t, onNew) {
     const s = t.session;
     if (!s) { toast('Este pendiente no está vinculado a una sesión de IA', 'err'); return; }
     if (s.sid && terms.has(s.sid)) {
@@ -5817,7 +5663,7 @@
     const resume = s.agent && s.agent.tool === 'claude' && /^[0-9a-f-]{36}$/i.test(s.agent.session || '') ? `${buildLaunch('claude', p)} --resume ${s.agent.session}` : undefined;
     await launch(kind, { cwd: s.cwd || p.folders[0], title: s.title || undefined, init: resume });
     const nt = activeTerm();
-    if (nt) await todoSave({ id: t.id, session: { ...s, sid: nt.sid, projectId: p.id } }, true); // el pendiente queda con la sesión nueva
+    if (nt) await (onNew ? onNew({ ...s, sid: nt.sid, projectId: p.id }) : todoSave({ id: t.id, session: { ...s, sid: nt.sid, projectId: p.id } }, true)); // queda con la sesión nueva
   }
   /** 📌 en las terminales de IA: le pide a la IA guardar su última lista como pendientes (se escribe sin Enter). */
   function todoAskSave(t) {
@@ -5853,7 +5699,7 @@
     const at = activeTerm();
     const paintSess = () => sessBox.replaceChildren(
       session ? h('span', `🤖 ${session.title || session.kind || 'sesión'} · ${tilde(session.cwd || '')}`) : h('span.muted', 'Sin sesión vinculada'),
-      at && isAgentTerm(at) && (!session || session.sid !== at.sid) ? h('button.mini', { type: 'button', onclick: () => { const m = at.info.meta || {}; session = { sid: at.sid, projectId: m.projectId || null, cwd: m.cwd || '', title: termTitle(at), kind: termKind(at), ...(m.agent ? { agent: m.agent } : {}) }; paintSess(); } }, `Vincular a «${termTitle(at)}»`) : null,
+      at && isAgentTerm(at) && (!session || session.sid !== at.sid) ? h('button.mini', { type: 'button', onclick: () => { const m = at.info.meta || {}; session = { sid: at.sid, projectId: m.projectId || null, cwd: m.cwd || '', title: termTitle(at), kind: termKind(at), ...(m.agent ? { agent: m.agent } : {}), ...(m.icon ? { icon: m.icon } : {}), ...(m.person ? { person: m.person } : {}) }; paintSess(); } }, `Vincular a «${termTitle(at)}»`) : null,
       session ? h('button.mini', { type: 'button', onclick: () => { session = null; paintSess(); } }, 'Desvincular') : null);
     paintSess();
     const picks = h('div.icon-grid', TODO_ICONS.map((ic) => h('button.icon-pick', { type: 'button', title: ic ? '' : 'Sin ícono', onclick: () => { icon.value = ic; } }, ic || '∅')));
@@ -5880,13 +5726,54 @@
   /** Repinta la pestaña Pendientes si está a la vista. */
   function renderTodos() { if (state.ui.rtab === 'todos' && !state.ui.hideRight) renderRight(); }
   /** Pestaña «Pendientes» del panel derecho. */
+  /** Sesión de un pendiente con lo que se sabe hoy de ella: título, ícono y persona (de la terminal si sigue abierta). */
+  function todoSessInfo(t) {
+    const s = t.session || {};
+    const live = s.sid ? terms.get(s.sid) : null;
+    const m = live ? live.info.meta || {} : {};
+    return {
+      alive: !!live,
+      title: live ? termTitle(live) : s.title || s.kind || 'IA',
+      icon: live ? termIcon(live) : s.icon || '',
+      person: teamPerson(live ? m.person : s.person),
+    };
+  }
+  /** Ícono de la sesión y avatar de su persona, junto al «→» del pendiente. */
+  function todoSessBadge(t) {
+    const si = todoSessInfo(t);
+    if (!si.icon && !si.person) return null;
+    return h('span.todo-sess-badge', { title: `Sesión: ${si.title}${si.person ? `\nPersona: ${si.person.name} (${si.person.role})` : ''}` },
+      si.icon ? iconNode(si.icon, 'span.todo-sess-ico') : null, si.person ? teamAvatar(si.person, '.todo-sess-av') : null);
+  }
   function renderTodosTab() {
     const onlyProj = !!state.ui.todosOnlyProject;
     const showDone = !!state.ui.todosShowDone;
     const all = (todosInfo && todosInfo.todos) || [];
     const proj = project();
-    const scoped = onlyProj && proj ? all.filter((t) => { const p = todoProject(t); return p && p.id === proj.id; }) : all;
+    const byProj = onlyProj && proj ? all.filter((t) => { const p = todoProject(t); return p && p.id === proj.id; }) : all;
+    // filtro por sesión: las sesiones de los pendientes visibles, con su ícono y la persona asignada
+    const sessKey = (t) => (t.session ? t.session.sid || t.session.cwd || '?' : '__none');
+    const sessions = new Map();
+    for (const t of byProj.filter((x) => showDone || x.estado !== 'hecho')) {
+      const k = sessKey(t);
+      if (!sessions.has(k)) sessions.set(k, { k, t, n: 0 });
+      sessions.get(k).n++;
+    }
+    let sessSel = state.ui.todosSession || '';
+    if (sessSel && !sessions.has(sessSel)) sessSel = '';
+    const scoped = sessSel ? byProj.filter((t) => sessKey(t) === sessSel) : byProj;
     const openN = scoped.filter((t) => t.estado !== 'hecho').length;
+    const sessPick = sessions.size > 1 || sessSel ? (() => {
+      const sel = h('select.todo-sess-sel', { title: 'Ver solo los pendientes de una sesión', onclick: (e) => e.stopPropagation(), onchange: () => { state.ui.todosSession = sel.value; save(); renderTodos(); } },
+        h('option', { value: '' }, `🤖 Todas las sesiones (${[...sessions.values()].reduce((a, x) => a + x.n, 0)})`),
+        ...[...sessions.values()].sort((a, b) => (a.k === '__none') - (b.k === '__none') || b.n - a.n).map(({ k, t, n }) => {
+          if (k === '__none') return h('option', { value: k }, `∅ Sin sesión (${n})`);
+          const si = todoSessInfo(t);
+          return h('option', { value: k }, `${si.icon ? `${iconText(si.icon)} ` : ''}${si.title}${si.person ? ` · ${si.person.icon || '👤'} ${si.person.name}` : ''}${si.alive ? '' : ' (cerrada)'} (${n})`);
+        }));
+      sel.value = sessSel;
+      return h('div.todo-sess', sel);
+    })() : null;
     const flip = (k) => (e) => { e.stopPropagation(); state.ui[k] = !state.ui[k]; save(); renderTodos(); };
     const head = section(`Pendientes${openN ? ` (${openN})` : ''}`,
       h(`button.mini${onlyProj ? '.on' : ''}`, { title: onlyProj ? 'Mostrando solo los de este proyecto · clic: todos' : 'Mostrar solo los de este proyecto', onclick: flip('todosOnlyProject') }, onlyProj ? '📁 Este proyecto' : '📁 Todos'),
@@ -5921,6 +5808,7 @@
         h('button.iss-prio', { title: `Prioridad: ${pr.label} · clic: cambiarla`, onclick: (e) => todoMenuPrio(e, t) }, pr.icon),
         t.icon ? h('span.todo-ico', t.icon) : null,
         h('span.todo-title', t.title),
+        t.session ? todoSessBadge(t) : null,
         t.session ? h(`button.icon.mini.todo-go${alive ? '.alive' : ''}`, { title: alive ? `Ir a la sesión «${t.session.title || 'IA'}»` : `Reabrir la sesión «${t.session.title || 'IA'}» (ya no está abierta)`, onclick: (e) => { e.stopPropagation(); todoGoSession(t); } }, '→') : null),
       blocked ? h('div.todo-sub.muted', `⏳ espera a #${t.blockedBy.join(', #')}`) : null,
       open ? h('div.todo-detail',
@@ -5932,11 +5820,208 @@
           t.estado !== 'hecho' ? h('button.mini', { onclick: (e) => { e.stopPropagation(); todoSave({ id: t.id, estado: 'hecho' }, true); } }, '✓ Hecho') : null,
           t.session ? h('button.mini', { onclick: (e) => { e.stopPropagation(); todoGoSession(t); } }, alive ? '→ Ir a la sesión' : '→ Reabrir sesión') : null)) : null);
     });
-    return [head,
+    return [head, sessPick,
       h('p.muted.todo-hint', 'Lo que espera a otro pendiente va después de él. «→» abre la sesión de IA donde salió. La IA los guarda con 📌 (arriba a la derecha de su terminal) o si le dices «guárdalo como pendientes».'),
       rows.length ? h('div.todo-list', rows) : h('div.empty-list', all.length ? (onlyProj ? 'Nada pendiente en este proyecto.' : 'Todo hecho ✓') : 'Sin pendientes. Pídele a la IA «guárdalo como pendientes» (📌 en la terminal) o crea uno con ＋ Nuevo.')];
   }
   Bridge.on('todos', () => loadTodos());
+
+  // ---------- Mensajes (pestaña del panel derecho): para personas y de pull requests ----------
+  // La IA los guarda con frap-msg (skill frap-mensajes) en local/mensajes/mensajes.json, vinculados a su sesión.
+  // Aquí se filtran por persona, sesión y tipo, se editan, se copian con formato de WhatsApp y se marcan enviados
+  // (los enviados se ocultan salvo con el filtro «Enviados»).
+  let msgsInfo = null; // respuesta de msgs.list
+  let msgsSkillSynced = null;
+  let msgOpen = null; // id del mensaje desplegado
+  const msgCopied = new Set(); // ids copiados en esta sesión de la página (el botón pasa a naranja)
+  const msgsOn = () => rtabOn('msgs');
+  const MSG_PR_ACC = { review: ['👀', 'Pedir review'], aprobado: ['✅', 'Aprobado'], cambios: ['✏️', 'Pedir cambios'], comentario: ['💬', 'Comentario'], merge: ['🔀', 'Merge'], nuevo: ['🆕', 'PR nuevo'] };
+  async function loadMsgs() {
+    if (!Bridge.ready || !msgsOn()) { renderMessages(); return; }
+    try { msgsInfo = await Bridge.call('msgs.list'); } catch (e) { msgsInfo = { error: e.message, mensajes: [] }; }
+    renderMessages();
+  }
+  async function syncMsgsSkill(force) {
+    if (!Bridge.ready) return;
+    const on = msgsOn();
+    if (!force && msgsSkillSynced === on) return;
+    try {
+      const r = await Bridge.call('msgs.setSkill', { on });
+      msgsSkillSynced = on;
+      if (r.changed.length) toast(on ? 'Skill frap-mensajes lista en claude y codex' : 'Skill frap-mensajes quitada de claude y codex', 'ok');
+    } catch (e) { toast(`Skill frap-mensajes: ${e.message}`, 'err'); }
+  }
+  Bridge.on('msgs', () => loadMsgs());
+  async function msgSave(msg, quiet) {
+    try {
+      const m = await Bridge.call('msgs.save', { msg });
+      await loadMsgs();
+      if (!quiet) toast(`Mensaje #${m.id} guardado`, 'ok');
+      return m;
+    } catch (e) { toast(e.message, 'err'); return null; }
+  }
+  /** Persona destinataria (del Equipo si está; si no, solo el nombre). */
+  const msgPerson = (m) => teamPerson(m.person) || (m.para ? { name: m.para, icon: '👤', role: '' } : null);
+  /** Texto para pegar en WhatsApp: ícono y nombre de la sesión en negrita, salto de línea y el mensaje. */
+  function msgClipboard(m) {
+    const si = m.session ? todoSessInfo(m) : null;
+    const name = si ? String(si.title || '').replace(/^[^\p{L}\p{N}]+/u, '').trim() : ''; // sin el ✳ de actividad de claude
+    let body = toWhatsApp(m.texto);
+    if (m.pr && m.pr.url && !m.texto.includes(m.pr.url)) body += `\n${m.pr.url}`;
+    return `${name ? `${iconText(si.icon) || '📌'} *${name}*\n` : ''}${body}`;
+  }
+  function msgCopy(m) {
+    copyText(msgClipboard(m));
+    msgCopied.add(m.id);
+    renderMessages();
+    toast(`Mensaje${m.para ? ` para ${m.para}` : ''} copiado · cuando lo envíes, márcalo con ✓`, 'ok');
+  }
+  const msgSetSent = (m, sent) => msgSave({ id: m.id, estado: sent ? 'enviado' : 'pendiente' }, true);
+  function msgGoSession(m) { todoGoSession(m, (session) => msgSave({ id: m.id, session }, true)); }
+  /** Crear o editar un mensaje. */
+  function msgModal(m) {
+    const cur = m || { tipo: 'persona', texto: '', titulo: '', para: '', pr: null, estado: 'pendiente', session: null };
+    const tipo = h('select', h('option', { value: 'persona' }, '✉ Para una persona'), h('option', { value: 'pr' }, '🔀 Pull request'));
+    tipo.value = cur.tipo;
+    const people = (teamInfo && teamInfo.people) || [];
+    const para = h('input', { value: cur.para || '', placeholder: 'Nombre (o elige del equipo)', list: 'msg-people' });
+    const dl = h('datalist#msg-people', people.map((p) => h('option', { value: p.name }, p.role)));
+    const titulo = h('input', { value: cur.titulo || '', placeholder: 'Tema corto (vacío: la primera línea)' });
+    const texto = h('textarea.msg-text-in', { rows: '10', spellcheck: 'true', placeholder: 'El mensaje tal cual se envía (markdown simple: **negrita**, listas)' });
+    texto.value = cur.texto || '';
+    const url = h('input.mono', { value: (cur.pr && cur.pr.url) || '', placeholder: 'https://github.com/org/repo/pull/123' });
+    const accion = h('select', Object.entries(MSG_PR_ACC).map(([k, [ico, label]]) => h('option', { value: k }, `${ico} ${label}`)));
+    accion.value = (cur.pr && cur.pr.accion) || 'review';
+    const estado = h('select', h('option', { value: 'pendiente' }, '⏳ Pendiente de enviar'), h('option', { value: 'enviado' }, '✓ Enviado'));
+    estado.value = cur.estado || 'pendiente';
+    const prBox = h('div.field-row', h('div.field.grow', h('label', 'URL del PR'), url), h('div.field', { style: 'width:170px' }, h('label', 'Acción'), accion));
+    const syncTipo = () => prBox.classList.toggle('hidden', tipo.value !== 'pr');
+    tipo.addEventListener('change', syncTipo);
+    syncTipo();
+    const si = cur.session ? todoSessInfo(cur) : null;
+    const doSave = async () => {
+      const msg = { ...(m ? { id: m.id } : {}), tipo: tipo.value, titulo: titulo.value, texto: texto.value, para: para.value, estado: estado.value, ...(tipo.value === 'pr' ? { pr: { url: url.value, accion: accion.value } } : {}) };
+      if (!m && activeTerm() && isAgentTerm(activeTerm())) { const at = activeTerm(); const mm = at.info.meta || {}; msg.session = { sid: at.sid, projectId: mm.projectId || null, cwd: mm.cwd || '', title: termTitle(at), kind: termKind(at), ...(mm.agent ? { agent: mm.agent } : {}), ...(mm.icon ? { icon: mm.icon } : {}), ...(mm.person ? { person: mm.person } : {}) }; }
+      const saved = await msgSave(msg);
+      if (saved) modalClose(true);
+    };
+    openModal({
+      title: m ? `Mensaje #${m.id}` : 'Nuevo mensaje',
+      wide: true,
+      body: [
+        h('div.field-row', h('div.field', { style: 'width:190px' }, h('label', 'Tipo'), tipo), h('div.field.grow', h('label', 'Para'), para, dl), h('div.field', { style: 'width:190px' }, h('label', 'Estado'), estado)),
+        prBox,
+        h('div.field', h('label', 'Tema'), titulo),
+        h('div.field', h('label', 'Mensaje'), texto),
+        si ? h('p.muted', { style: 'font-size:11px;margin:4px 0 0' }, `Sesión: ${si.icon ? `${iconText(si.icon)} ` : ''}${si.title}${si.alive ? '' : ' (cerrada)'}`) : null,
+      ],
+      foot: [
+        m ? h('button.danger', { onclick: async () => { if (!(await confirmBox(`¿Borrar el mensaje #${m.id}?`, m.titulo))) { msgModal(m); return; } try { await Bridge.call('msgs.delete', { id: m.id }); await loadMsgs(); } catch (e) { toast(e.message, 'err'); } } }, 'Borrar') : null,
+        m ? h('button', { onclick: () => { msgCopy({ ...m, texto: texto.value }); } }, '📋 Copiar') : null,
+        h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: doSave }, 'Guardar'),
+      ],
+    });
+    requestAnimationFrame(() => (m ? texto : para).focus());
+  }
+  function msgMenu(ev, m) {
+    popMenu(ev, [
+      { label: '📋 Copiar (WhatsApp)', action: () => msgCopy(m) },
+      { label: '⧉ Copiar solo el texto', action: () => { copyText(m.texto); toast('Texto copiado', 'ok'); } },
+      m.estado === 'enviado' ? { label: '⏳ Marcar pendiente', action: () => msgSetSent(m, false) } : { label: '✓ Marcar enviado', action: () => msgSetSent(m, true) },
+      { label: '✎ Editar…', action: () => msgModal(m) },
+      m.pr && m.pr.url && { label: `↗ Abrir PR${m.pr.numero ? ` #${m.pr.numero}` : ''}`, action: () => openPageTab({ url: m.pr.url }) },
+      m.session && { label: m.session.sid && terms.has(m.session.sid) ? '→ Ir a la sesión' : '→ Reabrir la sesión', action: () => msgGoSession(m) },
+      '-',
+      { label: '🗑 Borrar…', danger: true, action: async () => { if (await confirmBox(`¿Borrar el mensaje #${m.id}?`, m.titulo)) { try { await Bridge.call('msgs.delete', { id: m.id }); await loadMsgs(); } catch (e) { toast(e.message, 'err'); } } } },
+    ]);
+  }
+  function renderMessages() { if (state.ui.rtab === 'msgs' && !state.ui.hideRight) renderRight(); }
+  function renderMsgsTab() {
+    const f = state.ui.msgFilter || (state.ui.msgFilter = { person: '', session: '', tipo: '', sent: false, section: false });
+    const all = (msgsInfo && msgsInfo.mensajes) || [];
+    const pendingN = all.filter((m) => m.estado !== 'enviado').length;
+    const head = section(`Mensajes${pendingN ? ` (${pendingN})` : ''}`,
+      h('button.mini.primary', { title: 'Nuevo mensaje', onclick: () => msgModal(null) }, '＋ Nuevo'));
+    if (!msgsInfo) { if (Bridge.ready) loadMsgs(); return [head, h('div.empty-list', Bridge.ready ? 'Cargando…' : 'Bridge desconectado.')]; }
+    if (msgsInfo.error) return [head, h('div.empty-list', msgsInfo.error)];
+    const personKey = (m) => m.person || (m.para ? `@${m.para.toLowerCase()}` : '__none');
+    const sessKey = (m) => (m.session ? m.session.sid || m.session.cwd || '?' : '__none');
+    const secProjects = modOn('left.sections') ? new Set(sectionProjects(activeSection()).map((p) => p.id)) : null;
+    const inSection = (m) => { const p = todoProject(m); return !!p && (!secProjects || secProjects.has(p.id)); };
+    const base = all.filter((m) => (f.sent || m.estado !== 'enviado') && (!f.tipo || m.tipo === f.tipo) && (!f.section || inSection(m)));
+    // opciones de persona y sesión: las de los mensajes visibles con los demás filtros
+    const people = new Map();
+    const sessions = new Map();
+    for (const m of base) {
+      const pk = personKey(m);
+      if (!people.has(pk)) people.set(pk, { m, n: 0 });
+      people.get(pk).n++;
+      const sk = sessKey(m);
+      if (!sessions.has(sk)) sessions.set(sk, { m, n: 0 });
+      sessions.get(sk).n++;
+    }
+    if (f.person && !people.has(f.person)) f.person = '';
+    if (f.session && !sessions.has(f.session)) f.session = '';
+    const list = base.filter((m) => (!f.person || personKey(m) === f.person) && (!f.session || sessKey(m) === f.session));
+    const setF = (k, v) => { f[k] = v; save(); renderMessages(); };
+    const selPerson = h('select.msg-filter', { title: 'Filtrar por persona', onchange: (e) => setF('person', e.target.value) },
+      h('option', { value: '' }, `👥 Todas las personas`),
+      ...[...people.entries()].sort((a, b) => (a[0] === '__none') - (b[0] === '__none') || b[1].n - a[1].n).map(([k, { m, n }]) => {
+        const p = msgPerson(m);
+        return h('option', { value: k }, k === '__none' ? `∅ Sin persona (${n})` : `${p.icon || '👤'} ${p.name} (${n})`);
+      }));
+    selPerson.value = f.person;
+    const selSess = h('select.msg-filter', { title: 'Filtrar por sesión', onchange: (e) => setF('session', e.target.value) },
+      h('option', { value: '' }, '🤖 Todas las sesiones'),
+      ...[...sessions.entries()].sort((a, b) => (a[0] === '__none') - (b[0] === '__none') || b[1].n - a[1].n).map(([k, { m, n }]) => {
+        if (k === '__none') return h('option', { value: k }, `∅ Sin sesión (${n})`);
+        const si = todoSessInfo(m);
+        return h('option', { value: k }, `${si.icon ? `${iconText(si.icon)} ` : ''}${si.title}${si.person ? ` · ${si.person.name}` : ''}${si.alive ? '' : ' (cerrada)'} (${n})`);
+      }));
+    selSess.value = f.session;
+    const chip = (k, v, label, title) => h(`button.mini.msg-chip${f[k] === v ? '.on' : ''}`, { title, onclick: () => setF(k, f[k] === v ? (typeof v === 'boolean' ? false : '') : v) }, label);
+    const filters = h('div.msg-filters',
+      h('div.msg-frow', selPerson, selSess),
+      h('div.msg-frow',
+        chip('tipo', 'persona', '✉ Personas', 'Solo mensajes para personas'),
+        chip('tipo', 'pr', '🔀 PR', 'Solo mensajes de pull requests'),
+        modOn('left.sections') ? chip('section', true, '🗂 Sección', 'Solo los de las carpetas de la sección activa') : null,
+        h('span.grow'),
+        chip('sent', true, '✓ Enviados', f.sent ? 'Ocultar los enviados' : 'Mostrar también los enviados')));
+    const rows = list.map((m) => {
+      const open = msgOpen === m.id;
+      const p = msgPerson(m);
+      const tp = teamPerson(m.person);
+      const sent = m.estado === 'enviado';
+      const acc = m.pr ? MSG_PR_ACC[m.pr.accion] || ['🔀', 'PR'] : null;
+      const si = m.session ? todoSessInfo(m) : null;
+      return h(`div.msg${sent ? '.sent' : ''}${open ? '.open' : ''}${msgCopied.has(m.id) ? '.copied' : ''}`, {
+        title: `#${m.id} · ${m.tipo === 'pr' ? `PR · ${acc[1]}` : 'Para una persona'}${m.para ? ` · para ${m.para}` : ''}${si ? `\nSesión: ${si.title}` : ''}\n${sent ? `Enviado ${String(m.sentAt || '').slice(0, 16).replace('T', ' ')}` : 'Pendiente de enviar'}\nClic: ver · doble clic: editar · clic derecho: más`,
+        onclick: () => { msgOpen = open ? null : m.id; renderMessages(); },
+        ondblclick: () => msgModal(m),
+        oncontextmenu: (e) => msgMenu(e, m),
+      },
+      h('div.msg-row1',
+        h('span.msg-kind', { title: m.tipo === 'pr' ? acc[1] : 'Mensaje para una persona' }, m.tipo === 'pr' ? acc[0] : '✉'),
+        h('span.msg-title', m.titulo || m.texto.slice(0, 60)),
+        si && si.icon ? iconNode(si.icon, 'span.msg-sess-ico') : null),
+      h('div.msg-row2',
+        p ? h('span.msg-to', { style: tp ? `color:${teamColor(tp)}` : '' }, tp ? teamAvatar(tp, '.sm') : '👤', ` ${p.name.split(' ')[0]}`) : null,
+        m.pr ? h('a.msg-pr', { href: m.pr.url, title: `Abrir ${m.pr.url}`, onclick: (e) => { e.preventDefault(); e.stopPropagation(); openPageTab({ url: m.pr.url }); } }, `↗ PR${m.pr.numero ? ` #${m.pr.numero}` : ''}`) : null,
+        h('span.grow'),
+        h(`button.mini.msg-copy${msgCopied.has(m.id) ? '.done' : ''}`, { title: 'Copiar con formato de WhatsApp (con el nombre de la sesión arriba)', onclick: (e) => { e.stopPropagation(); msgCopy(m); } }, msgCopied.has(m.id) ? '✓ Copiado' : '📋 Copiar'),
+        h(`button.icon.mini.msg-sent${sent ? '.on' : ''}`, { title: sent ? 'Enviado · clic: volver a pendiente' : 'Marcar como enviado', onclick: (e) => { e.stopPropagation(); msgSetSent(m, !sent); } }, sent ? '✓' : '○')),
+      open ? h('div.msg-detail',
+        h('div.msg-body', m.texto),
+        h('div.msg-acts',
+          h('button.mini', { onclick: (e) => { e.stopPropagation(); msgModal(m); } }, '✎ Editar'),
+          m.session ? h('button.mini', { onclick: (e) => { e.stopPropagation(); msgGoSession(m); } }, si && si.alive ? '→ Ir a la sesión' : '→ Reabrir sesión') : null,
+          h('button.mini', { onclick: (e) => { e.stopPropagation(); msgMenu(e, m); } }, '⋯'))) : null);
+    });
+    return [head, all.length ? filters : null,
+      rows.length ? h('div.msg-list', rows)
+        : h('div.empty-list', all.length ? (f.sent ? 'Nada con estos filtros.' : 'Nada pendiente de enviar con estos filtros (✓ Enviados muestra los ya enviados).') : 'Sin mensajes. Pídele a la IA «dame el mensaje para …» y aparece aquí (skill frap-mensajes), o crea uno con ＋ Nuevo.')];
+  }
 
   // ---------- Equipo: personas y a quién está asignada cada sesión de IA ----------
   // Arriba a la derecha de cada terminal de IA: la persona asignada (o «＋ Asignar sesión»). Ambos abren un menú con el
@@ -10059,6 +10144,7 @@
       { key: 'right.commands', rtab: 'commands', icon: '⌘', name: 'Comandos', desc: 'Comandos / de las IA' },
       { key: 'right.hooks', rtab: 'hooks', icon: '🪝', name: 'Hooks', desc: 'Hooks de claude' },
       { key: 'right.memory', rtab: 'memory', icon: '🧠', name: 'Memoria', desc: 'CLAUDE.md / AGENTS.md' },
+      { key: 'right.msgs', rtab: 'msgs', icon: '✉️', name: 'Mensajes', desc: 'Mensajes que la IA redacta para personas y de pull requests: filtrar, editar, copiar (WhatsApp) y marcar enviados (skill frap-mensajes)' },
       { key: 'right.todos', rtab: 'todos', icon: '📌', name: 'Pendientes', desc: 'Cosas por hacer con prioridad, estado y dependencias, vinculadas a su sesión de IA (skill frap-pendientes)' },
       { key: 'right.tunnels', rtab: 'tunnels', icon: '🚇', name: 'Túneles', desc: 'Compartir por URL pública un puerto, una IP o un archivo' },
       { key: 'right.voice', icon: '🎤', name: 'Voz (Hablar)', desc: 'Dictado a la IA, abajo del panel (Alt+Shift+V)' },
@@ -10108,6 +10194,8 @@
     loadTeam();
     syncTodosSkill();
     loadTodos();
+    syncMsgsSkill();
+    loadMsgs();
     renderTeamChips();
   }
 
@@ -10690,6 +10778,9 @@
     loadTeam();
     syncTodosSkill(true);
     loadTodos();
+    syncMsgsSkill(true);
+    msgsInfo = null;
+    loadMsgs();
     apiInfo = null;
     if (apiPane) { // al (re)conectar: lo que no pudo cargarse sin bridge
       for (const [k, d] of [...apiPane.docs]) if (d.error || d.loading) apiPane.docs.delete(k);

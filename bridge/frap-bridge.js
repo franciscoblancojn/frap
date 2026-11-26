@@ -28,6 +28,7 @@ const aveonline = require('./aveonline');
 const apiReq = require('./api');
 const team = require('./team');
 const todos = require('./todos');
+const messages = require('./messages');
 
 const VERSION = '1.3.0';
 const STARTED_AT = Date.now();
@@ -352,9 +353,14 @@ const noticeTimers = new Map();
 // ---------- pendientes: la IA los escribe con frap-todo (sin pasar por el bridge) → se avisa a la UI ----------
 const todosMtimeNow = () => { try { return fs.statSync(todos.TODO_FILE).mtimeMs; } catch (_) { return 0; } }; // 0 = aún no existe
 let todosMtime = todosMtimeNow();
+// mensajes: igual, los escribe la IA con frap-msg
+const msgsMtimeNow = () => { try { return fs.statSync(messages.MSG_FILE).mtimeMs; } catch (_) { return 0; } };
+let msgsMtime = msgsMtimeNow();
 setInterval(() => {
   const m = todosMtimeNow();
   if (m !== todosMtime) { todosMtime = m; broadcast({ ev: 'todos' }); }
+  const mm = msgsMtimeNow();
+  if (mm !== msgsMtime) { msgsMtime = mm; broadcast({ ev: 'msgs' }); }
 }, 2000).unref();
 
 // ---------- conversación de claude de cada terminal ----------
@@ -1628,6 +1634,14 @@ const ops = {
   'claude.conversations': ({ cwd, limit }) => claudeConversations(safePath(cwd), limit),
   'todos.skill': () => todos.skillStatus(),
   'todos.setSkill': ({ on }) => todos.setSkill(!!on),
+  // ----- módulo Mensajes (local/mensajes): para personas y de pull requests -----
+  /** {file, cli, skill, acciones: [[k, ico, label]], mensajes: [… pendientes primero]} */
+  'msgs.list': () => ({ file: messages.MSG_FILE, cli: messages.CLI, skill: messages.skillStatus(), acciones: messages.PR_ACCIONES, mensajes: messages.list() }),
+  /** Crea (sin id) o edita: {tipo, titulo, texto, para, person, pr: {url, accion}, session, estado}. → el mensaje */
+  'msgs.save': ({ msg }) => { const m = messages.upsert(msg); broadcast({ ev: 'msgs' }); return m; },
+  'msgs.delete': ({ id }) => { messages.remove(id); broadcast({ ev: 'msgs' }); return true; },
+  'msgs.skill': () => messages.skillStatus(),
+  'msgs.setSkill': ({ on }) => messages.setSkill(!!on),
   'scripts.list': () => scripts.listScripts(),
   /** Cambia los interruptores de un script. {path, user?, ai?} → {path, user, ai} */
   'scripts.set': ({ path: p, user, ai }) => scripts.setFlags(p, { user, ai }),

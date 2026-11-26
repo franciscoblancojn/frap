@@ -41,7 +41,7 @@ function sessionLink() {
   const s = team.currentSession(FRAP_HOME);
   if (!s) return null;
   const m = s.meta || {};
-  return { sid: s.sid, projectId: m.projectId || null, cwd: m.cwd || '', title: (m.named && m.title) || m.title || '', kind: m.kind || 'claude', ...(m.agent ? { agent: m.agent } : {}) };
+  return { sid: s.sid, projectId: m.projectId || null, cwd: m.cwd || '', title: (m.named && m.title) || m.title || '', kind: m.kind || 'claude', ...(m.agent ? { agent: m.agent } : {}), ...(m.icon ? { icon: m.icon } : {}), ...(m.person ? { person: m.person } : {}) };
 }
 function fields(opt) {
   const f = {};
