@@ -719,6 +719,24 @@
     if (who) who = fromTeam(who.split(' ')[0]) || who;
     return { who, topic: topicParts.join(' ') };
   }
+  /**
+   * Markdown → formato de WhatsApp (los mensajes se copian para pegarlos ahí): **negrita** → *negrita*,
+   * *cursiva* → _cursiva_, ~~tachado~~ → ~tachado~, títulos "## x" → *x*, [texto](url) → texto (url).
+   * Los bloques de código (```) se dejan tal cual (WhatsApp también los usa).
+   */
+  function toWhatsApp(md) {
+    return String(md).split(/(```[\s\S]*?```)/).map((part, i) => {
+      if (i % 2) return part; // bloque de código
+      return part
+        .replace(/^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$/gm, (_, t) => `\u0001${t.replace(/\*+/g, '')}\u0001`)
+        .replace(/\*\*(.+?)\*\*/g, '\u0001$1\u0001')
+        .replace(/__(.+?)__/g, '\u0001$1\u0001')
+        .replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![*\w])/g, '$1_$2_')
+        .replace(/\u0001/g, '*')
+        .replace(/~~(.+?)~~/g, '~$1~')
+        .replace(/!?\[([^\]]+)\]\((https?:[^)\s]+)\)/g, (_, t, u) => (t === u ? u : `${t} (${u})`));
+    }).join('');
+  }
   /** Enlace de PR detectado en una sesión: se guarda en ella (los 3 más recientes) y se muestra en el panel derecho. */
   function linkOffer(t, url, info) {
     t.prs = (t.prs || []).filter((x) => x.url !== url);
@@ -765,7 +783,7 @@
                 // el nombre de la sesión (el que le pusiste en el panel izquierdo) va primero, con un salto de línea
                 const tm = t.info.meta || {};
                 const name = String((tm.named && tm.title) || termTitle(t) || '').replace(/^[^\p{L}\p{N}]+/u, '').trim(); // sin el ✳ de actividad de claude
-                copyText(`${name ? `${name}\n` : ''}${r.content.replace(/\s+$/, '')}`);
+                copyText(`${name ? `📌 *${name}*\n` : ''}${toWhatsApp(r.content.replace(/\s+$/, ''))}`);
                 m.copied = true;
                 toast(`Mensaje${m.who ? ` para ${m.who}` : ''} copiado: pégalo donde lo vayas a enviar`, 'ok');
                 renderMsgDock();

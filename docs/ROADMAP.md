@@ -8,6 +8,7 @@
 - [x] Panel central: pestañas y lanzadores shell/claude/codex/opencode (`--add-dir` para las carpetas extra)
 - [x] Terminales persistentes: sobreviven a recargar la página y se re-adjuntan con su scrollback
 - [x] Shell y SSH: botones arriba a la derecha para limpiar (también vacía el historial guardado: no vuelve al recargar ni al reiniciar el bridge) y copiar todo el contenido de la terminal
+- [x] Mensajes copiados listos para WhatsApp: título «📌 *nombre de la sesión*» en negrita y el Markdown convertido al formato de WhatsApp
 - [x] El botón del mensaje dice para quién es («Copiar mensaje para Andrés»), sacado del propio mensaje (cómo lo presenta la IA o el nombre del archivo), nunca de la persona asignada a la sesión
 - [x] Al copiar un mensaje, va primero el nombre de la sesión (el del panel izquierdo) y un salto de línea
 - [x] Varios mensajes en una respuesta: un botón por mensaje con «persona · tema» (como los presenta la IA o según el nombre del archivo), cada uno se copia y marca por separado
