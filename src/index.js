@@ -126,7 +126,9 @@
     notes: { gitignore: true }, // datos de la vista Notas enlazada: gitignore = agregar NOTES.md al .gitignore
     code: { groups: [{ tabs: [], active: null }], focus: 0, expanded: [], side: 'tree', hidden: false, wrap: false, cursors: {} }, // vista Código enlazada
     voice: { lang: 'es' }, // módulo de voz (panel derecho): idioma para whisper.cpp ("auto" = detectar)
-    // temporizadores: [{id, icon, title, desc, kind: 'repeat'|'once', every (seg), mode: 'toast'|'modal', sound, enabled, nextAt, startedAt}]
+    // alertas (antes «temporizadores»): [{id, icon, title, desc, kind: 'repeat'|'once'|'at'|'daily', every (seg; repeat/once),
+    //   time 'HH:MM' y date 'AAAA-MM-DD' (at) o days [0-6] (daily), mode: 'toast'|'modal', sound, enabled, nextAt, startedAt,
+    //   ia (la pidió la IA), session {sid, title, icon, projectId, cwd}}]
     timers: [],
     // túneles: [{id, name, kind: 'port'|'url'|'path', port, url, path, provider, password, hostRewrite, rewriteUrls}]
     tunnels: [],
@@ -434,7 +436,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'msgs.list', 'msgs.save', 'msgs.delete', 'msgs.importFile', 'msgs.importPr', 'msgs.setSkill', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'alerts.status', 'alerts.set', 'msgs.list', 'msgs.save', 'msgs.delete', 'msgs.importFile', 'msgs.importPr', 'msgs.setSkill', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -5931,6 +5933,14 @@
     toast(`Mensaje${m.para ? ` para ${m.para}` : ''} copiado · cuando lo envíes, márcalo con ✓`, 'ok');
   }
   const msgSetSent = (m, sent) => msgSave({ id: m.id, estado: sent ? 'enviado' : 'pendiente' }, true);
+  async function msgMarkCopiedSent(list) {
+    let n = 0;
+    for (const m of list) {
+      try { await Bridge.call('msgs.save', { msg: { id: m.id, estado: 'enviado' } }); n++; } catch (e) { toast(`#${m.id}: ${e.message}`, 'err'); }
+    }
+    await loadMsgs();
+    if (n) toast(`✓ ${n} mensaje(s) marcados como enviados`, 'ok');
+  }
   function msgGoSession(m) { todoGoSession(m, (session) => msgSave({ id: m.id, session }, true)); }
   /** Crear o editar un mensaje. */
   function msgModal(m) {
@@ -6007,7 +6017,10 @@
     const f = state.ui.msgFilter || (state.ui.msgFilter = { person: '', session: '', tipo: '', sent: false, section: false });
     const all = (msgsInfo && msgsInfo.mensajes) || [];
     const pendingN = all.filter((m) => m.estado !== 'enviado').length;
+    // los que copiaste (botón naranja) y siguen pendientes: marcarlos enviados de una vez
+    const copiedPending = all.filter((m) => m.estado !== 'enviado' && msgCopied.has(m.id));
     const head = section(`Mensajes${pendingN ? ` (${pendingN})` : ''}`,
+      copiedPending.length ? h('button.mini.msg-sent-all', { title: `Marcar como enviados los ${copiedPending.length} mensaje(s) que copiaste:\n${copiedPending.map((m) => `· ${m.titulo}`).join('\n')}`, onclick: () => msgMarkCopiedSent(copiedPending) }, `✓ Marcar copiados como enviados (${copiedPending.length})`) : null,
       h('button.mini.primary', { title: 'Nuevo mensaje', onclick: () => msgModal(null) }, '＋ Nuevo'));
     if (!msgsInfo) { if (Bridge.ready) loadMsgs(); return [head, h('div.empty-list', Bridge.ready ? 'Cargando…' : 'Bridge desconectado.')]; }
     if (msgsInfo.error) return [head, h('div.empty-list', msgsInfo.error)];
@@ -8597,7 +8610,8 @@
     }, `${Player.playing ? '♪' : '⏸'} ${t.title.length > 32 ? t.title.slice(0, 31) + '…' : t.title}`)] : []));
   }
 
-  // ---------- temporizador: recordatorios recurrentes o de una vez, con aviso simple o bloqueante ----------
+  // ---------- alertas: cada cierto tiempo, una vez dentro de un rato, a una hora o todos los días a una hora; aviso simple o
+  // bloqueante. La IA puede pedirlas (frap-alert, skill frap-alertas) si el usuario enciende el interruptor «IA». ----------
   const TIMER_ICONS = ['⏰', '💧', '🧘', '👀', '🍅', '☕', '🚶', '🍎', '💊', '📞', '🧠', '🛌', '🏋️', '🌿', '📝', '🔔', '🎯', '🚀', '🧹', '🐶'];
   const TIMER_UNITS = { s: 1, min: 60, h: 3600 };
   const TIMER_PRESETS = [
@@ -8623,12 +8637,58 @@
     return `${sec} s`;
   }
   const timerLeft = (t) => (t.enabled && t.nextAt ? (t.nextAt - Date.now()) / 1000 : null);
+  const DAY_SHORT = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+  const isClockKind = (t) => t.kind === 'at' || t.kind === 'daily';
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  /** Fecha local de 'AAAA-MM-DD' + 'HH:MM'. */
+  const atLocal = (date, time) => { const [y, mo, d] = date.split('-').map(Number); const [hh, mm] = time.split(':').map(Number); return new Date(y, mo - 1, d, hh, mm, 0, 0); };
+  /** Próximo disparo (ms) desde `from`: cada/dentro de → from + every; a una hora → esa fecha; diaria → el próximo día permitido. */
+  function timerNext(t, from = Date.now()) {
+    if (t.kind === 'at') return t.date && t.time ? atLocal(t.date, t.time).getTime() : null;
+    if (t.kind === 'daily') {
+      if (!t.time) return null;
+      const days = Array.isArray(t.days) && t.days.length ? t.days : [0, 1, 2, 3, 4, 5, 6];
+      const d = new Date(from);
+      for (let i = 0; i < 8; i++) {
+        const c = atLocal(ymd(d), t.time);
+        if (c.getTime() > from && days.includes(c.getDay())) return c.getTime();
+        d.setDate(d.getDate() + 1);
+      }
+      return null;
+    }
+    return from + t.every * 1000;
+  }
+  /** Texto de cuándo avisa: «cada 1 h», «una vez · 25 min», «hoy a las 15:30», «lun–vie a las 09:00»… */
+  function timerWhen(t) {
+    if (t.kind === 'repeat') return `cada ${fmtEvery(t.every)}`;
+    if (t.kind === 'once') return `una vez · ${fmtEvery(t.every)}`;
+    if (t.kind === 'at') {
+      if (!t.date) return `a las ${t.time}`;
+      const today = ymd(new Date());
+      const tmr = new Date(); tmr.setDate(tmr.getDate() + 1);
+      const day = t.date === today ? 'hoy' : t.date === ymd(tmr) ? 'mañana' : atLocal(t.date, t.time).toLocaleDateString('es', { weekday: 'short', day: 'numeric', month: 'short' });
+      return `${day} a las ${t.time}`;
+    }
+    const days = Array.isArray(t.days) && t.days.length && t.days.length < 7 ? [...t.days].sort() : null;
+    const lv = days && days.join(',') === '1,2,3,4,5';
+    return `${!days ? 'todos los días' : lv ? 'lun–vie' : days.map((d) => DAY_SHORT[d]).join(' ')} a las ${t.time}`;
+  }
 
   function startTimer(t) {
+    const next = timerNext(t);
+    if (!next || (t.kind === 'at' && next <= Date.now())) { // una hora que ya pasó: no se enciende
+      t.enabled = false;
+      t.nextAt = null;
+      save();
+      toast(`${t.icon || '⏰'} ${t.title}: esa hora ya pasó (${timerWhen(t)})`, 'err');
+      return false;
+    }
     t.enabled = true;
     t.startedAt = Date.now();
-    t.nextAt = Date.now() + t.every * 1000;
+    t.nextAt = next;
     save();
+    return true;
   }
   function stopTimer(t) {
     t.enabled = false;
@@ -8638,15 +8698,16 @@
 
   // ----- disparo -----
   function fireTimer(t, late = false) {
-    if (t.kind === 'repeat') {
+    if (t.kind === 'repeat' || t.kind === 'daily') {
       // se reprograma desde ahora (no se acumulan avisos atrasados)
       t.startedAt = Date.now();
-      t.nextAt = Date.now() + t.every * 1000;
-    } else {
+      t.nextAt = timerNext(t, Date.now() + 1000);
+      if (!t.nextAt) t.enabled = false;
+    } else if (t.kind !== 'ia') {
       t.enabled = false;
       t.nextAt = null;
     }
-    save();
+    if (t.kind !== 'ia') save();
     if (t.sound) chime(t.mode === 'modal');
     notifySystem(t);
     flashTitle(t);
@@ -8658,9 +8719,10 @@
   function timerToast(t, late) {
     const el = h('div.toast.timer-toast', { title: 'Clic para cerrar', onclick: () => el.remove() },
       h('span.tt-icon', t.icon || '⏰'),
-      h('div', h('div.tt-title', t.title + (late ? ' (atrasado)' : '')), t.desc ? h('div.tt-desc', t.desc) : null));
+      h('div', h('div.tt-title', t.title + (late ? ' (atrasado)' : '')), t.desc ? h('div.tt-desc', t.desc) : null,
+        t.session ? h('button.mini.tt-go', { title: 'Ir a la sesión que pidió la alerta', onclick: (e) => { e.stopPropagation(); el.remove(); alertGoSession(t); } }, `→ ${t.session.icon ? `${iconText(t.session.icon)} ` : ''}${t.session.title || 'Ir a la sesión'}`) : null));
     $('#toasts').append(el);
-    setTimeout(() => el.remove(), 12000);
+    setTimeout(() => el.remove(), t.kind === 'ia' ? 30000 : 12000);
   }
 
   // Aviso bloqueante: overlay a pantalla completa por encima de todo; hay que atenderlo.
@@ -8694,10 +8756,11 @@
       h('div.alarm-icon', t.icon || '⏰'),
       h('h2#alarm-title', t.title),
       t.desc ? h('p.alarm-desc', t.desc) : null,
-      h('p.muted.alarm-meta', `${t.kind === 'preview' ? 'Vista previa del aviso' : t.kind === 'repeat' ? `Se repite cada ${fmtEvery(t.every)}` : 'Temporizador terminado'}${late ? ' · llegó atrasado' : ''}${alarmQueue.length > 1 ? ` · ${alarmQueue.length - 1} más en cola` : ''}`),
+      h('p.muted.alarm-meta', `${t.kind === 'preview' ? 'Vista previa del aviso' : t.kind === 'ia' ? `🤖 Alerta de la IA${t.session ? ` · ${t.session.title || 'sesión'}` : ''}` : t.kind === 'repeat' || t.kind === 'daily' ? `Se repite: ${timerWhen(t)}` : t.kind === 'at' ? `Alerta de las ${t.time}` : 'Tiempo cumplido'}${late ? ' · llegó atrasado' : ''}${alarmQueue.length > 1 ? ` · ${alarmQueue.length - 1} más en cola` : ''}`),
       h('div.alarm-acts',
-        t.kind === 'preview' ? null : h('button', { onclick: () => done(5) }, 'Posponer 5 min'),
-        t.kind === 'preview' ? null : h('button', { onclick: () => done(15) }, '15 min'),
+        t.session ? h('button', { onclick: () => { done(0); alertGoSession(t); } }, '→ Ir a la sesión') : null,
+        t.kind === 'preview' || t.kind === 'ia' ? null : h('button', { onclick: () => done(5) }, 'Posponer 5 min'),
+        t.kind === 'preview' || t.kind === 'ia' ? null : h('button', { onclick: () => done(15) }, '15 min'),
         ok)));
     root.classList.remove('hidden');
     // el foco sale de la terminal: las teclas no deben llegar a xterm mientras está el aviso
@@ -8766,12 +8829,13 @@
       const t = timerById(el.dataset.timerLeft);
       if (!t) continue;
       const left = timerLeft(t);
-      el.textContent = left == null ? (t.kind === 'once' && t.startedAt ? 'terminado' : 'apagado') : fmtCountdown(left);
+      el.textContent = left == null ? ((t.kind === 'once' || t.kind === 'at') && t.startedAt ? 'terminada' : 'apagada') : fmtCountdown(left);
     }
     for (const el of $$('[data-timer-bar]')) {
       const t = timerById(el.dataset.timerBar);
       const left = t && timerLeft(t);
-      el.style.width = left == null ? '0%' : `${Math.min(100, Math.max(0, 100 - (left / t.every) * 100))}%`;
+      const span = t && t.nextAt && t.startedAt ? (t.nextAt - t.startedAt) / 1000 : (t && t.every) || 1;
+      el.style.width = left == null ? '0%' : `${Math.min(100, Math.max(0, 100 - (left / Math.max(1, span)) * 100))}%`;
     }
     renderStatusTimer();
   }
@@ -8785,7 +8849,7 @@
     if (el.dataset.label === label) return;
     el.dataset.label = label;
     el.replaceChildren(...(next ? [h('span.st-timer', {
-      title: `Próximo aviso: ${next.title} — clic para ver temporizadores`,
+      title: `Próxima alerta: ${next.title} — clic para ver las alertas`,
       onclick: () => { if (state.ui.hideRight) togglePanel('right'); setRtab('timers'); },
     }, label)] : []));
   }
@@ -8802,18 +8866,23 @@
         },
       }, '🔔')
       : null;
-    const head = section('Temporizador',
+    const aiOn = !!(alertsInfo && alertsInfo.ai);
+    const aiSw = h('label.wp-sw.alert-ai', { title: aiOn ? 'La IA puede mostrarte alertas (skill frap-alertas) · clic: no permitirlo' : 'Permitir que la IA te muestre alertas (ahora, en un rato o a una hora) con la skill frap-alertas' },
+      h('button', { class: `switch ${aiOn ? 'on' : 'off'}`, role: 'switch', 'aria-checked': String(aiOn), onclick: (e) => { e.preventDefault(); alertsSetAi(!aiOn); } }), '🤖 IA');
+    const head = section('Alertas',
+      aiSw,
       notifBtn,
       h('button.mini', { title: 'Agregar desde una plantilla', onclick: openTimerPresets }, '✨ Plantillas'),
       h('button.mini.primary', { onclick: () => editTimer() }, '+ Nuevo'));
     const hint = h('p.muted', { style: 'margin:0 2px 8px;font-size:11px' },
-      '🔔 aviso simple: aparece en la esquina sin interrumpir · 🛑 bloquea la pantalla hasta que lo atiendas (puedes posponer).');
+      '🔔 aviso simple: aparece en la esquina sin interrumpir · 🛑 bloquea la pantalla hasta que lo atiendas (puedes posponer).',
+      aiOn ? ' 🤖 La IA puede pedirte alertas (p. ej. «avísame cuando termines», «recuérdame a las 3»).' : '');
     if (!state.timers.length) {
-      return [head, hint, h('p.muted', 'Aún no hay temporizadores. Crea uno o usa una plantilla como "💧 Toma agua cada 1 h".')];
+      return [head, hint, h('p.muted', 'Aún no hay alertas. Crea una (cada cierto tiempo, dentro de un rato o a una hora) o usa una plantilla como "💧 Toma agua cada 1 h".')];
     }
     return [head, hint, ...state.timers.map((t) => {
       const left = timerLeft(t);
-      const finished = !t.enabled && t.kind === 'once' && t.startedAt;
+      const finished = !t.enabled && (t.kind === 'once' || t.kind === 'at') && t.startedAt;
       return h(`div.card.timer-card${t.enabled ? '.on' : ''}`,
         h('div.timer-top',
           h('span.timer-icon', t.icon || '⏰'),
@@ -8822,8 +8891,9 @@
             t.desc ? h('div.desc', t.desc) : null,
             h('div.timer-meta',
               h('span.badge', { title: t.mode === 'modal' ? 'Bloquea la pantalla' : 'Aviso simple' }, t.mode === 'modal' ? '🛑 bloquea' : '🔔 aviso'),
-              h('span.badge', t.kind === 'repeat' ? `cada ${fmtEvery(t.every)}` : `una vez · ${fmtEvery(t.every)}`),
-              t.sound ? h('span.badge', { title: 'Con sonido' }, '🔊') : null)),
+              h('span.badge', timerWhen(t)),
+              t.sound ? h('span.badge', { title: 'Con sonido' }, '🔊') : null,
+              t.ia ? h('span.badge.alert-ia', { title: `La pidió la IA${t.session ? ` en «${t.session.title || 'su sesión'}» · clic: ir a la sesión` : ''}`, onclick: t.session ? () => alertGoSession(t) : null }, `🤖 ${t.session && t.session.title ? t.session.title.replace(/^[^\p{L}\p{N}]+/u, '').slice(0, 24) : 'IA'}`) : null)),
           h('button.switch', {
             class: `switch ${t.enabled ? 'on' : 'off'}`,
             role: 'switch', 'aria-checked': String(!!t.enabled),
@@ -8831,7 +8901,7 @@
             onclick: () => { if (t.enabled) stopTimer(t); else startTimer(t); renderRight(); tickTimers(); },
           })),
         h('div.timer-bottom',
-          h('span.timer-left', { dataset: { timerLeft: t.id } }, left == null ? (finished ? 'terminado' : 'apagado') : fmtCountdown(left)),
+          h('span.timer-left', { dataset: { timerLeft: t.id } }, left == null ? (finished ? 'terminada' : 'apagada') : fmtCountdown(left)),
           h('div.timer-track', h('div.timer-bar', { dataset: { timerBar: t.id } })),
           h('button.icon.mini', { title: 'Reiniciar la cuenta', onclick: () => { startTimer(t); renderRight(); tickTimers(); } }, '↺'),
           h('button.icon.mini', { title: 'Probar el aviso ahora', onclick: () => previewTimer(t) }, '▶'),
@@ -8839,6 +8909,42 @@
           h('button.icon.mini', { title: 'Eliminar', onclick: () => deleteTimer(t) }, '✕')));
     })];
   }
+
+  // ----- alertas que pide la IA (frap-alert) -----
+  let alertsInfo = null; // {ai, module, allowed, cli, skill}
+  async function alertsSync() {
+    if (!Bridge.ready) return;
+    try {
+      const r = await Bridge.call('alerts.set', { module: rtabOn('timers') });
+      alertsInfo = r;
+      if (r.changed && r.changed.length) toast(r.allowed ? 'Skill frap-alertas lista en claude y codex' : 'Skill frap-alertas quitada de claude y codex', 'ok');
+    } catch (_) { /* bridge viejo */ }
+    if (state.ui.rtab === 'timers') renderRight();
+  }
+  async function alertsSetAi(on) {
+    try {
+      alertsInfo = await Bridge.call('alerts.set', { ai: on, module: rtabOn('timers') });
+      toast(on ? '🤖 La IA ya puede mostrarte alertas (skill frap-alertas). Las sesiones que abras desde ahora la cargan.' : 'La IA ya no puede mostrarte alertas', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+    renderRight();
+  }
+  function alertGoSession(t) { if (t.session) todoGoSession({ session: t.session }, () => {}); }
+  Bridge.on('alert', ({ alert: a }) => {
+    if (!a || !rtabOn('timers')) return;
+    const base = { icon: a.icon || '🤖', title: a.title, desc: a.desc || '', mode: a.mode === 'modal' ? 'modal' : 'toast', sound: a.sound !== false, ...(a.session ? { session: a.session } : {}) };
+    if (a.action === 'show') { fireTimer({ id: a.id, kind: 'ia', ...base }); return; }
+    const w = a.when || {};
+    const t = { id: uid(), ...base, ia: true, kind: w.kind === 'in' ? 'once' : w.kind, every: w.kind === 'in' ? w.secs : 0 };
+    if (w.kind === 'at') {
+      t.time = w.time;
+      t.date = w.date || ymd(new Date());
+      if (!w.date && atLocal(t.date, t.time).getTime() <= Date.now()) { const d = new Date(); d.setDate(d.getDate() + 1); t.date = ymd(d); } // ya pasó hoy: mañana
+    } else if (w.kind === 'daily') { t.time = w.time; t.days = w.days || []; }
+    state.timers.push(t);
+    if (startTimer(t)) toast(`🤖 La IA programó una alerta: ${t.icon} ${t.title} · ${t.kind === 'once' ? `en ${fmtEvery(t.every)}` : timerWhen(t)}`, 'ok');
+    if (state.ui.rtab === 'timers') renderRight();
+    tickTimers();
+  });
 
   function previewTimer(t) {
     if (t.sound) chime(t.mode === 'modal');
@@ -8871,33 +8977,65 @@
     const amount = h('input', { type: 'number', min: '1', value: String(every / TIMER_UNITS[unit]), style: 'width:90px' });
     const unitSel = h('select', h('option', { value: 's' }, 'segundos'), h('option', { value: 'min' }, 'minutos'), h('option', { value: 'h' }, 'horas'));
     unitSel.value = unit;
-    const kind = h('select', h('option', { value: 'repeat' }, 'Repetir cada…'), h('option', { value: 'once' }, 'Una vez, dentro de…'));
+    const kind = h('select', h('option', { value: 'repeat' }, 'Repetir cada…'), h('option', { value: 'once' }, 'Una vez, dentro de…'),
+      h('option', { value: 'at' }, 'Una vez, a una hora…'), h('option', { value: 'daily' }, 'Todos los días a las…'));
     kind.value = src.kind || 'repeat';
+    // a una hora / diaria
+    const inHour = new Date(Date.now() + 3600 * 1000);
+    const dateIn = h('input', { type: 'date', value: src.date || ymd(new Date()), style: 'width:150px' });
+    const timeIn = h('input', { type: 'time', value: src.time || `${pad2(inHour.getHours())}:00`, style: 'width:110px' });
+    const dayBoxes = [1, 2, 3, 4, 5, 6, 0].map((d) => {
+      const cb = h('input', { type: 'checkbox' });
+      cb.checked = !Array.isArray(src.days) || !src.days.length || src.days.includes(d);
+      return { d, cb, el: h('label.alert-day', cb, DAY_SHORT[d]) };
+    });
+    const everyRow = h('div.field-row', amount, unitSel);
+    const clockRow = h('div.field-row', dateIn, timeIn);
+    const daysRow = h('div.alert-days', dayBoxes.map((x) => x.el));
+    const syncKind = () => {
+      const k = kind.value;
+      everyRow.classList.toggle('hidden', k === 'at' || k === 'daily');
+      clockRow.classList.toggle('hidden', !(k === 'at' || k === 'daily'));
+      dateIn.classList.toggle('hidden', k !== 'at');
+      daysRow.classList.toggle('hidden', k !== 'daily');
+    };
+    kind.addEventListener('change', syncKind);
+    syncKind();
     const mode = h('select', h('option', { value: 'toast' }, '🔔 Aviso simple (no bloquea)'), h('option', { value: 'modal' }, '🛑 Bloquear la pantalla con un aviso'));
     mode.value = src.mode || 'toast';
     const sound = h('input', { type: 'checkbox' });
     sound.checked = src.sound !== false;
     const doSave = () => {
-      const secs = Math.round(Number(amount.value) * TIMER_UNITS[unitSel.value]);
+      const k = kind.value;
+      const clock = k === 'at' || k === 'daily';
+      const secs = clock ? (t && t.every) || 0 : Math.round(Number(amount.value) * TIMER_UNITS[unitSel.value]);
       if (!title.value.trim()) { toast('El título es obligatorio', 'err'); return; }
-      if (!(secs >= 1)) { toast('El intervalo debe ser mayor que 0', 'err'); return; }
-      const changedTiming = !t || t.every !== secs || t.kind !== kind.value;
+      if (!clock && !(secs >= 1)) { toast('El intervalo debe ser mayor que 0', 'err'); return; }
+      if (clock && !/^\d{2}:\d{2}$/.test(timeIn.value)) { toast('Elige la hora', 'err'); return; }
+      if (k === 'at' && !dateIn.value) { toast('Elige la fecha', 'err'); return; }
+      const days = k === 'daily' ? dayBoxes.filter((x) => x.cb.checked).map((x) => x.d).sort() : undefined;
+      if (k === 'daily' && !days.length) { toast('Elige al menos un día', 'err'); return; }
+      if (k === 'at' && atLocal(dateIn.value, timeIn.value).getTime() <= Date.now()) { toast('Esa fecha y hora ya pasaron', 'err'); return; }
+      const timing = (x) => JSON.stringify([x.kind, x.every, x.time, x.date, x.days]);
+      const before = t ? timing(t) : '';
       if (isNew) { t = { id: uid() }; state.timers.push(t); }
-      Object.assign(t, { icon, title: title.value.trim(), desc: desc.value.trim(), kind: kind.value, every: secs, mode: mode.value, sound: sound.checked });
-      if (isNew || (changedTiming && t.enabled)) startTimer(t); else save();
+      Object.assign(t, { icon, title: title.value.trim(), desc: desc.value.trim(), kind: k, every: secs, mode: mode.value, sound: sound.checked });
+      if (clock) { t.time = timeIn.value; if (k === 'at') { t.date = dateIn.value; delete t.days; } else { t.days = days.length === 7 ? [] : days; delete t.date; } } else { delete t.time; delete t.date; delete t.days; }
+      const changedTiming = isNew || before !== timing(t);
+      if (isNew || (changedTiming && (t.enabled || clock))) startTimer(t); else save();
       modalClose(true);
       if (state.ui.rtab !== 'timers') setRtab('timers'); else renderRight();
       tickTimers();
-      if (isNew) toast(`${icon} ${t.title}: ${t.kind === 'repeat' ? `cada ${fmtEvery(secs)}` : `en ${fmtEvery(secs)}`}`, 'ok');
+      if (isNew && t.enabled) toast(`${icon} ${t.title}: ${t.kind === 'repeat' || clock ? timerWhen(t) : `en ${fmtEvery(secs)}`}`, 'ok');
     };
     title.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSave(); });
     openModal({
-      title: isNew ? 'Nuevo temporizador' : `Editar · ${t.title}`,
+      title: isNew ? 'Nueva alerta' : `Editar · ${t.title}`,
       body: [
         h('div.field', h('label', 'Ícono'), iconBtns, customIcon),
         h('div.field', h('label', 'Título'), title),
         h('div.field', h('label', 'Descripción'), desc),
-        h('div.field', h('label', 'Cuándo'), h('div.field-row', kind, amount, unitSel)),
+        h('div.field', h('label', 'Cuándo'), h('div.field-row', kind, everyRow, clockRow), daysRow),
         h('div.field', h('label', 'Tipo de aviso'), mode),
         h('label.muted', sound, ' Sonar al avisar'),
       ],
@@ -8907,7 +9045,7 @@
 
   function openTimerPresets() {
     openModal({
-      title: 'Plantillas de temporizador',
+      title: 'Plantillas de alertas',
       body: [
         h('p.muted', { style: 'margin:0' }, 'Elige una para crearla; puedes ajustarla antes de guardar.'),
         ...TIMER_PRESETS.map((p) => h('div.card.clickable', { onclick: () => { modalClose(true); editTimer(null, p); } },
@@ -10207,7 +10345,7 @@
       { key: 'right.dbs', rtab: 'dbs', icon: '🛢️', name: 'Bases de datos', desc: 'Conexiones de BD' },
       { key: 'right.ssh', rtab: 'ssh', icon: '🔐', name: 'SSH', desc: 'Servidores SSH' },
       { key: 'right.music', rtab: 'music', icon: '🎵', name: 'Música', desc: 'Reproductor (y su barra abajo)' },
-      { key: 'right.timers', rtab: 'timers', icon: '⏰', name: 'Temporizador', desc: 'Recordatorios (apagado: no avisan)' },
+      { key: 'right.timers', rtab: 'timers', icon: '⏰', name: 'Alertas', desc: 'Cada cierto tiempo, dentro de un rato o a una hora; la IA puede pedirlas con el interruptor «IA» (apagado: no avisan)' },
       { key: 'right.agents', rtab: 'agents', icon: '🤖', name: 'Agentes', desc: 'Subagentes de claude/codex' },
       { key: 'right.skills', rtab: 'skills', icon: '🧩', name: 'Skills', desc: 'Skills instaladas' },
       { key: 'right.commands', rtab: 'commands', icon: '⌘', name: 'Comandos', desc: 'Comandos / de las IA' },
@@ -10265,6 +10403,7 @@
     loadTodos();
     syncMsgsSkill();
     loadMsgs();
+    alertsSync();
     renderTeamChips();
   }
 
@@ -10429,7 +10568,7 @@
     { key: 'promptCats', label: 'Categorías de prompts', count: (c) => (c.promptCats || []).length },
     { key: 'actions', label: 'Acciones', count: (c) => (c.actions || []).length },
     { key: 'pages', label: 'Páginas', count: (c) => (c.pages || []).length },
-    { key: 'timers', label: 'Temporizadores', count: (c) => (c.timers || []).length },
+    { key: 'timers', label: 'Alertas', count: (c) => (c.timers || []).length },
     { key: 'tunnels', label: 'Túneles', count: (c) => (c.tunnels || []).length, sub: 'incluye sus contraseñas' },
     { key: 'modules', label: 'Módulos', count: (c) => MODULE_LIST.length - (((c.modules || {}).off) || []).length, sub: 'qué se muestra en cada panel' },
     { key: 'sections', label: 'Secciones del panel izquierdo', count: (c) => (c.sections || []).filter((s) => s.id !== 'all').length },
@@ -10879,6 +11018,7 @@
     syncMsgsSkill(true);
     msgsInfo = null;
     loadMsgs();
+    alertsSync();
     apiInfo = null;
     if (apiPane) { // al (re)conectar: lo que no pudo cargarse sin bridge
       for (const [k, d] of [...apiPane.docs]) if (d.error || d.loading) apiPane.docs.delete(k);

@@ -86,6 +86,7 @@
 - [x] Interruptor "Solo lectura" por conexión (activado por defecto). Desactivado, la pestaña DB puede ejecutar INSERT, UPDATE, CREATE y ALTER con confirmación (`db.check` + `assertSafeWrite`), pero nunca DELETE, DROP ni TRUNCATE. Los agentes siguen siempre en solo lectura
 - [x] Música: archivos (IndexedDB) y YouTube (relé `/yt-player`), bucle (lista/canción), aleatorio sin repetir, arrastrar para reordenar, dock persistente y teclas multimedia
 - [x] Logos de claude, codex, opencode y DB en lanzadores, pestañas y panel izquierdo; favicon propio
+- [x] «Temporizador» pasa a «Alertas»: además de cada X / dentro de X, a una fecha y hora y todos los días (o ciertos días) a una hora; la IA puede mostrar o programar alertas con `frap-alert` (skill `frap-alertas`) si se enciende el interruptor «🤖 IA»
 - [x] Temporizador: recordatorios recurrentes o de una vez, aviso simple o bloqueante (posponer), ícono/título/descripción, plantillas, sonido y notificación del sistema
 - [x] Git guiado: status, add/restore, commit (y push), ramas (checkout, checkout -b, track remoto, borrar), fetch/pull/push, stash, diff, historial, comandos libres con salida visible
 - [x] Terminales persistentes de verdad: sobreviven a reiniciar o perder el bridge (procesos desligados + socket Unix + historial propio); la UI se reconecta sola
@@ -106,7 +107,7 @@
 - [ ] Skills, agentes y comandos de plugins (`~/.claude/plugins`)
 - [ ] DB: autocompletado de tablas y columnas en el editor, varias pestañas DB, SQL Server y MongoDB
 - [ ] Música: importar playlists de YouTube, varias listas, ecualizador
-- [ ] Temporizador: horario activo (p. ej. solo de 9 a 18 h), días de la semana, estadísticas de cumplimiento
+- [ ] Alertas: horario activo (p. ej. solo de 9 a 18 h), estadísticas de cumplimiento
 - [ ] MCP servers: listar y editar (`.mcp.json`, `~/.claude.json`, `~/.codex/config.toml`)
 - [ ] Git: stage por líneas (hunks), resolver conflictos, generar el mensaje de commit con claude
 - [ ] Lanzar con worktrees: un agente por rama en paralelo

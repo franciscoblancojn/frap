@@ -43,7 +43,7 @@ navegador (file://src/index.html)                     máquina local
   - Pantalla dividida apagada: `splitN()` es 1.
   - Editor apagado: las rutas clicadas van al editor externo.
   - Música apagada: se oculta su barra.
-  - Temporizador apagado: no avisa.
+  - Alertas apagadas: no avisan (y la IA no puede pedirlas).
   - Si se apaga la pestaña derecha activa, pasa a la primera visible. Sin ninguna, el panel muestra un aviso.
 
 ## Túneles (pestaña del panel derecho)
@@ -244,9 +244,11 @@ navegador (file://src/index.html)                     máquina local
 - `GIT_ALLOWED` limita los subcomandos a los de uso diario. `config`, `submodule`, hooks, etc. se rechazan, igual que las opciones que permiten ejecutar comandos arbitrarios (`-c core.sshCommand=…`, `--upload-pack`, `--exec`, `-C`, `--git-dir`).
 - El status se lee con `git status --porcelain=v1 -b -z` (independiente del idioma). La vista se refresca cada 5 s mientras está visible y al volver el foco a la ventana.
 
-## Temporizador
+## Alertas (antes «Temporizador»)
 
-- Vive solo en la UI, en `state.timers`. Cada temporizador guarda `nextAt` (marca de tiempo absoluta), así que sobrevive a recargas. Si al volver a abrir FRAP alguno ya venció, avisa una vez marcado como "atrasado" y se reprograma desde ese momento, sin acumular avisos.
+- Pestaña «Alertas» (`right.timers`; por compatibilidad, las claves siguen siendo `timers`). Cuatro tipos: **cada** cierto tiempo (`repeat`), **una vez dentro de** un rato (`once`), **una vez a una fecha y hora** (`at`: `date` + `time`) y **todos los días a una hora** (`daily`: `time` y `days` [0-6], vacío = todos). `timerNext` calcula el próximo disparo; las diarias se reprograman al siguiente día permitido. Una hora que ya pasó no se enciende.
+- **IA:** interruptor «🤖 IA» en la cabecera. `alerts.set` guarda `{ai, module}` en `FRAP_HOME/alerts/ai.json` e instala la skill `frap-alertas` solo con ambos encendidos. La IA usa `bridge/frap-alert.js` (`ya`, `en 10m`, `a-las 15:30 [--fecha]`, `diaria 09:00 [--dias lun,…]`, `list`; `--bloquear`, `--icono`, `--desc`, `--sin-sonido`): deja la petición en `FRAP_HOME/alerts/inbox/` (si no está permitido, se niega). El bridge revisa la bandeja cada segundo y, si hay una UI conectada, la entrega como `{ev: 'alert', alert}` (si no, espera). La UI la muestra ya (`action: 'show'`) o la agrega a la lista (`create`, con la insignia 🤖 y la sesión que la pidió); el aviso trae «→ Ir a la sesión».
+- Vive solo en la UI, en `state.timers`. Cada alerta guarda `nextAt` (marca de tiempo absoluta), así que sobrevive a recargas. Si al volver a abrir FRAP alguno ya venció, avisa una vez marcado como "atrasado" y se reprograma desde ese momento, sin acumular avisos.
 - `tickTimers()` corre cada segundo. Dispara los vencidos y actualiza los contadores en el sitio, sin re-renderizar. Con la pestaña en segundo plano Chrome puede espaciar los timers, y el aviso puede llegar hasta ~1 min tarde.
 - El aviso bloqueante es `#alarm`, por encima de modales y toasts. Quita el foco de xterm, atrapa el teclado (Tab cicla entre sus botones) y desactiva los atajos. Varios avisos simultáneos se ponen en cola.
 - El sonido se genera con WebAudio, sin archivos.
@@ -369,6 +371,8 @@ Eventos bridge → cliente: `{ ev: 'out', sid, d }`, `{ ev: 'exit', sid, code }`
 | `todos.save` | `{todo: {id?, title, descripcion, icon, priority, estado, depends, session}}` | crea (sin id) o edita; valida prioridad, estado, dependencias y ciclos. Emite `{ev: 'todos'}` |
 | `todos.delete` | `{id}` | lo borra y lo quita de las dependencias de los demás |
 | `todos.skill` / `todos.setSkill` | — / `{on}` | estado / instala o quita la skill `frap-pendientes` |
+| `alerts.status` | — | `{ai, module, allowed, cli, skill}` |
+| `alerts.set` | `{ai?, module?}` | interruptor «IA» y pestaña encendida; instala o quita la skill `frap-alertas` (solo con ambos). Las peticiones de `frap-alert` llegan como `{ev: 'alert', alert: {id, action: 'show'\|'create', title, desc, icon, mode, sound, when?, session?}}` |
 | `msgs.list` | — | `{file, cli, skill, acciones, mensajes: [… pendientes primero, más nuevos arriba]}` |
 | `msgs.save` | `{msg: {id?, tipo, titulo, texto, para, person, pr: {url, accion}, session, estado}}` | crea (sin id) o edita; valida tipo, URL y acción del PR y estado (al pasar a enviado guarda `sentAt`). Emite `{ev: 'msgs'}` |
 | `msgs.delete` | `{id}` | lo borra |

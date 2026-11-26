@@ -312,6 +312,52 @@ test('todos.*: pendientes en local/pendientes, orden por dependencias y priorida
   assert.ok(!fs.existsSync(skill));
 });
 
+test('alerts.*: la IA pide alertas (frap-alert) solo con el interruptor «IA»; el bridge las entrega a la UI', async () => {
+  const { execFile } = require('child_process');
+  const cli = path.join(__dirname, '..', 'bridge', 'frap-alert.js');
+  const env = { ...process.env, FRAP_HOME: path.join(root, 'cfg') };
+  const run = (...args) => new Promise((resolve) => execFile(process.execPath, [cli, ...args], { env }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stdout, stderr })));
+  let st = await client.call('alerts.status');
+  assert.equal(st.allowed, false, 'apagado por defecto');
+  let r = await run('ya', 'Terminé el deploy');
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /no permite alertas de la IA/);
+  const skill = path.join(root, '.claude', 'skills', 'frap-alertas', 'SKILL.md');
+  st = await client.call('alerts.set', { ai: true, module: true });
+  assert.deepEqual([st.ai, st.allowed], [true, true]);
+  assert.ok(fs.existsSync(skill), 'con el interruptor se instala la skill');
+  // mostrar ya: llega a la UI como evento
+  const got = client.waitFor((e) => e.ev === 'alert' && e.alert.title === 'Terminé el deploy', 6000);
+  r = await run('ya', 'Terminé', 'el', 'deploy', '--desc', 'Todo verde', '--bloquear', '--icono', '✅');
+  assert.equal(r.code, 0, r.stderr);
+  const ev = await got;
+  assert.deepEqual([ev.alert.action, ev.alert.mode, ev.alert.icon, ev.alert.desc], ['show', 'modal', '✅', 'Todo verde']);
+  // programadas
+  const got2 = client.waitFor((e) => e.ev === 'alert' && e.alert.title === 'Revisar QA', 6000);
+  r = await run('en', '1h30m', 'Revisar QA');
+  assert.match(r.stdout, /programada.*en 5400 s/);
+  assert.deepEqual((await got2).alert.when, { kind: 'in', secs: 5400 });
+  const got3 = client.waitFor((e) => e.ev === 'alert' && e.alert.title === 'Daily', 6000);
+  r = await run('diaria', '9:05', 'Daily', '--dias', 'lun,mar,mie,jue,vie');
+  assert.deepEqual((await got3).alert.when, { kind: 'daily', time: '09:05', days: [1, 2, 3, 4, 5] });
+  const got4 = client.waitFor((e) => e.ev === 'alert' && e.alert.title === 'Llamar', 6000);
+  r = await run('a-las', '3pm', 'Llamar', '--fecha', '2030-01-02');
+  assert.deepEqual((await got4).alert.when, { kind: 'at', time: '15:00', date: '2030-01-02' });
+  for (const bad of [['en', 'nunca', 'x'], ['a-las', '25:00', 'x'], ['diaria', '9:00', 'x', '--dias', 'funday'], ['ya']]) {
+    r = await run(...bad);
+    assert.notEqual(r.code, 0, bad.join(' '));
+  }
+  // la pestaña apagada también la bloquea y quita la skill
+  st = await client.call('alerts.set', { module: false });
+  assert.deepEqual([st.ai, st.allowed], [true, false]);
+  assert.ok(!fs.existsSync(skill));
+  r = await run('ya', 'x');
+  assert.match(r.stderr, /no permite/);
+  st = await client.call('alerts.set', { ai: false, module: true });
+  assert.equal(st.allowed, false);
+  assert.ok(!fs.existsSync(skill));
+});
+
 test('msgs.*: mensajes para personas y de PR en local/mensajes, estados, vinculados a la sesión (frap-msg add / pr)', async () => {
   const { execFile } = require('child_process');
   const marta = await client.call('team.save', { person: { name: 'Marta Gómez', role: 'QA' } });

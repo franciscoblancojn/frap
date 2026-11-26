@@ -29,6 +29,7 @@ const apiReq = require('./api');
 const team = require('./team');
 const todos = require('./todos');
 const messages = require('./messages');
+const alerts = require('./alerts');
 
 const VERSION = '1.3.0';
 const STARTED_AT = Date.now();
@@ -362,6 +363,12 @@ setInterval(() => {
   const mm = msgsMtimeNow();
   if (mm !== msgsMtime) { msgsMtime = mm; broadcast({ ev: 'msgs' }); }
 }, 2000).unref();
+
+// ---------- alertas que pide la IA (frap-alert): se entregan a la UI cuando hay alguna conectada ----------
+setInterval(() => {
+  if (!clients.size) return; // se quedan en la bandeja hasta que se conecte una UI
+  for (const alert of alerts.drain(FRAP_HOME)) broadcast({ ev: 'alert', alert });
+}, 1000).unref();
 
 // ---------- conversación de claude de cada terminal ----------
 // Claude Code escribe ~/.claude/sessions/<pid>.json con el sessionId de cada proceso. Se busca el claude que corre
@@ -1634,6 +1641,19 @@ const ops = {
   'claude.conversations': ({ cwd, limit }) => claudeConversations(safePath(cwd), limit),
   'todos.skill': () => todos.skillStatus(),
   'todos.setSkill': ({ on }) => todos.setSkill(!!on),
+  // ----- módulo Alertas: la IA puede pedir alertas (frap-alert) si el usuario lo permite -----
+  /** {ai, module, allowed, cli, skill} */
+  'alerts.status': () => { const f = alerts.readFlag(FRAP_HOME); return { ...f, allowed: f.ai && f.module, cli: alerts.CLI, skill: alerts.skillStatus() }; },
+  /**
+   * Interruptor «IA» (`ai`) y si la pestaña Alertas está encendida (`module`). La skill frap-alertas queda instalada
+   * solo con ambos. → {ai, module, allowed, changed}
+   */
+  'alerts.set': ({ ai, module }) => {
+    const f = alerts.setFlag(FRAP_HOME, { ...(ai !== undefined ? { ai: !!ai } : {}), ...(module !== undefined ? { module: !!module } : {}) });
+    const allowed = f.ai && f.module;
+    const r = alerts.setSkill(allowed);
+    return { ...f, allowed, changed: r.changed };
+  },
   // ----- módulo Mensajes (local/mensajes): para personas y de pull requests -----
   /** {file, cli, skill, acciones: [[k, ico, label]], mensajes: [… pendientes primero]} */
   'msgs.list': () => ({ file: messages.MSG_FILE, cli: messages.CLI, skill: messages.skillStatus(), acciones: messages.PR_ACCIONES, mensajes: messages.list() }),
