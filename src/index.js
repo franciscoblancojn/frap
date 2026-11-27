@@ -6020,7 +6020,7 @@
     // los que copiaste (botón naranja) y siguen pendientes: marcarlos enviados de una vez
     const copiedPending = all.filter((m) => m.estado !== 'enviado' && msgCopied.has(m.id));
     const head = section(`Mensajes${pendingN ? ` (${pendingN})` : ''}`,
-      copiedPending.length ? h('button.mini.msg-sent-all', { title: `Marcar como enviados los ${copiedPending.length} mensaje(s) que copiaste:\n${copiedPending.map((m) => `· ${m.titulo}`).join('\n')}`, onclick: () => msgMarkCopiedSent(copiedPending) }, `✓ Marcar copiados como enviados (${copiedPending.length})`) : null,
+      copiedPending.length ? h('button.mini.msg-sent-all', { title: `Marcar como enviados los mensajes que copiaste (${copiedPending.length}):\n${copiedPending.map((m) => `· ${m.titulo}`).join('\n')}`, 'aria-label': 'Marcar copiados como enviados', onclick: () => msgMarkCopiedSent(copiedPending) }, '✓✓') : null,
       h('button.mini.primary', { title: 'Nuevo mensaje', onclick: () => msgModal(null) }, '＋ Nuevo'));
     if (!msgsInfo) { if (Bridge.ready) loadMsgs(); return [head, h('div.empty-list', Bridge.ready ? 'Cargando…' : 'Bridge desconectado.')]; }
     if (msgsInfo.error) return [head, h('div.empty-list', msgsInfo.error)];
