@@ -53,7 +53,7 @@ bridge/frap-ave.js     CLI para agentes (skill frap-aveonline, solo lectura): in
 bridge/api.js          módulo "API" (como Postman): peticiones en local/api/<carpeta>/<nombre>.req.json, variables por carpeta (_carpeta.json) y globales (_globales.json), envío HTTP, skill frap-api
 bridge/frap-api.js     CLI para agentes (skill frap-api): list / new / run / show / vars / set-var
 bridge/team.js         módulo "Equipo": personas en local/equipo/equipo.json, sesión de IA asignada (meta.person), sockDirFor (carpeta de sesiones, común a bridge y CLI), skill frap-equipo
-bridge/frap-team.js    CLI para agentes (skill frap-equipo): quien (sube por sus procesos hasta su sesión de FRAP) / list / show
+bridge/frap-team.js    CLI para agentes (skill frap-equipo): quien (sube por sus procesos hasta su sesión de FRAP) / sesion (ícono y nombre de la sesión, p. ej. para las notas) / list / show
 bridge/todos.js        módulo "Pendientes": local/pendientes/pendientes.json (prioridad, estado, dependencias, sesión de IA), orden topológico, skill frap-pendientes
 bridge/frap-todo.js    CLI para agentes (skill frap-pendientes): add (queda vinculado a su sesión) / list / show / estado / edit
 bridge/messages.js     módulo "Mensajes" (pestaña del panel derecho): local/mensajes/mensajes.json, para personas y de PR (url + acción), estado pendiente/enviado, sesión de IA, skill frap-mensajes
@@ -79,6 +79,7 @@ docs/                  arquitectura, protocolo y roadmap
 
 ## Cómo trabajar
 
+- **El bridge en uso lo inicia y lo reinicia siempre el usuario.** No lo detengas, no lo reinicies ni lances otro (tampoco con `setsid`/`nohup`). Cuando un cambio necesite reiniciarlo, díselo al final de tu respuesta («reinicia el bridge y recarga la página»). Los bridges de prueba aislados (tests, harness en un tmpdir con su propio `FRAP_HOME` y puerto) sí puedes lanzarlos y cerrarlos.
 - Si la UI empieza a usar una operación nueva del bridge, agrégala a `REQUIRED_OPS` en `index.js`: así un bridge viejo en ejecución muestra el aviso de reiniciar.
 - Una operación nueva del bridge se agrega en `ops` de `frap-bridge.js`, se documenta en `docs/ARCHITECTURE.md` (tabla del protocolo) y se cubre con un test en `tests/bridge.test.js`.
 - Los tests aíslan `HOME`, `FRAP_HOME` y `FRAP_FS_ROOT` en un tmpdir. Nunca dependas del `~/.claude` real.

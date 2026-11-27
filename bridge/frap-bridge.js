@@ -417,6 +417,95 @@ function userText(j) {
   if (!s || /^(Base directory for this skill|<|\[Request interrupted|Caveat:)/.test(s)) return '';
   return s.replace(/\s+/g, ' ');
 }
+// ---------- vista de lectura de una conversación de claude (📖 en la franja de la sesión) ----------
+// Lee el .jsonl de la conversación desde `since` (bytes) y devuelve lo que se muestra: mensajes del usuario, textos de
+// claude y cada herramienta con su resultado (para plegarlas). La primera vez, solo el final (las conversaciones pesan
+// decenas de MB). Las de subagentes (isSidechain) y los bloques internos (thinking, metadatos) no se devuelven.
+const TRANSCRIPT_TAIL = 1536 * 1024;
+const TRANSCRIPT_CHUNK = 4 * 1024 * 1024;
+function claudeTranscriptFile(conv, cwd) {
+  if (!UUID_RE.test(String(conv || ''))) throw new Error('Conversación inválida');
+  if (cwd) {
+    const f = path.join(CLAUDE_PROJECTS_DIR, path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, '-'), `${conv}.jsonl`);
+    if (fs.existsSync(f)) return f;
+  }
+  let dirs = [];
+  try { dirs = fs.readdirSync(CLAUDE_PROJECTS_DIR); } catch (_) { /* sin conversaciones */ }
+  for (const d of dirs) { const f = path.join(CLAUDE_PROJECTS_DIR, d, `${conv}.jsonl`); if (fs.existsSync(f)) return f; }
+  return null;
+}
+const clip = (s, n) => { const t = String(s == null ? '' : s); return t.length > n ? `${t.slice(0, n)}\n… (${t.length - n} caracteres más)` : t; };
+/** Título corto de una herramienta: el comando, el archivo, el patrón… */
+function toolTitle(name, input) {
+  const i = input && typeof input === 'object' ? input : {};
+  const first = (x) => String(x || '').split('\n')[0].trim();
+  if (name === 'Bash') return first(i.description) || first(i.command);
+  if (i.file_path) return String(i.file_path);
+  if (i.notebook_path) return String(i.notebook_path);
+  if (i.pattern) return `${i.pattern}${i.path ? ` · ${i.path}` : ''}`;
+  if (i.url) return String(i.url);
+  if (i.query) return first(i.query);
+  if (i.description) return first(i.description);
+  if (i.skill) return String(i.skill);
+  if (i.prompt) return first(i.prompt).slice(0, 120);
+  return '';
+}
+function resultText(c) {
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) return c.map((x) => (x && x.type === 'text' ? x.text : x && x.type === 'image' ? '[imagen]' : '')).filter(Boolean).join('\n');
+  return '';
+}
+function transcriptItems(lines) {
+  const out = [];
+  for (const l of lines) {
+    let j; try { j = JSON.parse(l); } catch (_) { continue; }
+    if (!j || j.isSidechain || !j.message || (j.type !== 'user' && j.type !== 'assistant')) continue;
+    const ts = j.timestamp || '';
+    const c = j.message.content;
+    if (j.type === 'user') {
+      if (typeof c === 'string') {
+        const t = c.trim();
+        if (t && !/^(<|Base directory for this skill|Caveat:|\[Request interrupted)/.test(t) && !j.isMeta) out.push({ k: 'user', id: j.uuid, ts, text: clip(t, 20000) });
+        continue;
+      }
+      for (const x of Array.isArray(c) ? c : []) {
+        if (!x) continue;
+        if (x.type === 'tool_result') out.push({ k: 'res', id: x.tool_use_id, ts, err: !!x.is_error, text: clip(resultText(x.content), 12000) });
+        else if (x.type === 'text' && !j.isMeta) { const t = String(x.text || '').trim(); if (t && !/^(<|Base directory for this skill|Caveat:|\[Request interrupted)/.test(t)) out.push({ k: 'user', id: `${j.uuid}-t`, ts, text: clip(t, 20000) }); }
+      }
+      continue;
+    }
+    (Array.isArray(c) ? c : []).forEach((x, n) => {
+      if (!x) return;
+      if (x.type === 'text' && String(x.text || '').trim()) out.push({ k: 'ai', id: `${j.uuid}-${n}`, ts, text: clip(x.text, 40000) });
+      else if (x.type === 'tool_use') {
+        const input = x.input && typeof x.input === 'object' ? x.input : {};
+        out.push({ k: 'tool', id: x.id, ts, name: String(x.name || 'tool'), title: clip(toolTitle(x.name, input), 300), input: clip(x.name === 'Bash' ? input.command : JSON.stringify(input, null, 2), 8000) });
+      }
+    });
+  }
+  return out;
+}
+/** → {file, size, next, truncated, items} */
+function claudeTranscript(conv, cwd, since) {
+  const file = claudeTranscriptFile(conv, cwd);
+  if (!file) return { file: null, size: 0, next: 0, truncated: false, items: [] };
+  const size = fs.statSync(file).size;
+  let start = Number.isInteger(since) && since >= 0 && since <= size ? since : -1;
+  let truncated = false;
+  if (start < 0) { start = Math.max(0, size - TRANSCRIPT_TAIL); truncated = start > 0; }
+  const len = Math.min(size - start, TRANSCRIPT_CHUNK);
+  if (len <= 0) return { file, size, next: start, truncated, items: [] };
+  const buf = Buffer.alloc(len);
+  const fd = fs.openSync(file, 'r');
+  try { fs.readSync(fd, buf, 0, len, start); } finally { fs.closeSync(fd); }
+  let from = 0;
+  if (truncated) { const nl = buf.indexOf(10); from = nl < 0 ? len : nl + 1; } // la primera línea quedó cortada
+  const lastNl = buf.lastIndexOf(10);
+  if (lastNl < from) return { file, size, next: start + from, truncated, items: [] }; // aún no hay una línea completa
+  const text = buf.subarray(from, lastNl).toString('utf8');
+  return { file, size, next: start + lastNl + 1, truncated, items: transcriptItems(text.split('\n')) };
+}
 function claudeConversations(cwd, limit = 40) {
   const dir = path.join(CLAUDE_PROJECTS_DIR, path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, '-'));
   let files = [];
@@ -807,7 +896,10 @@ raíz del proyecto: el directorio de trabajo con el que se abrió esta sesión (
    Si la carpeta está en un repo git, agrega la línea \`/NOTES.md\` al \`.gitignore\` de esa misma
    carpeta (créalo si hace falta): es lo que hace FRAP por defecto, salvo que el usuario diga lo contrario.
    Solo al crearlo: si ya existía y no está ignorado, el usuario lo decidió así.
-2. Agrega al FINAL una sección con fecha: \`## AAAA-MM-DD — <tema corto>\`.
+2. Agrega al FINAL una sección con fecha, tema y la sesión de FRAP donde estás (su ícono y nombre):
+   \`## AAAA-MM-DD — <tema corto> · <ícono> <sesión>\`. La sesión la da
+   \`node ${path.join(__dirname, 'frap-team.js')} sesion\` (p. ej. «🚚 AVE-1601 transportadoras QA»); si responde que no
+   es una sesión de FRAP, omite esa parte.
 3. Escribe lo que pidió el usuario o, si dice "esto", un resumen útil para retomar más tarde:
    contexto, decisiones y por qué, pendientes (\`- [ ]\`), comandos, rutas y datos clave.
    Markdown breve; sin secretos (contraseñas, tokens, llaves).
@@ -819,6 +911,12 @@ raíz del proyecto: el directorio de trabajo con el que se abrió esta sesión (
 Lee \`NOTES.md\` completo y úsalo como contexto. Si el usuario no pidió algo concreto, resume
 en pocas líneas lo más importante y los pendientes. Si no existe, dilo y ofrece crearlo.
 `;
+}
+
+// al arrancar: si la skill de notas ya está instalada (la instaló FRAP) y cambió su texto, se actualiza
+for (const dir of Object.values(NOTES_SKILL_DIRS)) {
+  const f = path.join(dir(), 'SKILL.md');
+  try { const cur = fs.readFileSync(f, 'utf8'); if (/^name: frap-notes$/m.test(cur) && cur !== notesSkillText()) fs.writeFileSync(f, notesSkillText()); } catch (_) { /* no instalada */ }
 }
 
 const SSH_SKILL_DIRS = {
@@ -1638,6 +1736,11 @@ const ops = {
   'todos.save': ({ todo }) => { const t = todos.upsert(todo); broadcast({ ev: 'todos' }); return t; },
   'todos.delete': ({ id }) => { todos.remove(id); broadcast({ ev: 'todos' }); return true; },
   /** Conversaciones recientes de claude en una carpeta (para «Retomar conversación…»). */
+  /**
+   * Vista de lectura (📖): la conversación de claude `conv` desde `since` (bytes; sin él, el final). Solo lectura.
+   * → {file, size, next, truncated, items: [{k: 'user'|'ai'|'tool'|'res', id, ts, text?, name?, title?, input?, err?}]}
+   */
+  'claude.transcript': ({ conv, cwd, since }) => claudeTranscript(conv, cwd, since),
   'claude.conversations': ({ cwd, limit }) => claudeConversations(safePath(cwd), limit),
   'todos.skill': () => todos.skillStatus(),
   'todos.setSkill': ({ on }) => todos.setSkill(!!on),

@@ -462,6 +462,50 @@ test('msgs.*: mensajes para personas y de PR en local/mensajes, estados, vincula
   await client.call('team.delete', { id: marta.id });
 });
 
+test('claude.transcript: vista de lectura (mensajes, herramientas y resultados), incremental y solo el final si es grande', async () => {
+  const cwd = path.join(root, 'proj-read');
+  fs.mkdirSync(cwd, { recursive: true });
+  const dir = path.join(root, '.claude', 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+  fs.mkdirSync(dir, { recursive: true });
+  const conv = '22222222-2222-4222-8222-222222222222';
+  const file = path.join(dir, `${conv}.jsonl`);
+  const L = (o) => `${JSON.stringify(o)}\n`;
+  fs.writeFileSync(file, [
+    L({ type: 'mode', mode: 'normal' }),
+    L({ type: 'user', uuid: 'u1', timestamp: '2026-11-27T10:00:00Z', message: { role: 'user', content: 'Revisa el pedido 547' } }),
+    L({ type: 'user', uuid: 'u0', isMeta: true, message: { role: 'user', content: [{ type: 'text', text: '<system-reminder>x</system-reminder>' }] } }),
+    L({ type: 'assistant', uuid: 'a1', message: { content: [{ type: 'thinking', thinking: 'secreto' }, { type: 'text', text: 'Voy a **mirar** la BD.' }, { type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: 'node frap-db.js x "SELECT 1"', description: 'Consultar la BD' } }] } }),
+    L({ type: 'user', uuid: 'r1', message: { content: [{ type: 'tool_result', tool_use_id: 'tu1', content: '1 fila' }] } }),
+    L({ type: 'assistant', uuid: 's1', isSidechain: true, message: { content: [{ type: 'text', text: 'de un subagente' }] } }),
+    L({ type: 'assistant', uuid: 'a2', message: { content: [{ type: 'tool_use', id: 'tu2', name: 'Read', input: { file_path: '/x/y.js' } }] } }),
+  ].join(''));
+  let d = await client.call('claude.transcript', { conv, cwd });
+  assert.deepEqual(d.items.map((i) => `${i.k}:${i.title || i.text || ''}`), ['user:Revisa el pedido 547', 'ai:Voy a **mirar** la BD.', 'tool:Consultar la BD', 'res:1 fila', 'tool:/x/y.js'], 'sin metadatos, pensamiento ni subagentes');
+  assert.equal(d.items[2].input, 'node frap-db.js x "SELECT 1"');
+  assert.equal(d.truncated, false);
+  // incremental: solo lo nuevo; una línea a medias espera
+  fs.appendFileSync(file, L({ type: 'user', uuid: 'r2', message: { content: [{ type: 'tool_result', tool_use_id: 'tu2', is_error: true, content: [{ type: 'text', text: 'no existe' }] }] } }) + '{"type":"assistant","uuid":"a3","mess');
+  d = await client.call('claude.transcript', { conv, cwd, since: d.next });
+  assert.deepEqual(d.items.map((i) => [i.k, i.id, i.err]), [['res', 'tu2', true]]);
+  const next = d.next;
+  fs.appendFileSync(file, 'age":{"content":[{"type":"text","text":"Listo"}]}}\n');
+  d = await client.call('claude.transcript', { conv, cwd, since: next });
+  assert.deepEqual(d.items.map((i) => i.text), ['Listo']);
+  // sin cwd la encuentra igual; una conversación inválida se rechaza
+  assert.equal((await client.call('claude.transcript', { conv })).items.length, 7);
+  await assert.rejects(client.call('claude.transcript', { conv: '../../etc/passwd' }), /inválida/);
+  assert.equal((await client.call('claude.transcript', { conv: '33333333-3333-4333-8333-333333333333' })).file, null);
+  // grande: la primera vez solo el final, empezando en una línea completa
+  const big = path.join(dir, '44444444-4444-4444-8444-444444444444.jsonl');
+  const filler = L({ type: 'assistant', uuid: 'f', message: { content: [{ type: 'text', text: 'x'.repeat(1000) }] } });
+  fs.writeFileSync(big, filler.repeat(2500) + L({ type: 'user', uuid: 'last', message: { content: 'Último' } }));
+  d = await client.call('claude.transcript', { conv: '44444444-4444-4444-8444-444444444444', cwd });
+  assert.equal(d.truncated, true);
+  assert.ok(d.items.length < 2500 && d.items.length > 1000);
+  assert.equal(d.items.at(-1).text, 'Último');
+  assert.equal(d.next, d.size);
+});
+
 test('claude.conversations: conversaciones de una carpeta (tema, último mensaje, issues) y si ya están abiertas', async () => {
   const cwd = path.join(root, 'proj-conv');
   fs.mkdirSync(cwd, { recursive: true });
@@ -1076,6 +1120,14 @@ test('notes.*: skill frap-notes (estado e instalación) y NOTES.md con fs.write/
   assert.match(text, /^---\nname: frap-notes\ndescription: .*guarda esto en notas.*lee las notas/m);
   assert.match(text, /NOTES\.md/);
   assert.match(text, /\/NOTES\.md/); // indica el .gitignore
+  assert.match(text, /## AAAA-MM-DD — <tema corto> · <ícono> <sesión>/);
+  assert.match(text, /frap-team\.js sesion/);
+  // la IA obtiene el ícono y el nombre de su sesión de FRAP
+  const cli = path.join(__dirname, '..', 'bridge', 'frap-team.js');
+  const s = await client.call('session.create', { cwd: root, cmd: [process.execPath, cli, 'sesion'], meta: { kind: 'claude', title: 'AVE-1601 transportadoras QA', named: true, icon: '@shopify' } });
+  await client.waitOutput(s.sid, /🛍️ AVE-1601 transportadoras QA/);
+  await client.waitFor((e) => e.ev === 'exit' && e.sid === s.sid, 8000).catch(() => {});
+  await client.call('session.kill', { sid: s.sid }).catch(() => {});
   assert.deepEqual(await client.call('notes.skill'), { claude: true, codex: true });
   assert.deepEqual(await client.call('notes.installSkill', { tools: ['nada'] }), []);
   // la vista edita NOTES.md con fs.*: dentro de FRAP_FS_ROOT sí, fuera no

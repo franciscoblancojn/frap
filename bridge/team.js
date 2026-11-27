@@ -124,6 +124,15 @@ function currentSession(frapHome, startPid = process.pid) {
   return null;
 }
 
+/** «<ícono> <nombre>» de una sesión (meta): el nombre que le puso el usuario o su título, sin el ✳ de claude. */
+const LOGO_EMOJI = { '@shopify': '🛍️', '@wp': '🌐' };
+function sessionLabel(meta) {
+  const m = meta || {};
+  const name = String((m.named && m.title) || m.title || '').replace(/^[^\p{L}\p{N}]+/u, '').trim();
+  const icon = LOGO_EMOJI[m.icon] || String(m.icon || '').trim();
+  return [icon, name].filter(Boolean).join(' ');
+}
+
 // ---------- skill frap-equipo ----------
 const SKILL_MARK = 'frap-equipo (FRAP)';
 function skillText() {
@@ -164,6 +173,6 @@ ${cli} show <nombre>    # una persona (por nombre o id)
 const skill = require('./wordpress').skillManager('frap-equipo', SKILL_MARK, skillText);
 
 module.exports = {
-  TEAM_FILE, CLI, ROLES, sockDirFor, load, upsert, importPeople, remove, find, currentSession, ppidOf,
+  TEAM_FILE, CLI, ROLES, sockDirFor, load, upsert, importPeople, remove, find, currentSession, ppidOf, sessionLabel,
   skillText, skillStatus: () => skill.status(), setSkill: (on) => skill.set(on),
 };

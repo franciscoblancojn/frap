@@ -92,7 +92,7 @@
   const AGENT_TOOLS = ['claude', 'codex', 'opencode'];
   // notas (vista "Notas" + skill frap-notes): también se agregan a los prompts de estados ya existentes
   const NOTES_PROMPTS = [
-    { title: 'Guardar en notas', body: 'Guarda esto en notas: agrega al final de NOTES.md (en la raíz de esta carpeta; créalo si no existe) una sección con la fecha y un resumen útil para retomar después: contexto, decisiones y por qué, pendientes (- [ ]), comandos y rutas clave. No borres lo que ya hay y no incluyas secretos.' },
+    { title: 'Guardar en notas', body: 'Guarda esto en notas: agrega al final de NOTES.md (en la raíz de esta carpeta; créalo si no existe) una sección con la fecha, el tema y el ícono y nombre de esta sesión de FRAP, y un resumen útil para retomar después: contexto, decisiones y por qué, pendientes (- [ ]), comandos y rutas clave. No borres lo que ya hay y no incluyas secretos.' },
     { title: 'Leer notas', body: 'Lee las notas: abre NOTES.md de esta carpeta y úsalo como contexto para seguir trabajando. Resúmeme en pocas líneas lo más importante y los pendientes.' },
   ];
   const DEFAULT_PROMPTS = [
@@ -436,7 +436,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'alerts.status', 'alerts.set', 'msgs.list', 'msgs.save', 'msgs.delete', 'msgs.importFile', 'msgs.importPr', 'msgs.setSkill', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'alerts.status', 'alerts.set', 'msgs.list', 'msgs.save', 'msgs.delete', 'msgs.importFile', 'msgs.importPr', 'msgs.setSkill', 'claude.transcript', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -528,6 +528,7 @@
     fitTerm(t);
     attach(t);
     renderTeamChip(t);
+    if ((state.ui.readers || []).includes(t.sid) && isClaudeTerm(t)) readerToggle(t, true); // la vista de lectura sigue abierta tras recargar
     return t;
   }
 
@@ -5844,6 +5845,7 @@
     if (!Bridge.ready || !msgsOn()) { renderMessages(); return; }
     try { msgsInfo = await Bridge.call('msgs.list'); } catch (e) { msgsInfo = { error: e.message, mensajes: [] }; }
     renderMessages();
+    readerRefreshCards();
   }
   async function syncMsgsSkill(force) {
     if (!Bridge.ready) return;
@@ -6156,17 +6158,208 @@
     let chip = t.pane.querySelector('.term-person');
     const showPin = rtabOn('todos') && isAgentTerm(t);
     const showPerson = teamOn() && isAgentTerm(t);
-    if (!showPin && !showPerson) { if (chip) chip.remove(); return; }
+    const showRead = isClaudeTerm(t);
+    if (!showPin && !showPerson && !showRead) { if (chip) chip.remove(); return; }
     if (!chip) { chip = h('div.term-person'); t.pane.append(chip); }
     chip.classList.toggle('with-tools', !!t.pane.querySelector('.term-tools'));
     const p = teamPerson((t.info.meta || {}).person);
     const pin = showPin ? h('button.term-pin', { title: 'Guardar como pendientes la lista que te dio la IA (escribe la petición en la terminal; tú pulsas Enter)', onmousedown: (e) => e.preventDefault(), onclick: () => todoAskSave(t) }, '📌') : null;
-    chip.replaceChildren(...[pin, !showPerson ? null : p
+    const reading = !!(t.reader && t.reader.open);
+    const read = showRead ? h(`button.term-read${reading ? '.on' : ''}`, { title: reading ? 'Volver a la terminal' : 'Vista de lectura: los mensajes de claude en cajas y los procesos (Bash, Read, Edit…) plegados; puedes escribirle desde abajo', onmousedown: (e) => e.preventDefault(), onclick: () => readerToggle(t) }, reading ? '⌨' : '📖') : null;
+    chip.replaceChildren(...[read, pin, !showPerson ? null : p
       ? h('button.term-person-btn', { style: `--pc:${teamColor(p)}`, title: `Sesión asignada a ${p.name} (${p.role})${p.descripcion ? `\n${p.descripcion}` : ''}\nLa IA lo sabe con la skill frap-equipo. Clic: cambiar`, onmousedown: (e) => e.preventDefault(), onclick: (e) => teamMenu(e, t) },
         teamAvatar(p, '.term-person-ico'), h('span.term-person-name', { style: `color:${teamColor(p)}` }, p.name), h('span.muted.term-person-role', p.role))
       : h('button.term-person-btn.unassigned', { title: 'Asignar esta sesión a una persona del equipo (p. ej. todo lo de tu jefe): la IA escribirá para ella', onmousedown: (e) => e.preventDefault(), onclick: (e) => teamMenu(e, t) }, '＋ Asignar sesión')].filter(Boolean));
   }
   function renderTeamChips() { for (const t of terms.values()) renderTeamChip(t); }
+
+  // ---------- 📖 vista de lectura de una sesión de claude ----------
+  // Lee la conversación (claude.transcript: el .jsonl que escribe claude) y la muestra como página: tus mensajes, los
+  // de claude en cajas con el markdown renderizado y cada proceso (Bash, Read, Edit…) plegado con solo su título; clic
+  // lo despliega con el comando y su resultado. Abajo, un campo que escribe en la terminal. Se pone encima de xterm
+  // (la terminal sigue viva debajo); otro clic en ⌨ vuelve a ella. Va unos segundos detrás: claude escribe el archivo
+  // al terminar cada bloque.
+  const isClaudeTerm = (t) => termKind(t) === 'claude' || (((t.info.meta || {}).agent || {}).tool === 'claude');
+  const READER_MAX = 700; // nodos en pantalla (los más viejos se quitan)
+  function readerToggle(t, open) {
+    const r = t.reader || (t.reader = { open: false });
+    r.open = open === undefined ? !r.open : !!open;
+    const set = new Set(state.ui.readers || []);
+    if (r.open) set.add(t.sid); else set.delete(t.sid);
+    state.ui.readers = [...set].filter((sid) => terms.has(sid) || sid === t.sid);
+    save();
+    if (r.open) readerOpen(t); else readerClose(t);
+    renderTeamChip(t);
+  }
+  function readerClose(t) {
+    const r = t.reader;
+    clearTimeout(r.timer);
+    if (r.el) r.el.classList.add('hidden');
+    if (t.sid === state.activeSid) setTimeout(() => t.term.focus(), 0);
+  }
+  function readerOpen(t) {
+    const r = t.reader;
+    if (!r.el) {
+      r.list = h('div.tr-list');
+      r.input = h('textarea.tr-input', { rows: '1', placeholder: 'Escríbele a claude… (Enter envía · Shift+Enter: nueva línea)' });
+      r.input.addEventListener('input', () => { r.input.style.height = 'auto'; r.input.style.height = `${Math.min(200, r.input.scrollHeight)}px`; });
+      r.input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); readerSend(t); }
+      });
+      r.el = h('div.term-reader', r.list,
+        h('div.tr-compose', r.input,
+          h('button.mini', { title: 'Enviar a la terminal (Enter)', onclick: () => readerSend(t) }, '➤'),
+          h('button.mini', { title: 'Interrumpir a claude (Esc en la terminal)', onclick: () => Bridge.send('session.input', { sid: t.sid, data: '\x1b' }) }, '■')));
+      t.pane.append(r.el);
+    }
+    r.el.classList.remove('hidden');
+    readerPoll(t, true);
+    if (t.sid === state.activeSid) setTimeout(() => r.input.focus(), 0);
+  }
+  function readerSend(t) {
+    const r = t.reader;
+    const text = r.input.value.replace(/\s+$/, '');
+    if (!text) return;
+    Bridge.send('session.input', { sid: t.sid, data: text.includes('\n') ? `\x1b[200~${text}\x1b[201~` : text });
+    setTimeout(() => Bridge.send('session.input', { sid: t.sid, data: '\r' }), 60);
+    r.input.value = '';
+    r.input.style.height = 'auto';
+    r.stick = true;
+    readerAddPending(t, text);
+  }
+  /** Lo que escribiste aparece al momento (atenuado) hasta que claude lo anota en su conversación. */
+  function readerAddPending(t, text) {
+    const r = t.reader;
+    const el = h('div.tr-user.tr-pending', h('div.tr-who', 'Tú'), h('div.tr-text', text));
+    r.list.append(el);
+    (r.pending = r.pending || []).push({ text, el });
+    r.list.scrollTop = r.list.scrollHeight;
+  }
+  async function readerPoll(t, reset) {
+    const r = t.reader;
+    clearTimeout(r.timer);
+    if (!r.open || !terms.has(t.sid)) return;
+    const conv = ((t.info.meta || {}).agent || {}).session || '';
+    if (reset || conv !== r.conv) {
+      r.conv = conv; r.next = undefined; r.tools = new Map(); r.lastTools = null; r.seen = new Set(); r.pending = []; r.cards = new Map();
+      r.list.replaceChildren(h('div.tr-note.muted', conv ? 'Cargando la conversación…' : 'Esperando a que claude anote su conversación (unos segundos después de empezar)…'));
+      r.stick = true;
+    }
+    if (conv && Bridge.ready) {
+      try {
+        const d = await Bridge.call('claude.transcript', { conv, cwd: (t.info.meta || {}).cwd || '', ...(r.next !== undefined ? { since: r.next } : {}) });
+        if (r.conv !== conv || !r.open) return;
+        const first = r.next === undefined;
+        if (first) r.list.replaceChildren(...(d.truncated ? [h('div.tr-note.muted', '… (se muestra la parte más reciente de la conversación)')] : []), ...(d.file ? [] : [h('div.tr-note.muted', 'No encontré el archivo de esta conversación.')]));
+        r.next = d.next;
+        if (d.items.length) readerRender(t, d.items);
+        if (d.next < d.size) { r.timer = setTimeout(() => readerPoll(t), 50); return; } // quedan bloques por leer
+      } catch (e) { r.list.append(h('div.tr-note.err', e.message)); }
+    }
+    r.timer = setTimeout(() => readerPoll(t), document.hidden ? 5000 : 1500);
+  }
+  function readerRender(t, items) {
+    const r = t.reader;
+    const L = r.list;
+    const atBottom = r.stick || L.scrollHeight - L.scrollTop - L.clientHeight < 60;
+    const dir = (t.info.meta || {}).cwd || '';
+    for (const it of items) {
+      if (it.id && r.seen.has(`${it.k}:${it.id}`)) continue;
+      if (it.id) r.seen.add(`${it.k}:${it.id}`);
+      if (it.k === 'res') {
+        const tool = r.tools.get(it.id);
+        if (!tool) continue;
+        tool.el.classList.add(it.err ? 'err' : 'ok');
+        tool.st.textContent = it.err ? '✗' : '✓';
+        tool.res = it.text;
+        if (tool.el.open) readerToolBody(tool);
+        // un mensaje que claude guardó con frap-msg: su tarjeta (copiar, abrir el PR, estado) justo después
+        const mid = !it.err && tool.it.name === 'Bash' && /frap-msg/.test(tool.it.input || '') ? (String(it.text).match(/^(?:Guardado el mensaje|Actualizado el mensaje|Importado: mensaje|Ya estaba: mensaje) #(\d+)/m) || [])[1] : null;
+        if (mid) readerMsgCard(t, Number(mid), tool.el.parentElement);
+        continue;
+      }
+      if (it.k === 'tool') {
+        // procesos seguidos van juntos en un bloque, cada uno plegado en una línea
+        if (!r.lastTools || r.lastTools !== L.lastElementChild) { r.lastTools = h('div.tr-tools'); L.append(r.lastTools); }
+        const st = h('span.tr-st', '…');
+        const el = h('details.tr-tool', h('summary', st, h('span.tr-tname', it.name), h('span.tr-ttitle', it.title || '')));
+        const tool = { el, st, it, res: null, body: null };
+        el.addEventListener('toggle', () => { if (el.open) readerToolBody(tool); });
+        r.tools.set(it.id, tool);
+        r.lastTools.append(el);
+        continue;
+      }
+      if (it.k === 'user') {
+        const p = (r.pending || []).findIndex((x) => x.text.trim() === it.text.trim());
+        if (p >= 0) { r.pending[p].el.remove(); r.pending.splice(p, 1); }
+        L.append(h('div.tr-user', h('div.tr-who', `Tú${it.ts ? ` · ${new Date(it.ts).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}` : ''}`), h('div.tr-text', it.text)));
+        continue;
+      }
+      L.append(h('div.tr-ai.md-body', mdBlocks(it.text, dir)));
+    }
+    // las pendientes (lo que escribiste) siempre al final
+    for (const p of r.pending || []) L.append(p.el);
+    while (L.childElementCount > READER_MAX) L.firstElementChild.remove();
+    if (atBottom) { L.scrollTop = L.scrollHeight; r.stick = false; }
+  }
+  /** Tarjeta de un mensaje de Mensajes dentro de la vista: persona → copiar; PR → abrir, estado (acción) y copiar. */
+  function readerMsgCard(t, id, after) {
+    const r = t.reader;
+    r.cards = r.cards || new Map();
+    let card = r.cards.get(id);
+    if (!card) {
+      card = h('div.tr-msg', { dataset: { msg: String(id) } });
+      r.cards.set(id, card);
+      // tras el bloque de procesos (y tras otras tarjetas que ya estén ahí)
+      let at = after;
+      while (at && at.nextElementSibling && at.nextElementSibling.classList.contains('tr-msg')) at = at.nextElementSibling;
+      if (at && at.parentElement === r.list) at.after(card); else r.list.append(card);
+    }
+    readerPaintCard(card, id);
+  }
+  function readerPaintCard(card, id) {
+    const m = ((msgsInfo && msgsInfo.mensajes) || []).find((x) => x.id === id);
+    if (!m) {
+      card.replaceChildren(h('span.muted', `✉ Mensaje #${id}…`));
+      if (!msgsInfo && Bridge.ready) loadMsgs(); // la pestaña Mensajes aún no lo había cargado
+      return;
+    }
+    const p = msgPerson(m);
+    const sent = m.estado === 'enviado';
+    const copied = isCopied(m);
+    const acc = m.pr ? MSG_PR_ACC[m.pr.accion] || ['🔀', 'PR'] : null;
+    let accSel = null;
+    if (m.pr) {
+      accSel = h('select.tr-msg-acc', { title: 'Estado del PR: qué pide o avisa este mensaje', onchange: () => msgSave({ id: m.id, pr: { accion: accSel.value } }, true) },
+        Object.entries(MSG_PR_ACC).map(([k, [ico, label]]) => h('option', { value: k }, `${ico} ${label}`)));
+      accSel.value = m.pr.accion;
+    }
+    card.classList.toggle('sent', sent);
+    card.replaceChildren(...[
+      h('span.tr-msg-kind', m.pr ? acc[0] : '✉'),
+      h('div.tr-msg-main',
+        h('div.tr-msg-title', m.pr ? `PR${m.pr.numero ? ` #${m.pr.numero}` : ''}${p ? ` · para ${p.name}` : ''}` : `Mensaje para ${p ? p.name : 'alguien'}`),
+        h('div.tr-msg-sub.muted', `#${m.id} · ${m.titulo}${sent ? ' · enviado' : ''}`)),
+      accSel,
+      m.pr ? h('button.mini', { title: m.pr.url, onclick: () => openPageTab({ url: m.pr.url }) }, m.pr.accion === 'nuevo' && !m.pr.numero ? '🔀 Crear PR' : `↗ Abrir PR${m.pr.numero ? ` #${m.pr.numero}` : ''}`) : null,
+      h(`button.mini.msg-copy${copied ? '.done' : ''}`, { title: 'Copiar con formato de WhatsApp (con el nombre de la sesión arriba)', onclick: () => msgCopy(m) }, copied ? '✓ Copiado' : `📋 Copiar${!m.pr && p ? ` para ${p.name.split(' ')[0]}` : ''}`),
+      h(`button.icon.mini.msg-sent${sent ? '.on' : ''}`, { title: sent ? 'Enviado · clic: volver a pendiente' : 'Marcar como enviado', onclick: () => msgSetSent(m, !sent) }, sent ? '✓' : '○')].filter(Boolean));
+  }
+  /** Al cambiar los mensajes (copiar, enviado, acción…), se repintan sus tarjetas en las vistas abiertas. */
+  function readerRefreshCards() {
+    for (const t of terms.values()) {
+      const r = t.reader;
+      if (!r || !r.cards) continue;
+      for (const [id, card] of r.cards) readerPaintCard(card, id);
+    }
+  }
+  function readerToolBody(tool) {
+    if (!tool.body) { tool.body = h('div.tr-tbody'); tool.el.append(tool.body); }
+    tool.body.replaceChildren(
+      tool.it.input ? h('pre.tr-in', tool.it.input) : null,
+      tool.res != null ? h(`pre.tr-out${tool.el.classList.contains('err') ? '.err' : ''}`, tool.res || '(sin salida)') : h('div.muted.tr-wait', 'Esperando el resultado…'));
+  }
+
   /** Menú del equipo por rol: asignar, quitar, agregar persona o ver el equipo. */
   function teamMenu(ev, t) {
     const cur = (t.info.meta || {}).person || null;

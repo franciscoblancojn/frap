@@ -3,6 +3,7 @@
 // CLI para agentes (skill frap-equipo): el equipo del usuario y a quién está asignada esta sesión.
 // Uso:
 //   node frap-team.js quien          persona asignada a la sesión de FRAP donde corre (rol y descripción)
+//   node frap-team.js sesion         ícono y nombre de la sesión de FRAP donde corre, en una línea (p. ej. para notas)
 //   node frap-team.js list           el equipo, por rol
 //   node frap-team.js show <nombre>  una persona (por nombre o id)
 
@@ -11,7 +12,7 @@ const path = require('path');
 const team = require('./team');
 
 const FRAP_HOME = process.env.FRAP_HOME || path.join(os.homedir(), '.config', 'frap');
-const USAGE = 'Uso:\n  frap-team quien\n  frap-team list\n  frap-team show <nombre>';
+const USAGE = 'Uso:\n  frap-team quien\n  frap-team sesion\n  frap-team list\n  frap-team show <nombre>';
 
 const card = (p) => `${p.icon || '👤'} ${p.name} — ${p.role}${p.descripcion ? `\n${p.descripcion.split('\n').map((l) => `   ${l}`).join('\n')}` : ''}`;
 
@@ -19,6 +20,12 @@ function main(argv) {
   const [cmd, ...rest] = argv;
   if (!cmd || cmd === 'help' || cmd === '--help') { console.log(USAGE); return; }
   const { people, roles } = team.load();
+  if (cmd === 'sesion' || cmd === 'sesión' || cmd === 'session') {
+    const s = team.currentSession(FRAP_HOME);
+    if (!s) { console.log('(esta terminal no es una sesión de FRAP)'); return; }
+    console.log(team.sessionLabel(s.meta || {}) || s.sid);
+    return;
+  }
   if (cmd === 'quien' || cmd === 'who') {
     const s = team.currentSession(FRAP_HOME);
     if (!s) { console.log('Esta terminal no es una sesión de FRAP (no se puede saber a quién está asignada).'); return; }
