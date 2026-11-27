@@ -1685,6 +1685,8 @@ const ops = {
     if (!messages.isMsgFile(f)) throw new Error('Solo archivos .md o .txt dentro de una carpeta mensajes/');
     const st = fs.statSync(f);
     if (!st.isFile() || st.size > 200 * 1024) throw new Error('No es un archivo de mensaje');
+    // solo los recién escritos: una ruta vieja que la IA vuelve a imprimir (al retomar la conversación) no es un mensaje nuevo
+    if (Date.now() - st.mtimeMs > 30 * 60 * 1000) return { msg: null, created: false, skipped: 'viejo' };
     const r = messages.importFile(f, fs.readFileSync(f, 'utf8'), session);
     broadcast({ ev: 'msgs' });
     return r;

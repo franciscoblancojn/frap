@@ -420,6 +420,19 @@ test('msgs.*: mensajes para personas y de PR en local/mensajes, estados, vincula
   fs.writeFileSync(pFile, 'Hola Marta, QA listo (corregido).\n');
   imp = await client.call('msgs.importFile', { path: pFile });
   assert.equal(imp.msg.texto, 'Hola Marta, QA listo (corregido).', 'si cambió, actualiza el texto');
+  // una ruta vieja que la IA vuelve a imprimir (p. ej. al retomar la conversación tras reiniciar) no se importa
+  const oldFile = path.join(mdir, '2026-11-25-marta-viejo.md');
+  fs.writeFileSync(oldFile, 'Mensaje de ayer');
+  fs.utimesSync(oldFile, new Date(Date.now() - 3600e3), new Date(Date.now() - 3600e3));
+  imp = await client.call('msgs.importFile', { path: oldFile });
+  assert.deepEqual([imp.created, imp.skipped], [false, 'viejo']);
+  // «copiado» se guarda en el mensaje (sobrevive a recargas) y se puede quitar
+  let cp = await client.call('msgs.save', { msg: { id: imp.msg ? imp.msg.id : a.id, copiedAt: '2026-11-27T10:00:00.000Z' } });
+  assert.equal(cp.copiedAt, '2026-11-27T10:00:00.000Z');
+  cp = await client.call('msgs.save', { msg: { id: cp.id, texto: 'Hola Marta, **QA** listo.\n\nGracias' } });
+  assert.equal(cp.copiedAt, '2026-11-27T10:00:00.000Z', 'editar no borra el «copiado»');
+  cp = await client.call('msgs.save', { msg: { id: cp.id, copiedAt: null } });
+  assert.equal(cp.copiedAt, null);
   fs.writeFileSync(path.join(root, 'proj-msgs', 'notas.md'), 'x');
   await assert.rejects(client.call('msgs.importFile', { path: path.join(root, 'proj-msgs', 'notas.md') }), /carpeta mensajes/);
   await assert.rejects(client.call('msgs.importFile', { path: '/etc/mensajes/x.md' }), /fuera de/);

@@ -585,7 +585,8 @@
     try {
       const res = await Bridge.call('session.attach', { sid: t.sid });
       t.term.reset();
-      if (res.buffer) t.term.write(res.buffer, () => requestAnimationFrame(() => termRepaint(t)));
+      // lo que ya estaba en la terminal (historial) queda como «visto»: el respaldo de Mensajes no lo importa
+      if (res.buffer) t.term.write(res.buffer, () => { requestAnimationFrame(() => termRepaint(t)); if (isAgentTerm(t)) msgFileScan(t, true); });
       t.info = { ...t.info, ...res };
       if (res.buffer) actionScan(t, res.buffer, true);
       if (!res.alive) t.term.write('\r\n\x1b[2m[proceso terminado]\x1b[0m\r\n');
@@ -5835,7 +5836,8 @@
   let msgsInfo = null; // respuesta de msgs.list
   let msgsSkillSynced = null;
   let msgOpen = null; // id del mensaje desplegado
-  const msgCopied = new Set(); // ids copiados en esta sesión de la página (el botón pasa a naranja)
+  const msgCopied = new Set(); // ids copiados recién (mientras se guarda); el estado guardado es m.copiedAt
+  const isCopied = (m) => !!m.copiedAt || msgCopied.has(m.id);
   const msgsOn = () => rtabOn('msgs');
   const MSG_PR_ACC = { review: ['👀', 'Pedir review'], aprobado: ['✅', 'Aprobado'], cambios: ['✏️', 'Pedir cambios'], comentario: ['💬', 'Comentario'], merge: ['🔀', 'Merge'], nuevo: ['🆕', 'Crear PR'] };
   async function loadMsgs() {
@@ -5860,8 +5862,14 @@
   const MSG_PR_URL_RE = /^https?:\/\/[^/]+\/[^/]+\/[^/]+\/(?:compare\/.+|pull\/(?:new\/.+|\d+)|pull-requests\/(?:new|\d+)|-\/merge_requests\/(?:new|\d+))/;
   const MSG_PR_DESC_RE = /(?:^|[\s'"`(<\[])((?:~|\/)[^\s'"`)<>\]]*\/(?:pr|mr)[-_][^\s'"`)<>\]/]*\.md)(?=$|[\s'"`)>\].,;:])/gi;
   const msgFileScanSoon = (t) => { if (!isAgentTerm(t) || !msgsOn()) return; clearTimeout(t.msgTimer); t.msgTimer = setTimeout(() => msgFileScan(t), 600); };
-  async function msgFileScan(t) {
-    if (!terms.has(t.sid) || !Bridge.ready) return;
+  /**
+   * `onlyMark`: solo marca como vistos los archivos y enlaces que hay en pantalla, sin importarlos. Se usa con el
+   * historial al adjuntar y en el primer minuto y medio de una sesión: al retomarse (claude --resume tras reiniciar)
+   * la IA vuelve a imprimir su conversación, y eso no son mensajes nuevos.
+   */
+  async function msgFileScan(t, onlyMark = false) {
+    if (!terms.has(t.sid) || (!Bridge.ready && !onlyMark)) return;
+    if (Date.now() - (t.info.created || 0) < 90000) onlyMark = true;
     const b = t.term.buffer.active;
     const end = Math.min(b.length, b.baseY + b.cursorY + 1);
     const lines = [];
@@ -5877,6 +5885,9 @@
     const text = lines.join('\n');
     MSG_FILE_PATH_RE.lastIndex = 0;
     while ((m = MSG_FILE_PATH_RE.exec(text))) found.add(m[1]);
+    t.prSeen = t.prSeen || new Set();
+    const prUrls = [...new Set((text.match(/https?:\/\/[^\s'"`<>)\]]+/g) || []).map((raw) => raw.replace(/[.,;:!?]+$/, '')).filter((u) => MSG_PR_URL_RE.test(u)))];
+    if (onlyMark) { for (const f of found) t.msgFiles.add(f); for (const u of prUrls) t.prSeen.add(u); return; }
     const mm = t.info.meta || {};
     const session = { sid: t.sid, projectId: mm.projectId || null, cwd: mm.cwd || '', title: termTitle(t), kind: termKind(t), ...(mm.agent ? { agent: mm.agent } : {}), ...(mm.icon ? { icon: mm.icon } : {}), ...(mm.person ? { person: mm.person } : {}) };
     for (const f of found) {
@@ -5893,13 +5904,11 @@
       }
     }
     // después de los archivos (traen más datos): enlaces de PR (para crearlo o uno existente): su mensaje de PR, con la descripción pr-*.md que nombre la IA
-    t.prSeen = t.prSeen || new Set();
     const descs = [];
     MSG_PR_DESC_RE.lastIndex = 0;
     while ((m = MSG_PR_DESC_RE.exec(text))) descs.push(m[1]);
-    for (const raw of text.match(/https?:\/\/[^\s'"`<>)\]]+/g) || []) {
-      const url = raw.replace(/[.,;:!?]+$/, '');
-      if (t.prSeen.has(url) || !MSG_PR_URL_RE.test(url)) continue;
+    for (const url of prUrls) {
+      if (t.prSeen.has(url)) continue;
       t.prSeen.add(url);
       const isNew = /\/compare\/|\/pull\/new\/|\/merge_requests\/new|\/pull-requests\/new/.test(url);
       try {
@@ -5929,6 +5938,8 @@
   function msgCopy(m) {
     copyText(msgClipboard(m));
     msgCopied.add(m.id);
+    // se guarda en el mensaje: el «copiado» sobrevive a recargar y reiniciar
+    if (m.id != null && Bridge.ready) Bridge.call('msgs.save', { msg: { id: m.id, copiedAt: new Date().toISOString() } }).then(() => loadMsgs()).catch(() => {});
     renderMessages();
     toast(`Mensaje${m.para ? ` para ${m.para}` : ''} copiado · cuando lo envíes, márcalo con ✓`, 'ok');
   }
@@ -6018,7 +6029,7 @@
     const all = (msgsInfo && msgsInfo.mensajes) || [];
     const pendingN = all.filter((m) => m.estado !== 'enviado').length;
     // los que copiaste (botón naranja) y siguen pendientes: marcarlos enviados de una vez
-    const copiedPending = all.filter((m) => m.estado !== 'enviado' && msgCopied.has(m.id));
+    const copiedPending = all.filter((m) => m.estado !== 'enviado' && isCopied(m));
     const head = section(`Mensajes${pendingN ? ` (${pendingN})` : ''}`,
       copiedPending.length ? h('button.mini.msg-sent-all', { title: `Marcar como enviados los mensajes que copiaste (${copiedPending.length}):\n${copiedPending.map((m) => `· ${m.titulo}`).join('\n')}`, 'aria-label': 'Marcar copiados como enviados', onclick: () => msgMarkCopiedSent(copiedPending) }, '✓✓') : null,
       h('button.mini.primary', { title: 'Nuevo mensaje', onclick: () => msgModal(null) }, '＋ Nuevo'));
@@ -6077,7 +6088,7 @@
       const sent = m.estado === 'enviado';
       const acc = m.pr ? MSG_PR_ACC[m.pr.accion] || ['🔀', 'PR'] : null;
       const si = m.session ? todoSessInfo(m) : null;
-      return h(`div.msg${sent ? '.sent' : ''}${open ? '.open' : ''}${msgCopied.has(m.id) ? '.copied' : ''}`, {
+      return h(`div.msg${sent ? '.sent' : ''}${open ? '.open' : ''}${isCopied(m) ? '.copied' : ''}`, {
         title: `#${m.id} · ${m.tipo === 'pr' ? `PR · ${acc[1]}` : 'Para una persona'}${m.para ? ` · para ${m.para}` : ''}${si ? `\nSesión: ${si.title}` : ''}\n${sent ? `Enviado ${String(m.sentAt || '').slice(0, 16).replace('T', ' ')}` : 'Pendiente de enviar'}\nClic: ver · doble clic: editar · clic derecho: más`,
         onclick: () => { msgOpen = open ? null : m.id; renderMessages(); },
         ondblclick: () => msgModal(m),
@@ -6091,7 +6102,7 @@
         p ? h('span.msg-to', { style: tp ? `color:${teamColor(tp)}` : '' }, tp ? teamAvatar(tp, '.sm') : '👤', ` ${p.name.split(' ')[0]}`) : null,
         m.pr ? h('a.msg-pr', { href: m.pr.url, title: `Abrir ${m.pr.url}`, onclick: (e) => { e.preventDefault(); e.stopPropagation(); openPageTab({ url: m.pr.url }); } }, m.pr.accion === 'nuevo' && !m.pr.numero ? '🔀 Crear PR' : `↗ PR${m.pr.numero ? ` #${m.pr.numero}` : ''}`) : null,
         h('span.grow'),
-        h(`button.mini.msg-copy${msgCopied.has(m.id) ? '.done' : ''}`, { title: 'Copiar con formato de WhatsApp (con el nombre de la sesión arriba)', onclick: (e) => { e.stopPropagation(); msgCopy(m); } }, msgCopied.has(m.id) ? '✓ Copiado' : '📋 Copiar'),
+        h(`button.mini.msg-copy${isCopied(m) ? '.done' : ''}`, { title: isCopied(m) ? `Copiado${m.copiedAt ? ` el ${new Date(m.copiedAt).toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : ''} · clic: copiar otra vez` : 'Copiar con formato de WhatsApp (con el nombre de la sesión arriba)', onclick: (e) => { e.stopPropagation(); msgCopy(m); } }, isCopied(m) ? '✓ Copiado' : '📋 Copiar'),
         h(`button.icon.mini.msg-sent${sent ? '.on' : ''}`, { title: sent ? 'Enviado · clic: volver a pendiente' : 'Marcar como enviado', onclick: (e) => { e.stopPropagation(); msgSetSent(m, !sent); } }, sent ? '✓' : '○')),
       open ? h('div.msg-detail',
         h('div.msg-body.md-body', mdBlocks(m.texto, (m.session && m.session.cwd) || '')),

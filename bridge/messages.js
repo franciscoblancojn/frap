@@ -117,6 +117,8 @@ function normalize(input, prev) {
     tipo, titulo, texto, para: dest.para, person: dest.person, pr,
     session: has('session') ? normSession(p.session) : prev ? prev.session || null : null,
     estado,
+    // cuándo lo copió el usuario (botón «Copiar»): sobrevive a recargas; null = no copiado
+    copiedAt: has('copiedAt') ? (p.copiedAt && !Number.isNaN(Date.parse(p.copiedAt)) ? new Date(p.copiedAt).toISOString() : null) : prev ? prev.copiedAt || null : null,
   };
 }
 
