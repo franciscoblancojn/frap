@@ -436,7 +436,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'alerts.status', 'alerts.set', 'remote.status', 'remote.start', 'remote.stop', 'remote.config', 'remote.kick', 'remote.block', 'remote.unblock', 'remote.rename', 'msgs.list', 'msgs.save', 'msgs.delete', 'msgs.importFile', 'msgs.importPr', 'msgs.setSkill', 'claude.transcript', 'claude.taskOutput', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'alerts.status', 'alerts.set', 'remote.status', 'remote.start', 'remote.stop', 'remote.config', 'remote.approve', 'remote.kick', 'remote.block', 'remote.unblock', 'remote.rename', 'msgs.list', 'msgs.save', 'msgs.delete', 'msgs.importFile', 'msgs.importPr', 'msgs.setSkill', 'claude.transcript', 'claude.taskOutput', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -10256,6 +10256,8 @@
   }
   Bridge.on('remote', (m) => {
     remoteInfo = m.status || remoteInfo;
+    if (m.request) remoteAsk(m.request);
+    if (remoteAskId && remoteInfo && !(remoteInfo.pending || []).some((d) => d.id === remoteAskId)) { if (modalClose && remoteAskOpen) { remoteAskOpen = false; modalClose(true); } remoteAskId = null; } // ya lo resolvió otro (o se fue)
     if (m.joined) toast(`📱 Se conectó al acceso remoto: ${m.joined.name}`, 'ok');
     if (m.status && !m.status.on && m.status.reason === 'inactividad') toast('📱 El acceso remoto se apagó por inactividad', 'ok');
     renderRemote();
@@ -10279,6 +10281,46 @@
       remoteInfo = cur.on && patch.mode && patch.mode !== cur.mode ? await Bridge.call('remote.start', { mode: patch.mode, autoOff: cur.autoOff }) : await Bridge.call('remote.config', patch);
     } catch (e) { toast(e.message, 'err'); }
     renderRemote();
+  }
+  // ----- aprobación: un dispositivo nuevo no entra hasta que lo aceptes -----
+  let remoteAskId = null;
+  let remoteAskOpen = false;
+  function remoteAsk(dev) {
+    try { chime(true); } catch (_) { /* sin audio */ }
+    try { if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) new Notification('📱 Un dispositivo pide entrar a FRAP', { body: `${dev.name} · ${dev.ip}`, requireInteraction: true }); } catch (_) { /* nada */ }
+    if (modalClose && !remoteAskOpen) { toast(`📱 ${dev.name} (${dev.ip}) pide entrar: apruébalo en la pestaña Remoto`, 'ok'); renderRemote(); return; } // no se pisa otro modal
+    remoteAskModal(dev);
+  }
+  function remoteAskModal(dev) {
+    remoteAskId = dev.id;
+    remoteAskOpen = true;
+    const row = (k, v) => (v ? h('div.remote-kv', h('span.muted', k), h('span', v)) : null);
+    const next = () => { remoteAskOpen = false; remoteAskId = null; const p = (remoteInfo && remoteInfo.pending) || []; if (p.length) setTimeout(() => remoteAskModal(p[0]), 200); };
+    const act = async (op) => {
+      try { remoteInfo = await Bridge.call(op, { id: dev.id }); toast(op === 'remote.approve' ? `📱 ${dev.name} entró` : op === 'remote.block' ? `${dev.name} bloqueado` : `${dev.name} rechazado`, 'ok'); } catch (e) { toast(e.message, 'err'); }
+      remoteAskOpen = false;
+      if (modalClose) modalClose(true); // puede haberlo cerrado ya el aviso del bridge
+      renderRemote();
+      next();
+    };
+    openModal({
+      title: '📱 Un dispositivo quiere entrar a FRAP',
+      onClose: () => { remoteAskOpen = false; remoteAskId = null; },
+      body: [
+        h('p.muted', { style: 'margin:0 0 10px' }, 'Escaneó el QR del acceso remoto. No puede hacer nada hasta que lo aceptes. Si no lo reconoces, bloquéalo.'),
+        h('div.remote-kvs',
+          row('Dispositivo', dev.name !== dev.label ? `${dev.name} (${dev.label})` : dev.label),
+          row('Modelo', dev.model), row('Sistema', dev.os), row('IP', dev.ip), row('Idioma', dev.lang), row('Pantalla', dev.screen), row('Zona horaria', dev.tz),
+          row('Hora', new Date(dev.since).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', second: '2-digit' })),
+          dev.ua ? h('details.remote-ua', h('summary.muted', 'Navegador (user agent)'), h('code', dev.ua)) : null),
+      ],
+      foot: [
+        h('button', { title: 'Cerrar sin decidir: sigue esperando en la pestaña Remoto', onclick: () => { remoteAskOpen = false; remoteAskId = null; if (modalClose) modalClose(true); } }, 'Ahora no'),
+        h('span.grow'),
+        h('button.danger', { title: 'No dejarlo entrar nunca más (aunque escanee un QR nuevo)', onclick: () => act('remote.block') }, 'Bloquear'),
+        h('button.primary', { onclick: () => act('remote.approve') }, 'Aceptar'),
+      ],
+    });
   }
   function remoteRename(d) {
     const name = h('input', { value: d.name, placeholder: d.label, maxlength: '60' });
@@ -10324,11 +10366,20 @@
         h('div.remote-url', h('span.mono', r.url.replace(/#.*/, '')), h('button.icon.mini', { title: 'Copiar el enlace (con la clave)', onclick: () => { copyText(r.url); toast('Enlace copiado (lleva la clave: no lo compartas)', 'ok'); } }, '⧉')),
         h('div.muted.remote-hint', `Escanéalo con la cámara del celular${r.mode === 'local' ? ' (en la misma Wi-Fi)' : ''}. Cada vez que enciendes, el QR cambia.${left != null && r.autoOff.on ? ` Se apaga en ~${left} min sin uso.` : ''}`)));
     } else if (!active && !remoteBusy) body.push(h('div.muted.remote-hint', 'Apagado: no hay QR y nadie puede entrar. Al encenderlo se crea un QR nuevo.'));
+    if (active && (r.pending || []).length) {
+      body.push(h('div.remote-sub.remote-sub-wait', `⏳ Esperando aprobación (${r.pending.length})`));
+      body.push(h('div.remote-list', r.pending.map((d) => h('div.remote-dev.wait',
+        h('div.remote-devn', h('b', d.name), h('div.muted', `${d.ip}${d.model ? ` · ${d.model}` : ''}${d.os ? ` · ${d.os}` : ''}`)),
+        h('button.mini', { title: 'Ver los datos del dispositivo', onclick: () => remoteAskModal(d) }, 'Ver'),
+        h('button.mini', { title: 'No dejarlo entrar ahora (puede volver a intentarlo)', onclick: async () => { try { remoteInfo = await Bridge.call('remote.kick', { id: d.id }); renderRemote(); } catch (e) { toast(e.message, 'err'); } } }, 'Rechazar'),
+        h('button.mini.danger', { onclick: async () => { try { remoteInfo = await Bridge.call('remote.block', { id: d.id }); renderRemote(); } catch (e) { toast(e.message, 'err'); } } }, 'Bloquear'),
+        h('button.mini.primary', { onclick: async () => { try { remoteInfo = await Bridge.call('remote.approve', { id: d.id }); renderRemote(); } catch (e) { toast(e.message, 'err'); } } }, 'Aceptar')))));
+    }
     if (active) {
       body.push(h('div.remote-sub', `Conectados (${r.connected.length})`));
       body.push(r.connected.length ? h('div.remote-list', r.connected.map((d) => h('div.remote-dev',
         h('div.remote-devn', h('b', d.name), d.name !== d.label ? h('span.muted', ` · ${d.label}`) : null,
-          h('div.muted', `desde ${new Date(d.since).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })} · último uso ${new Date(d.last).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}`)),
+          h('div.muted', `${d.ip ? `${d.ip} · ` : ''}desde ${new Date(d.since).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })} · último uso ${new Date(d.last).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}`)),
         h('button.icon.mini', { title: 'Ponerle un nombre', onclick: () => remoteRename(d) }, '✎'),
         h('button.mini', { title: 'Desconectarlo ahora (puede volver a entrar con el QR)', onclick: async () => { try { remoteInfo = await Bridge.call('remote.kick', { id: d.id }); renderRemote(); } catch (e) { toast(e.message, 'err'); } } }, 'Sacar'),
         h('button.mini.danger', { title: 'Desconectarlo y no dejarlo entrar nunca más (aunque escanee un QR nuevo)', onclick: async () => { if (!(await confirmBox(`¿Bloquear «${d.name}»?`, 'Se desconecta y no podrá volver a entrar hasta que lo desbloquees.'))) return; try { remoteInfo = await Bridge.call('remote.block', { id: d.id }); renderRemote(); } catch (e) { toast(e.message, 'err'); } } }, 'Bloquear')))) : h('div.integ-empty', 'Nadie conectado todavía.'));

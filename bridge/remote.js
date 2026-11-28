@@ -4,8 +4,9 @@
 //   - modo «local»: escucha en la IP de la Wi-Fi (http://<ip>:<puerto>/m);
 //   - modo «remoto»: escucha en 127.0.0.1 y la publica un túnel (tunnels.js: cloudflared / localhost.run / ngrok).
 // Cada encendido crea una clave nueva (va en el QR, en el fragmento #k=… para que no viaje en la URL); apagar la invalida
-// y desconecta a todos. Cada celular se identifica con un id al azar que guarda su navegador: se puede sacar (ahora) o
-// bloquear (para siempre). Se apaga sola tras N minutos sin uso (por defecto 5).
+// y desconecta a todos. Cada celular se identifica con un id al azar que guarda su navegador. No entra directo: queda
+// «esperando aprobación» hasta que el administrador lo acepta en la laptop (vale mientras siga encendido); se puede
+// sacar (ahora) o bloquear (para siempre). Se apaga sola tras N minutos sin uso (por defecto 5).
 // El celular solo puede lo de la IA en las sesiones que ya existen: ver la conversación, escribirle, aprobar permisos,
 // interrumpir, ver lo que corre en segundo plano y los Mensajes. No crea, cierra ni edita carpetas, secciones,
 // sesiones ni módulos; nada de shell, BD, SSH ni archivos sueltos (lista blanca en `handle`).
@@ -26,7 +27,8 @@ const FORCE_HOST = process.env.FRAP_REMOTE_HOST || ''; // tests: solo 127.0.0.1
 let deps = null; // {frapHome, srcDir, sessions(), sessionInfo(s), attach(sid), write(sid, data), transcript(conv, cwd, since), taskOutput(file), messages, readState(), tunnels, notify(ev)}
 const R = {
   on: false, mode: 'local', key: null, server: null, port: 0, url: null, host: null, status: 'off', error: null, reason: null,
-  startedAt: 0, lastActivity: 0, timer: null, clients: new Map(), // id → {conn, device, since, last, watch: Set}
+  startedAt: 0, lastActivity: 0, timer: null, clients: new Map(), // id → {conn, device, since, last, watch: Set, pending}
+  approved: new Set(), // dispositivos aprobados en este encendido (al apagar o sacarlos, se vuelve a pedir)
 };
 
 // ---------- configuración (FRAP_HOME/remote.json): modo, apagado automático, bloqueados y nombres ----------
@@ -66,7 +68,8 @@ function status() {
     on: R.on, status: R.status, mode: R.on ? R.mode : c.mode, url: R.url, error: R.error, reason: R.reason, startedAt: R.startedAt,
     autoOff: c.autoOff, lastActivity: R.lastActivity,
     offAt: R.on && c.autoOff.on ? R.lastActivity + c.autoOff.minutes * 60000 : null,
-    connected: [...R.clients.values()].map((cl) => ({ id: cl.device.id, label: cl.device.label, name: name(cl.device.id, cl.device.label), since: cl.since, last: cl.last })),
+    connected: [...R.clients.values()].filter((cl) => !cl.pending).map((cl) => ({ id: cl.device.id, label: cl.device.label, name: name(cl.device.id, cl.device.label), since: cl.since, last: cl.last, ip: cl.device.ip })),
+    pending: [...R.clients.values()].filter((cl) => cl.pending).map((cl) => ({ ...cl.device, name: name(cl.device.id, cl.device.label), since: cl.since })),
     blocked: c.blocked.map((b) => ({ ...b, name: name(b.id, b.label) })),
     lan: lanIp(),
   };
@@ -82,6 +85,7 @@ async function start(opts = {}) {
   if (R.on) stop('reinicio', { silent: true });
   R.mode = c.mode;
   R.key = crypto.randomBytes(24).toString('base64url'); // clave nueva en cada encendido (la del QR)
+  R.approved = new Set();
   R.error = null; R.reason = null; R.url = null; R.status = 'starting';
   R.on = true;
   R.startedAt = Date.now();
@@ -127,7 +131,7 @@ function stop(reason = 'apagado', { silent = false } = {}) {
   R.clients.clear();
   if (R.server) { try { R.server.close(); } catch (_) { /* ya cerrado */ } if (R.server.closeAllConnections) R.server.closeAllConnections(); R.server = null; }
   if (R.mode === 'remote' && deps && deps.tunnels) { try { deps.tunnels.stop('frap-remote'); } catch (_) { /* sin túnel */ } }
-  R.key = null; R.url = null; R.port = 0;
+  R.key = null; R.url = null; R.port = 0; R.approved = new Set();
   if (!silent) changed();
   return status();
 }
@@ -151,7 +155,8 @@ function bye(cl, reason) {
 }
 function kick(id) {
   const cl = R.clients.get(id);
-  if (cl) { bye(cl, 'La laptop te desconectó. Escanea el QR otra vez para volver a entrar.'); R.clients.delete(id); }
+  R.approved.delete(id); // la próxima vez hay que aprobarlo otra vez
+  if (cl) { bye(cl, cl.pending ? 'La laptop no aprobó tu conexión.' : 'La laptop te desconectó. Escanea el QR otra vez para volver a entrar.'); R.clients.delete(id); }
   changed();
   return status();
 }
@@ -160,9 +165,25 @@ function block(id) {
   const cl = R.clients.get(id);
   if (!c.blocked.some((b) => b.id === id)) c.blocked.push({ id, label: cl ? cl.device.label : 'Dispositivo', at: new Date().toISOString() });
   saveCfg(c);
+  R.approved.delete(id);
   if (cl) { bye(cl, 'Este dispositivo está bloqueado en la laptop.'); R.clients.delete(id); }
   changed();
   return status();
+}
+/** Aceptar a un dispositivo que espera aprobación: entra y no se le vuelve a preguntar en este encendido. */
+function approve(id) {
+  const cl = R.clients.get(id);
+  if (!cl || !cl.pending) throw new Error('Ese dispositivo ya no está esperando');
+  cl.pending = false;
+  R.approved.add(id);
+  R.lastActivity = Date.now();
+  welcome(cl);
+  changed();
+  return status();
+}
+function welcome(cl) {
+  cl.conn.send(JSON.stringify({ ev: 'hello', device: { id: cl.device.id, label: cl.device.label }, autoOff: loadCfg().autoOff }));
+  if (deps) deps.notify({ ev: 'remote', status: status(), joined: { id: cl.device.id, label: cl.device.label, name: loadCfg().names[cl.device.id] || cl.device.label } });
 }
 function unblock(id) {
   const c = loadCfg();
@@ -226,11 +247,25 @@ function onUpgrade(req, socket, head) {
       if (loadCfg().blocked.some((b) => b.id === id)) { conn.send(JSON.stringify({ ev: 'bye', reason: 'Este dispositivo está bloqueado en la laptop.' })); setTimeout(() => conn.close(), 50); return; }
       const prev = R.clients.get(id);
       if (prev) { try { prev.conn.close(); } catch (_) { /* cerrado */ } }
-      cl = { conn, device: { id, label: String(d.label || 'Celular').slice(0, 80) }, since: Date.now(), last: Date.now(), watch: new Set() };
+      const str = (v, n) => String(v == null ? '' : v).replace(/[\u0000-\u001f]/g, '').slice(0, n);
+      // IP real: en modo túnel la conexión viene de 127.0.0.1 y el túnel anota la del celular
+      const fwd = R.mode === 'remote' ? String(req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || '').split(',')[0].trim() : '';
+      const ip = fwd || String(socket.remoteAddress || '').replace(/^::ffff:/, '');
+      const device = {
+        id, label: str(d.label || 'Celular', 80), ip,
+        ua: str(d.ua || req.headers['user-agent'], 300), model: str(d.model, 80), os: str(d.os, 80),
+        lang: str(d.lang, 40), screen: str(d.screen, 40), tz: str(d.tz, 60),
+      };
+      cl = { conn, device, since: Date.now(), last: Date.now(), watch: new Set(), pending: !R.approved.has(id) };
       R.clients.set(id, cl);
+      if (cl.pending) {
+        // no entra hasta que el administrador lo apruebe en la laptop
+        conn.send(JSON.stringify({ ev: 'pending', reason: 'El administrador tiene que aprobar tu conexión en la laptop.' }));
+        if (deps) deps.notify({ ev: 'remote', status: status(), request: { ...device, name: loadCfg().names[id] || device.label, since: cl.since } });
+        return;
+      }
       R.lastActivity = Date.now();
-      conn.send(JSON.stringify({ ev: 'hello', device: cl.device, autoOff: loadCfg().autoOff }));
-      if (deps) deps.notify({ ev: 'remote', status: status(), joined: { id, label: cl.device.label, name: loadCfg().names[id] || cl.device.label } });
+      welcome(cl);
       return;
     }
     if (R.clients.get(cl.device.id) !== cl) return; // lo sacaron
@@ -253,6 +288,7 @@ function agentSession(sid) {
   return s;
 }
 function handle(cl, op, a) {
+  if (cl.pending) throw new Error('Esperando que el administrador apruebe tu conexión');
   cl.last = Date.now();
   if (USER_OPS.has(op) && (op !== 'state' || a.user)) R.lastActivity = Date.now();
   switch (op) {
@@ -318,12 +354,13 @@ function handle(cl, op, a) {
 function forward(msg) {
   if (!R.on || !R.clients.size || !msg || !msg.ev) return;
   for (const cl of R.clients.values()) {
+    if (cl.pending) continue;
     if (msg.ev === 'out' || msg.ev === 'exit') { if (cl.watch.has(msg.sid)) cl.conn.send(JSON.stringify(msg)); }
     else if (msg.ev === 'sessions' || msg.ev === 'notice' || msg.ev === 'msgs') cl.conn.send(JSON.stringify({ ev: msg.ev, sid: msg.sid }));
   }
 }
 
 module.exports = {
-  init: (d) => { deps = d; }, status, start, stop, config, kick, block, unblock, rename, forward, handle, lanIp,
+  init: (d) => { deps = d; }, status, start, stop, config, kick, block, unblock, approve, rename, forward, handle, lanIp,
   _state: R,
 };

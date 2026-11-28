@@ -230,7 +230,18 @@ details.tool pre { margin: 4px 0 6px 18px; max-height: 260px; overflow: auto; ba
       sock.send(JSON.stringify({ id, op, args: args || {} }));
     });
   }
+  /** Esperando que el administrador apruebe la conexión en la laptop. */
+  function waiting(msg) {
+    $('#off .big').textContent = '⏳';
+    $('#off h2').textContent = 'Esperando aprobación';
+    $('#offmsg').textContent = msg || 'El administrador tiene que aprobar tu conexión en la laptop.';
+    $('#retry').classList.add('hidden');
+    $('#off').classList.remove('hidden');
+    $('#dot').classList.remove('on');
+  }
   function offline(msg, canRetry) {
+    $('#off .big').textContent = '📴';
+    $('#off h2').textContent = 'Desconectado';
     $('#offmsg').textContent = msg;
     $('#retry').classList.toggle('hidden', !canRetry);
     $('#off').classList.remove('hidden');
@@ -240,11 +251,19 @@ details.tool pre { margin: 4px 0 6px 18px; max-height: 260px; overflow: auto; ba
   function connect() {
     if (!KEY) { offline('Abre esta página escaneando el QR del módulo Remoto en la laptop.', false); ended = true; return; }
     sock = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-    sock.onopen = () => sock.send(JSON.stringify({ op: 'hello', key: KEY, device: { id: DEV, label: LABEL } }));
+    sock.onopen = async () => {
+      // datos para que el administrador reconozca el dispositivo al aprobarlo
+      const info = { id: DEV, label: LABEL, ua, lang: navigator.language || '', screen: `${screen.width}×${screen.height}`, tz: (Intl.DateTimeFormat().resolvedOptions() || {}).timeZone || '' };
+      try { if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) { const v = await navigator.userAgentData.getHighEntropyValues(['model', 'platform', 'platformVersion']); info.model = v.model || ''; info.os = [v.platform, v.platformVersion].filter(Boolean).join(' '); } } catch (_) { /* no disponible */ }
+      if (!info.os) { const m = ua.match(/Android [\d.]+|iPhone OS [\d_]+|CPU OS [\d_]+/); info.os = m ? m[0].replace(/_/g, '.').replace('iPhone OS', 'iOS').replace('CPU OS', 'iPadOS') : ''; }
+      if (!info.model) { const m = ua.match(/Android [\d.]+; ([^;)]+)/); info.model = m && m[1].trim() !== 'K' ? m[1].trim() : /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : ''; }
+      sock.send(JSON.stringify({ op: 'hello', key: KEY, device: info }));
+    };
     sock.onmessage = (e) => {
       const m = JSON.parse(e.data);
       if (m.re != null) { const p = pend.get(m.re); if (p) { pend.delete(m.re); m.ok ? p.resolve(m.data) : p.reject(new Error(m.error)); } return; }
       if (m.ev === 'hello') { ready = true; retries = 0; $('#off').classList.add('hidden'); $('#dot').classList.add('on'); loadState(); ping(); if (view.sid) openChat(view.sid, true); return; }
+      if (m.ev === 'pending') { ended = false; ready = false; waiting(m.reason); return; }
       if (m.ev === 'bye') { ended = true; ready = false; offline(m.reason || 'El acceso remoto se apagó en la laptop.', false); return; }
       onEvent(m);
     };

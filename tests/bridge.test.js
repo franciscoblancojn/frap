@@ -342,29 +342,43 @@ test('remote.*: puerta para el celular (QR): clave por encendido, Origin, dispos
   };
   const bad = await phone('dispositivo-0001', 'clave-incorrecta-0000000000');
   assert.match((await bad.wait((e) => e.ev === 'bye')).reason, /QR ya no sirve/);
+  // no entra directo: espera a que el administrador lo apruebe
+  const askEv = client.waitFor((e) => e.ev === 'remote' && e.request && e.request.id === 'dispositivo-0001', 4000);
   const p1 = await phone('dispositivo-0001');
-  await p1.wait((e) => e.ev === 'hello');
+  assert.match((await p1.wait((e) => e.ev === 'pending')).reason, /administrador tiene que aprobar/);
+  const ask = (await askEv).request;
+  assert.deepEqual([ask.label, ask.ip], ['Android · Chrome', '127.0.0.1']);
+  await assert.rejects(p1.call('state', {}), /apruebe tu conexión/);
   st = await client.call('remote.status');
+  assert.deepEqual([st.connected.length, st.pending.map((x) => x.id)], [0, ['dispositivo-0001']]);
+  st = await client.call('remote.approve', { id: 'dispositivo-0001' });
+  await p1.wait((e) => e.ev === 'hello');
   assert.deepEqual(st.connected.map((x) => [x.id, x.label]), [['dispositivo-0001', 'Android · Chrome']]);
+  await assert.rejects(client.call('remote.approve', { id: 'dispositivo-0001' }), /ya no está esperando/);
+  // aprobado en este encendido: si se reconecta (recarga, red) entra sin preguntar
+  const p1b = await phone('dispositivo-0001');
+  await p1b.wait((e) => e.ev === 'hello');
   // lista blanca: solo sesiones de IA; nada de fs, ni crear/cerrar
   const shell = await client.call('session.create', { cwd: root, meta: { kind: 'shell', projectId: 'p1', title: 'shell' } });
   const ai = await client.call('session.create', { cwd: root, cmd: ['/bin/sh'], meta: { kind: 'claude', projectId: 'p1', title: 'IA remota', agent: { tool: 'claude', session: '11111111-1111-4111-8111-111111111111' } } });
   try {
-    const state = await p1.call('state', {});
+    const state = await p1b.call('state', {});
     assert.ok(state.sessions.some((x) => x.sid === ai.sid && x.agent && x.title === 'IA remota'));
-    await assert.rejects(p1.call('input', { sid: shell.sid, data: 'ls\r' }), /solo se usan las sesiones de IA/);
-    for (const op of ['fs.read', 'session.create', 'session.kill', 'remote.stop', 'git.run']) await assert.rejects(p1.call(op, {}), /no permitida/);
+    await assert.rejects(p1b.call('input', { sid: shell.sid, data: 'ls\r' }), /solo se usan las sesiones de IA/);
+    for (const op of ['fs.read', 'session.create', 'session.kill', 'remote.stop', 'git.run']) await assert.rejects(p1b.call(op, {}), /no permitida/);
     // mira la sesión: recibe su salida en vivo; lo que escribe llega a la terminal
-    const w = await p1.call('watch', { sid: ai.sid });
+    const w = await p1b.call('watch', { sid: ai.sid });
     assert.equal(typeof w.buffer, 'string');
-    await p1.call('input', { sid: ai.sid, data: 'echo DESDE-EL-CEL\r' });
-    await p1.wait((e) => e.ev === 'out' && e.sid === ai.sid && /DESDE-EL-CEL/.test(e.d));
+    await p1b.call('input', { sid: ai.sid, data: 'echo DESDE-EL-CEL\r' });
+    await p1b.wait((e) => e.ev === 'out' && e.sid === ai.sid && /DESDE-EL-CEL/.test(e.d));
     await client.waitOutput(ai.sid, /DESDE-EL-CEL/);
-    assert.equal((await p1.call('transcript', { sid: ai.sid })).file, null);
+    assert.equal((await p1b.call('transcript', { sid: ai.sid })).file, null);
     // sacar: sale ahora, pero puede volver con el mismo QR
     await client.call('remote.kick', { id: 'dispositivo-0001' });
-    assert.match((await p1.wait((e) => e.ev === 'bye')).reason, /te desconectó/);
+    assert.match((await p1b.wait((e) => e.ev === 'bye')).reason, /te desconectó/);
     const p2 = await phone('dispositivo-0001');
+    await p2.wait((e) => e.ev === 'pending'); // al sacarlo se le quita la aprobación
+    await client.call('remote.approve', { id: 'dispositivo-0001' });
     await p2.wait((e) => e.ev === 'hello');
     // bloquear: para siempre (también con un QR nuevo) hasta desbloquearlo
     await client.call('remote.rename', { id: 'dispositivo-0001', name: 'Mi celular' });
@@ -375,7 +389,15 @@ test('remote.*: puerta para el celular (QR): clave por encendido, Origin, dispos
     assert.match((await p3.wait((e) => e.ev === 'bye')).reason, /bloqueado/);
     await client.call('remote.unblock', { id: 'dispositivo-0001' });
     const p4 = await phone('dispositivo-0001');
+    await p4.wait((e) => e.ev === 'pending');
+    await client.call('remote.approve', { id: 'dispositivo-0001' });
     await p4.wait((e) => e.ev === 'hello');
+    // bloquear a uno que espera aprobación
+    const p5 = await phone('dispositivo-0005');
+    await p5.wait((e) => e.ev === 'pending');
+    await client.call('remote.block', { id: 'dispositivo-0005' });
+    assert.match((await p5.wait((e) => e.ev === 'bye')).reason, /bloqueado/);
+    await client.call('remote.unblock', { id: 'dispositivo-0005' });
     // apagar: todos fuera; al volver a encender la clave cambia y la vieja no sirve
     await client.call('remote.stop', {});
     assert.match((await p4.wait((e) => e.ev === 'bye')).reason, /se apagó/);

@@ -122,6 +122,12 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .remote-dev { display: flex; align-items: center; gap: 5px; padding: 5px 6px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); }
 .remote-devn { flex: 1; min-width: 0; overflow: hidden; }
 .remote-devn .muted { font-size: 10.5px; }
+.remote-sub-wait { color: var(--warn, #e0af68); }
+.remote-dev.wait { border-color: color-mix(in srgb, var(--warn, #e0af68) 60%, var(--line)); flex-wrap: wrap; }
+.remote-dev.wait .remote-devn { flex: 1 1 100%; }
+.remote-kvs { display: flex; flex-direction: column; gap: 4px; }
+.remote-kv { display: grid; grid-template-columns: 110px 1fr; gap: 8px; font-size: 13px; }
+.remote-ua code { display: block; margin-top: 4px; font-size: 11px; word-break: break-all; white-space: pre-wrap; }
 /* Mensajes (pestaña del panel derecho): para personas y de PR */
 .msg-filters { display: flex; flex-direction: column; gap: 4px; margin: 2px 2px 6px; }
 .msg-frow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; }

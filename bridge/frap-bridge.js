@@ -1782,6 +1782,8 @@ const ops = {
   'remote.stop': () => remote.stop('apagado'),
   /** Modo y apagado automático (sin encender). */
   'remote.config': (a = {}) => remote.config({ mode: a.mode, autoOff: a.autoOff }),
+  /** Aceptar a un dispositivo que espera aprobación (entra y no se le vuelve a preguntar en este encendido). */
+  'remote.approve': ({ id }) => remote.approve(String(id || '')),
   'remote.kick': ({ id }) => remote.kick(String(id || '')),
   'remote.block': ({ id }) => remote.block(String(id || '')),
   'remote.unblock': ({ id }) => remote.unblock(String(id || '')),
