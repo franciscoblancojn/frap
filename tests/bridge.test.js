@@ -495,6 +495,29 @@ test('claude.transcript: vista de lectura (mensajes, herramientas y resultados),
   assert.equal((await client.call('claude.transcript', { conv })).items.length, 7);
   await assert.rejects(client.call('claude.transcript', { conv: '../../etc/passwd' }), /inválida/);
   assert.equal((await client.call('claude.transcript', { conv: '33333333-3333-4333-8333-333333333333' })).file, null);
+  // en segundo plano: el Bash lleva bg y el aviso <task-notification> llega como bgdone
+  const bgConv = '99999999-9999-4999-8999-999999999999';
+  const taskFile = path.join(os.tmpdir(), `claude-${process.getuid()}`, 'proj-read', bgConv, 'tasks', 'b7m9xk.output');
+  fs.writeFileSync(path.join(dir, `${bgConv}.jsonl`), [
+    L({ type: 'assistant', uuid: 'b1', message: { content: [{ type: 'tool_use', id: 'tb1', name: 'Bash', input: { command: 'npm test', run_in_background: true, description: 'Tests largos' } }] } }),
+    L({ type: 'user', uuid: 'b2', message: { content: [{ type: 'tool_result', tool_use_id: 'tb1', content: `Command running in background with ID: b7m9xk. Output is being written to: ${taskFile}. You will be notified when it completes` }] } }),
+    L({ type: 'user', uuid: 'b3', message: { role: 'user', content: `<task-notification>\n<task-id>b7m9xk</task-id>\n<tool-use-id>tb1</tool-use-id>\n<output-file>${taskFile}</output-file>\n<status>completed</status>\n<summary>Tests: 69 en verde</summary>\n</task-notification>` } }),
+  ].join(''));
+  d = await client.call('claude.transcript', { conv: bgConv, cwd });
+  assert.deepEqual(d.items.map((i) => [i.k, i.bg || i.status || '']), [['tool', true], ['res', ''], ['bgdone', 'completed']]);
+  assert.deepEqual([d.items[2].id, d.items[2].summary, d.items[2].file], ['tb1', 'Tests: 69 en verde', taskFile]);
+  // su salida: solo los .output de claude en /tmp/claude-<uid>/…/tasks/
+  fs.mkdirSync(path.dirname(taskFile), { recursive: true });
+  fs.writeFileSync(taskFile, 'linea 1\nlinea 2\n');
+  try {
+    assert.equal((await client.call('claude.taskOutput', { file: taskFile })).text, 'linea 1\nlinea 2\n');
+    assert.equal((await client.call('claude.taskOutput', { file: taskFile.replace('b7m9xk', 'otro') })).missing, true);
+    await assert.rejects(client.call('claude.taskOutput', { file: '/etc/passwd' }), /Solo se leen/);
+    await assert.rejects(client.call('claude.taskOutput', { file: path.join(path.dirname(taskFile), '..', '..', '..', '..', 'x.output') }), /Solo se leen/);
+    const link = path.join(path.dirname(taskFile), 'link.output');
+    fs.symlinkSync('/etc/hostname', link);
+    await assert.rejects(client.call('claude.taskOutput', { file: link }), /inválida/);
+  } finally { fs.rmSync(path.join(os.tmpdir(), `claude-${process.getuid()}`, 'proj-read'), { recursive: true, force: true }); }
   // grande: la primera vez solo el final, empezando en una línea completa
   const big = path.join(dir, '44444444-4444-4444-8444-444444444444.jsonl');
   const filler = L({ type: 'assistant', uuid: 'f', message: { content: [{ type: 'text', text: 'x'.repeat(1000) }] } });

@@ -436,7 +436,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'alerts.status', 'alerts.set', 'msgs.list', 'msgs.save', 'msgs.delete', 'msgs.importFile', 'msgs.importPr', 'msgs.setSkill', 'claude.transcript', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'alerts.status', 'alerts.set', 'msgs.list', 'msgs.save', 'msgs.delete', 'msgs.importFile', 'msgs.importPr', 'msgs.setSkill', 'claude.transcript', 'claude.taskOutput', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -6206,7 +6206,10 @@
       r.input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); readerSend(t); }
       });
-      r.el = h('div.term-reader', r.list,
+      // barra de estado: la línea de abajo de claude (modo, procesos en segundo plano…) y la lista de esos procesos
+      r.bgList = h('div.tr-bg-list.hidden');
+      r.bgBar = h('div.tr-bg', { title: 'Estado de claude (su línea de abajo en la terminal)' });
+      r.el = h('div.term-reader', r.list, r.bgList, r.bgBar,
         h('div.tr-compose', r.input,
           h('button.mini', { title: 'Enviar a la terminal (Enter)', onclick: () => readerSend(t) }, '➤'),
           h('button.mini', { title: 'Interrumpir a claude (Esc en la terminal)', onclick: () => Bridge.send('session.input', { sid: t.sid, data: '\x1b' }) }, '■')));
@@ -6243,7 +6246,7 @@
     if (!r.open || !terms.has(t.sid)) return;
     const conv = ((t.info.meta || {}).agent || {}).session || '';
     if (reset || conv !== r.conv) {
-      r.conv = conv; r.next = undefined; r.tools = new Map(); r.lastTools = null; r.seen = new Set(); r.pending = []; r.cards = new Map(); r.ask = null; r.askKey = '';
+      r.conv = conv; r.next = undefined; r.tools = new Map(); r.lastTools = null; r.seen = new Set(); r.pending = []; r.cards = new Map(); r.ask = null; r.askKey = ''; r.bg = new Map(); r.bgKey = '';
       r.list.replaceChildren(h('div.tr-note.muted', conv ? 'Cargando la conversación…' : 'Esperando a que claude anote su conversación (unos segundos después de empezar)…'));
       r.stick = true;
     }
@@ -6268,11 +6271,27 @@
     for (const it of items) {
       if (it.id && r.seen.has(`${it.k}:${it.id}`)) continue;
       if (it.id) r.seen.add(`${it.k}:${it.id}`);
+      if (it.k === 'bgdone') {
+        const b = r.bg.get(it.id) || { id: it.id, name: 'Agente', title: '' };
+        Object.assign(b, { status: it.status || 'completed', summary: it.summary || b.summary, file: it.file || b.file, done: it.ts });
+        r.bg.set(it.id, b);
+        const tool = r.tools.get(it.id);
+        if (tool) { tool.st.textContent = /fail|error|kill/i.test(b.status) ? '✗' : '✓'; tool.el.classList.toggle('bg-run', false); }
+        continue;
+      }
       if (it.k === 'res') {
         const tool = r.tools.get(it.id);
+        // lanzado en segundo plano: «running in background with ID: … Output is being written to: <archivo>»
+        const bgm = String(it.text || '').match(/running in (?:the )?background[\s\S]*?(?:written to|output[_ -]?file)[:\s]+(\S+?\.output)/i) || String(it.text || '').match(/(\/tmp\/claude-[^\s]+\/tasks\/[\w.-]+\.output)/);
+        if (tool && (tool.it.bg || bgm)) {
+          const b = r.bg.get(it.id) || { id: it.id, name: tool.it.name, title: tool.it.title, input: tool.it.input, status: 'running' };
+          if (bgm) b.file = bgm[1];
+          r.bg.set(it.id, b);
+          if (b.status === 'running') { tool.el.classList.add('bg-run'); }
+        }
         if (!tool) continue;
         tool.el.classList.add(it.err ? 'err' : 'ok');
-        tool.st.textContent = it.err ? '✗' : '✓';
+        tool.st.textContent = it.err ? '✗' : (r.bg.get(it.id) || {}).status === 'running' ? '⏳' : '✓';
         tool.res = it.text;
         if (tool.el.open) readerToolBody(tool);
         // un mensaje que claude guardó con frap-msg: su tarjeta (copiar, abrir el PR, estado) justo después
@@ -6286,6 +6305,7 @@
         const st = h('span.tr-st', '…');
         const el = h('details.tr-tool', h('summary', st, h('span.tr-tname', it.name), h('span.tr-ttitle', it.title || '')));
         const tool = { el, st, it, res: null, body: null };
+        if (it.bg) r.bg.set(it.id, { id: it.id, name: it.name, title: it.title, input: it.input, status: 'running' });
         el.addEventListener('toggle', () => { if (el.open) readerToolBody(tool); });
         r.tools.set(it.id, tool);
         r.lastTools.append(el);
@@ -6409,6 +6429,58 @@
       question, options: opts,
     };
   }
+  /** Línea de estado de claude (debajo de su caja de texto en la terminal): «⏵⏵ auto mode on · 1 shell · ↓ to manage». */
+  function termFooter(t) {
+    const b = t.term.buffer.active;
+    const lines = [];
+    for (let i = b.baseY; i < b.baseY + t.term.rows; i++) { const l = b.getLine(i); lines.push(l ? l.translateToString(true) : ''); }
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    let k = -1;
+    for (let i = lines.length - 1; i >= Math.max(0, lines.length - 8); i--) if (/^\s*[─━]{8,}\s*$/.test(lines[i])) { k = i; break; }
+    if (k < 0) return '';
+    return lines.slice(k + 1).map((l) => l.trim()).filter(Boolean).join(' · ').slice(0, 300);
+  }
+  /** Barra de estado de la vista 📖 y la lista de procesos en segundo plano (de la conversación). */
+  function readerBgBar(t) {
+    const r = t.reader;
+    if (!r.bgBar) return;
+    const footer = termFooter(t);
+    const all = [...(r.bg || new Map()).values()];
+    const running = all.filter((b) => b.status === 'running');
+    const m = footer.match(/(\d+)\s+(shells?|agents?|background tasks?|tasks?|bash)/i);
+    const n = Math.max(running.length, m ? Number(m[1]) : 0);
+    const key = JSON.stringify([footer, n, all.map((b) => [b.id, b.status])]);
+    if (key === r.bgKey) return;
+    r.bgKey = key;
+    r.bgBar.classList.toggle('hidden', !footer && !all.length);
+    r.bgBar.classList.toggle('active', n > 0);
+    r.bgBar.replaceChildren(
+      all.length ? h(`button.mini.tr-bg-btn${n ? '.on' : ''}`, { title: 'Ver los procesos en segundo plano de esta conversación', onclick: () => { r.bgList.classList.toggle('hidden'); readerBgList(t); } }, n ? `⚙ ${n} en segundo plano` : `⚙ ${all.length} en segundo plano (terminados)`) : null,
+      footer ? h('span.tr-bg-foot', footer) : null);
+    if (!r.bgList.classList.contains('hidden')) readerBgList(t);
+  }
+  function readerBgList(t) {
+    const r = t.reader;
+    if (r.bgList.classList.contains('hidden')) return;
+    const all = [...r.bg.values()].reverse().slice(0, 15);
+    const ico = (b) => (b.status === 'running' ? '⏳' : /fail|error|kill/i.test(b.status) ? '✗' : '✓');
+    r.bgList.replaceChildren(
+      h('div.tr-bg-head', h('b', 'En segundo plano'), h('span.grow'), h('button.icon.mini', { title: 'Cerrar', onclick: () => r.bgList.classList.add('hidden') }, '✕')),
+      ...(all.length ? all.map((b) => {
+        const out = h('pre.tr-bg-out.hidden');
+        const show = async () => {
+          if (!out.classList.contains('hidden')) { out.classList.add('hidden'); return; }
+          out.classList.remove('hidden');
+          out.textContent = 'Leyendo…';
+          try { const d = await Bridge.call('claude.taskOutput', { file: b.file }); out.textContent = d.missing ? '(la salida ya no existe)' : `${d.truncated ? '… ' : ''}${d.text || '(sin salida todavía)'}`; out.scrollTop = out.scrollHeight; } catch (e) { out.textContent = e.message; }
+        };
+        return h(`div.tr-bg-item.${b.status === 'running' ? 'run' : 'done'}`,
+          h('div.tr-bg-row', h('span.tr-bg-st', ico(b)), h('span.tr-tname', b.name), h('span.tr-ttitle', b.title || ''), h('span.grow'),
+            b.file ? h('button.mini', { title: b.file, onclick: show }, 'Ver salida') : null),
+          b.summary ? h('div.tr-bg-sum.muted', b.summary) : null,
+          out);
+      }) : [h('div.muted', { style: 'font-size:12px' }, 'Nada lanzado en segundo plano en esta conversación.')]));
+  }
   /** Tarjeta del menú de claude al final de la vista 📖: un botón por opción (manda su número) y Esc. */
   function readerAsk(t) {
     const r = t.reader;
@@ -6438,6 +6510,7 @@
       const r = t.reader;
       if (!r || !r.open || !r.typing || !r.list) continue;
       readerAsk(t);
+      readerBgBar(t);
       const busy = isBusy(t) && !r.ask; // con un menú en pantalla, claude espera: sin puntos
       if (r.ask && r.ask.nextElementSibling !== r.typing) r.list.append(r.ask);
       if (r.typing.parentElement !== r.list || r.list.lastElementChild !== r.typing) r.list.append(r.typing);

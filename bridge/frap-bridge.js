@@ -465,6 +465,13 @@ function transcriptItems(lines) {
     if (j.type === 'user') {
       if (typeof c === 'string') {
         const t = c.trim();
+        // aviso de que terminó algo en segundo plano (agente o shell)
+        const tn = t.startsWith('<task-notification>') ? t : '';
+        if (tn) {
+          const tag = (k) => ((tn.match(new RegExp(`<${k}>([\\s\\S]*?)</${k}>`)) || [])[1] || '').trim();
+          out.push({ k: 'bgdone', id: tag('tool-use-id') || tag('task-id'), ts, status: tag('status') || 'completed', summary: clip(tag('summary'), 2000), file: tag('output-file') });
+          continue;
+        }
         if (t && !/^(<|Base directory for this skill|Caveat:|\[Request interrupted)/.test(t) && !j.isMeta) out.push({ k: 'user', id: j.uuid, ts, text: clip(t, 20000) });
         continue;
       }
@@ -480,11 +487,29 @@ function transcriptItems(lines) {
       if (x.type === 'text' && String(x.text || '').trim()) out.push({ k: 'ai', id: `${j.uuid}-${n}`, ts, text: clip(x.text, 40000) });
       else if (x.type === 'tool_use') {
         const input = x.input && typeof x.input === 'object' ? x.input : {};
-        out.push({ k: 'tool', id: x.id, ts, name: String(x.name || 'tool'), title: clip(toolTitle(x.name, input), 300), input: clip(x.name === 'Bash' ? input.command : JSON.stringify(input, null, 2), 8000) });
+        out.push({ k: 'tool', id: x.id, ts, name: String(x.name || 'tool'), title: clip(toolTitle(x.name, input), 300), input: clip(x.name === 'Bash' ? input.command : JSON.stringify(input, null, 2), 8000), ...(input.run_in_background ? { bg: true } : {}) });
       }
     });
   }
   return out;
+}
+/**
+ * Salida de un proceso en segundo plano de claude (lo que escribe en /tmp/claude-<uid>/<carpeta>/<conversación>/tasks/
+ * <id>.output). Solo esos archivos, solo lectura, el final (64 KB). → {file, size, text, truncated}
+ */
+const TASK_OUT_RE = new RegExp(`^${path.join(os.tmpdir(), `claude-${process.getuid ? process.getuid() : 'x'}`).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/[^/]+/[0-9a-f-]{36}/tasks/[\\w.-]+\\.output$`);
+function claudeTaskOutput(file) {
+  const f = path.resolve(String(file || ''));
+  if (!TASK_OUT_RE.test(f)) throw new Error('Solo se leen las salidas de procesos en segundo plano de claude (…/tasks/*.output)');
+  let real;
+  try { real = fs.realpathSync(f); } catch (_) { return { file: f, size: 0, text: '', truncated: false, missing: true }; }
+  if (real !== f) throw new Error('Ruta inválida');
+  const st = fs.statSync(f);
+  if (!st.isFile()) throw new Error('No es un archivo');
+  const MAX = 64 * 1024;
+  const start = Math.max(0, st.size - MAX);
+  const text = readSlice(f, start, st.size - start);
+  return { file: f, size: st.size, text: start ? text.slice(text.indexOf('\n') + 1) : text, truncated: start > 0 };
 }
 /** → {file, size, next, truncated, items} */
 function claudeTranscript(conv, cwd, since) {
@@ -1741,6 +1766,8 @@ const ops = {
    * → {file, size, next, truncated, items: [{k: 'user'|'ai'|'tool'|'res', id, ts, text?, name?, title?, input?, err?}]}
    */
   'claude.transcript': ({ conv, cwd, since }) => claudeTranscript(conv, cwd, since),
+  /** Salida (el final) de un proceso en segundo plano de claude: solo /tmp/claude-<uid>/…/tasks/*.output. {file, size, text, truncated, missing?} */
+  'claude.taskOutput': ({ file }) => claudeTaskOutput(file),
   'claude.conversations': ({ cwd, limit }) => claudeConversations(safePath(cwd), limit),
   'todos.skill': () => todos.skillStatus(),
   'todos.setSkill': ({ on }) => todos.setSkill(!!on),
