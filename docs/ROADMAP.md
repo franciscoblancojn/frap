@@ -19,6 +19,7 @@
 - [x] Pendientes: al marcar uno como hecho, su sesión de IA (si sigue abierta) recibe un aviso con lo que quedó desbloqueado
 - [x] Módulo «Mensajes» (pestaña del panel derecho): mensajes para personas y de PR (review, aprobado, cambios, comentario, merge) que la IA guarda con `frap-msg` (skill `frap-mensajes`), vinculados a su sesión; filtros por persona, sesión, tipo, sección y enviados; editar, copiar (WhatsApp) y marcar enviado. Reemplaza el «Copiar mensaje» encima de «Hablar»
 - [x] Notas: cada sección guardada por la IA lleva el ícono y el nombre de su sesión (`frap-team sesion`); la skill frap-notes se actualiza sola al arrancar el bridge
+- [x] 📖 En la vista de lectura: «escribiendo…» mientras claude trabaja y los menús de claude (permisos, preguntas) como tarjeta con un botón por opción
 - [x] 📖 Vista de lectura de las sesiones de claude (botón en la franja de arriba): mensajes en cajas con markdown, procesos plegados con solo su título (clic: comando y resultado), en vivo, y un campo para escribirle; ⌨ vuelve a la terminal
 - [x] Importar el JSON no duplica terminales: las que ya están abiertas (misma conversación de claude, o mismo tipo, carpeta y nombre) salen «ya abierta» y sin marcar, y una conversación de IA ya abierta nunca se reabre
 - [x] Pendientes: filtro por sesión (selector con el ícono de la sesión y su persona, incluidas las cerradas y «Sin sesión»); cada pendiente muestra el ícono y la persona de su sesión

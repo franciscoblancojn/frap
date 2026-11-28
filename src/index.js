@@ -6243,7 +6243,7 @@
     if (!r.open || !terms.has(t.sid)) return;
     const conv = ((t.info.meta || {}).agent || {}).session || '';
     if (reset || conv !== r.conv) {
-      r.conv = conv; r.next = undefined; r.tools = new Map(); r.lastTools = null; r.seen = new Set(); r.pending = []; r.cards = new Map();
+      r.conv = conv; r.next = undefined; r.tools = new Map(); r.lastTools = null; r.seen = new Set(); r.pending = []; r.cards = new Map(); r.ask = null; r.askKey = '';
       r.list.replaceChildren(h('div.tr-note.muted', conv ? 'Cargando la conversación…' : 'Esperando a que claude anote su conversación (unos segundos después de empezar)…'));
       r.stick = true;
     }
@@ -6301,6 +6301,7 @@
     }
     // las pendientes (lo que escribiste) siempre al final, y debajo el «escribiendo…»
     for (const p of r.pending || []) L.append(p.el);
+    if (r.ask) L.append(r.ask);
     if (r.typing) L.append(r.typing);
     while (L.childElementCount > READER_MAX) L.firstElementChild.remove();
     if (atBottom) { L.scrollTop = L.scrollHeight; r.stick = false; }
@@ -6356,11 +6357,89 @@
       for (const [id, card] of r.cards) readerPaintCard(card, id);
     }
   }
+  /**
+   * Menú de claude en pantalla (permiso para una herramienta, pregunta con opciones…): se lee de lo que se ve en la
+   * terminal. Forma: [línea ─── ] título / descripción [╌╌╌] cuerpo (│ …) [╌╌╌] nota · pregunta · «❯ 1. …» «2. …» …
+   * · «Esc to cancel». → {title, desc, body, note, question, options: [{n, label, sel}]} o null.
+   */
+  function termMenu(t) {
+    const b = t.term.buffer.active;
+    const lines = [];
+    for (let i = b.baseY; i < b.baseY + t.term.rows; i++) {
+      const l = b.getLine(i);
+      const txt = l ? l.translateToString(true) : '';
+      if (l && l.isWrapped && lines.length) lines[lines.length - 1] += txt; else lines.push(txt); // las partidas por ancho, juntas
+    }
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    const n = lines.length;
+    // el pie «Esc to cancel» (o «Enter to select») cerca del final
+    let foot = -1;
+    for (let i = n - 1; i >= Math.max(0, n - 6); i--) if (/Esc to cancel|Enter to select|Esc para cancelar/i.test(lines[i])) { foot = i; break; }
+    if (foot < 0) return null;
+    // opciones numeradas justo encima (con líneas de descripción sangradas entre ellas)
+    const OPT = /^\s*(?:[❯›>]\s*)?(\d{1,2})[.)]\s+(.+?)\s*$/;
+    const opts = [];
+    let i = foot - 1;
+    for (; i >= 0; i--) {
+      const l = lines[i];
+      if (!l.trim()) { if (opts.length) break; continue; }
+      const m = l.match(OPT);
+      if (m) opts.unshift({ n: Number(m[1]), label: m[2], sel: /^\s*[❯›>]/.test(l) });
+      else if (opts.length && /^\s{3,}\S/.test(l)) opts[0].label += ` — ${l.trim()}`; // descripción de la opción de abajo
+      else if (!opts.length) continue;
+      else break;
+    }
+    if (opts.length < 2 || opts[0].n !== 1) return null;
+    // la pregunta: la línea no vacía de encima
+    while (i >= 0 && !lines[i].trim()) i--;
+    const question = i >= 0 ? lines[i].trim() : '';
+    if (!question) return null;
+    // contexto: hasta la línea continua ─── de arriba, en secciones separadas por ╌╌╌
+    const SOLID = /^\s*[─━]{8,}\s*$/;
+    const DASH = /^\s*[╌┄┈╍-]{8,}\s*$/;
+    const ctx = [];
+    for (let k = i - 1; k >= 0 && k >= i - 80; k--) { if (SOLID.test(lines[k])) break; ctx.unshift(lines[k]); }
+    const secs = [[]];
+    for (const l of ctx) { if (DASH.test(l)) secs.push([]); else secs[secs.length - 1].push(/^\s*│/.test(l) ? l.replace(/^\s*│\s?/, '').replace(/\s+$/, '') : l.trim()); }
+    const clean = (arr) => arr.join('\n').replace(/^\n+|\n+$/g, '');
+    const head = (secs[0] || []).filter((l) => l.trim());
+    return {
+      title: (head[0] || '').trim(), desc: head.slice(1).join(' ').trim(),
+      body: clean(secs[1] || []), note: clean(secs.slice(2).flat()),
+      question, options: opts,
+    };
+  }
+  /** Tarjeta del menú de claude al final de la vista 📖: un botón por opción (manda su número) y Esc. */
+  function readerAsk(t) {
+    const r = t.reader;
+    const menu = termMenu(t);
+    const key = menu ? JSON.stringify([menu.question, menu.options.map((o) => o.label), menu.title, menu.body.length]) : '';
+    if (key === (r.askKey || '')) return;
+    r.askKey = key;
+    if (!menu) { if (r.ask) { r.ask.remove(); r.ask = null; } return; }
+    const L = r.list;
+    const atBottom = L.scrollHeight - L.scrollTop - L.clientHeight < 80;
+    const press = (k) => { Bridge.send('session.input', { sid: t.sid, data: k }); if (r.ask) r.ask.classList.add('sent'); };
+    const card = h('div.tr-ask',
+      h('div.tr-ask-head', h('span.tr-ask-ico', '⚠'), h('div.tr-ask-main',
+        menu.title ? h('div.tr-ask-title', menu.title) : null,
+        menu.desc ? h('div.tr-ask-desc', menu.desc) : null)),
+      menu.body ? h('details.tr-ask-body', h('summary', `Ver ${/bash/i.test(menu.title) ? 'el comando' : 'el detalle'} (${menu.body.split('\n').length} líneas)`), h('pre', menu.body)) : null,
+      menu.note ? h('div.tr-ask-note.muted', menu.note) : null,
+      h('div.tr-ask-q', menu.question),
+      h('div.tr-ask-opts', menu.options.map((o) => h(`button.tr-ask-opt${o.sel ? '.sel' : ''}${/^no\b/i.test(o.label) ? '.no' : ''}`, { title: `Envía «${o.n}» a la terminal`, onclick: () => press(String(o.n)) }, h('b', `${o.n}.`), ` ${o.label}`)),
+        h('button.tr-ask-opt.esc', { title: 'Envía Esc a la terminal', onclick: () => press('\x1b') }, 'Esc · Cancelar')));
+    if (r.ask) r.ask.replaceWith(card); else L.append(card);
+    r.ask = card;
+    if (atBottom) L.scrollTop = L.scrollHeight;
+  }
   setInterval(() => {
     for (const t of terms.values()) {
       const r = t.reader;
       if (!r || !r.open || !r.typing || !r.list) continue;
-      const busy = isBusy(t);
+      readerAsk(t);
+      const busy = isBusy(t) && !r.ask; // con un menú en pantalla, claude espera: sin puntos
+      if (r.ask && r.ask.nextElementSibling !== r.typing) r.list.append(r.ask);
       if (r.typing.parentElement !== r.list || r.list.lastElementChild !== r.typing) r.list.append(r.typing);
       if (busy === !r.typing.classList.contains('hidden')) continue;
       const L = r.list;
