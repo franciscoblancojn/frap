@@ -123,6 +123,13 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .remote-devn { flex: 1; min-width: 0; overflow: hidden; }
 .remote-devn .muted { font-size: 10.5px; }
 .remote-sub-wait { color: var(--warn, #e0af68); }
+.remote-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-top: 6px; }
+.remote-tab { background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 5px 10px; font-size: 12px; color: var(--fg-2); }
+.remote-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
+.remote-n { display: inline-block; min-width: 16px; padding: 0 5px; border-radius: 8px; background: var(--bg-3); font-size: 10.5px; color: var(--fg-2); }
+.remote-tab.on .remote-n { background: color-mix(in srgb, var(--accent) 25%, var(--bg-3)); color: var(--accent); }
+.remote-on { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-3); flex: none; }
+.remote-on.on { background: var(--ok); }
 .remote-dev.wait { border-color: color-mix(in srgb, var(--warn, #e0af68) 60%, var(--line)); flex-wrap: wrap; }
 .remote-dev.wait .remote-devn { flex: 1 1 100%; }
 .remote-kvs { display: flex; flex-direction: column; gap: 4px; }

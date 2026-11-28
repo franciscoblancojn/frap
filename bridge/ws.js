@@ -79,6 +79,8 @@ class WsConn extends EventEmitter {
         off = 10;
       }
       const maskLen = masked ? 4 : 0;
+      // límite opcional por mensaje (la puerta remota lo usa: nadie llena la memoria con un mensaje gigante)
+      if (this.maxPayload && len + this.fragments.reduce((n, f) => n + f.length, 0) > this.maxPayload) { this.socket.destroy(); this._closed(); return; }
       if (this.buf.length < off + maskLen + len) return;
       let payload = this.buf.subarray(off + maskLen, off + maskLen + len);
       if (masked) {

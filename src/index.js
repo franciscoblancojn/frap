@@ -436,7 +436,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'alerts.status', 'alerts.set', 'remote.status', 'remote.start', 'remote.stop', 'remote.config', 'remote.approve', 'remote.kick', 'remote.block', 'remote.unblock', 'remote.rename', 'msgs.list', 'msgs.save', 'msgs.delete', 'msgs.importFile', 'msgs.importPr', 'msgs.setSkill', 'claude.transcript', 'claude.taskOutput', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'alerts.status', 'alerts.set', 'remote.status', 'remote.start', 'remote.stop', 'remote.config', 'remote.approve', 'remote.revoke', 'remote.kick', 'remote.block', 'remote.unblock', 'remote.rename', 'msgs.list', 'msgs.save', 'msgs.delete', 'msgs.importFile', 'msgs.importPr', 'msgs.setSkill', 'claude.transcript', 'claude.taskOutput', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -6296,8 +6296,10 @@
         tool.res = it.text;
         if (tool.el.open) readerToolBody(tool);
         // un mensaje que claude guardó con frap-msg: su tarjeta (copiar, abrir el PR, estado) justo después
-        const mid = !it.err && tool.it.name === 'Bash' && /frap-msg/.test(tool.it.input || '') ? (String(it.text).match(/^(?:Guardado el mensaje|Actualizado el mensaje|Importado: mensaje|Ya estaba: mensaje) #(\d+)/m) || [])[1] : null;
-        if (mid) readerMsgCard(t, Number(mid), tool.el.parentElement);
+        // una tarjeta por cada mensaje del resultado (un mismo comando puede guardar varios)
+        if (!it.err && tool.it.name === 'Bash' && /frap-msg/.test(tool.it.input || '')) {
+          for (const mm of String(it.text).matchAll(/^(?:Guardado el mensaje|Actualizado el mensaje|Importado: mensaje|Ya estaba: mensaje) #(\d+)/gm)) readerMsgCard(t, Number(mm[1]), tool.el.parentElement);
+        }
         continue;
       }
       if (it.k === 'tool') {
@@ -10307,7 +10309,7 @@
       title: '📱 Un dispositivo quiere entrar a FRAP',
       onClose: () => { remoteAskOpen = false; remoteAskId = null; },
       body: [
-        h('p.muted', { style: 'margin:0 0 10px' }, 'Escaneó el QR del acceso remoto. No puede hacer nada hasta que lo aceptes. Si no lo reconoces, bloquéalo.'),
+        h('p.muted', { style: 'margin:0 0 10px' }, 'Escaneó el QR del acceso remoto. No puede hacer nada hasta que lo aceptes. Si lo aceptas queda aprobado: las próximas veces entra directo (puedes quitarle la aprobación en la pestaña Remoto). Si no lo reconoces, bloquéalo.'),
         h('div.remote-kvs',
           row('Dispositivo', dev.name !== dev.label ? `${dev.name} (${dev.label})` : dev.label),
           row('Modelo', dev.model), row('Sistema', dev.os), row('IP', dev.ip), row('Idioma', dev.lang), row('Pantalla', dev.screen), row('Zona horaria', dev.tz),
@@ -10364,7 +10366,7 @@
     if (active && r.url) {
       body.push(h('div.remote-qrbox', remoteQr(r.url),
         h('div.remote-url', h('span.mono', r.url.replace(/#.*/, '')), h('button.icon.mini', { title: 'Copiar el enlace (con la clave)', onclick: () => { copyText(r.url); toast('Enlace copiado (lleva la clave: no lo compartas)', 'ok'); } }, '⧉')),
-        h('div.muted.remote-hint', `Escanéalo con la cámara del celular${r.mode === 'local' ? ' (en la misma Wi-Fi)' : ''}. Cada vez que enciendes, el QR cambia.${left != null && r.autoOff.on ? ` Se apaga en ~${left} min sin uso.` : ''}`)));
+        h('div.muted.remote-hint', `Escanéalo con la cámara del celular${r.mode === 'local' ? ' (en la misma Wi-Fi)' : ''}. Cada vez que lo enciendes, el QR cambia; si reinicias el bridge se mantiene${r.mode === 'remote' ? ' la clave (el túnel da una dirección nueva)' : ''}.${left != null && r.autoOff.on ? ` Se apaga en ~${left} min sin uso.` : ''}`)));
     } else if (!active && !remoteBusy) body.push(h('div.muted.remote-hint', 'Apagado: no hay QR y nadie puede entrar. Al encenderlo se crea un QR nuevo.'));
     if (active && (r.pending || []).length) {
       body.push(h('div.remote-sub.remote-sub-wait', `⏳ Esperando aprobación (${r.pending.length})`));
@@ -10375,21 +10377,27 @@
         h('button.mini.danger', { onclick: async () => { try { remoteInfo = await Bridge.call('remote.block', { id: d.id }); renderRemote(); } catch (e) { toast(e.message, 'err'); } } }, 'Bloquear'),
         h('button.mini.primary', { onclick: async () => { try { remoteInfo = await Bridge.call('remote.approve', { id: d.id }); renderRemote(); } catch (e) { toast(e.message, 'err'); } } }, 'Aceptar')))));
     }
-    if (active) {
-      body.push(h('div.remote-sub', `Conectados (${r.connected.length})`));
-      body.push(r.connected.length ? h('div.remote-list', r.connected.map((d) => h('div.remote-dev',
+    // conectados / aprobados / bloqueados en pestañas (bloqueados solo si hay)
+    const tabs = [['conn', 'Conectados', active ? r.connected.length : 0], ['appr', 'Aprobados', (r.approved || []).length]];
+    if (r.blocked.length) tabs.push(['block', 'Bloqueados', r.blocked.length]);
+    let tab = state.ui.remoteTab || 'conn';
+    if (!tabs.some((x) => x[0] === tab)) tab = 'conn';
+    body.push(h('div.remote-tabs', tabs.map(([k, label, n]) => h(`button.remote-tab${k === tab ? '.on' : ''}`, { onclick: () => { state.ui.remoteTab = k; save(); renderRemote(); } }, `${label} `, h('span.remote-n', String(n))))));
+    const devList = (items, row, empty) => (items.length ? h('div.remote-list', items.map(row)) : h('div.integ-empty', empty));
+    if (tab === 'conn') body.push(active ? devList(r.connected, (d) => h('div.remote-dev',
         h('div.remote-devn', h('b', d.name), d.name !== d.label ? h('span.muted', ` · ${d.label}`) : null,
           h('div.muted', `${d.ip ? `${d.ip} · ` : ''}desde ${new Date(d.since).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })} · último uso ${new Date(d.last).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}`)),
         h('button.icon.mini', { title: 'Ponerle un nombre', onclick: () => remoteRename(d) }, '✎'),
-        h('button.mini', { title: 'Desconectarlo ahora (puede volver a entrar con el QR)', onclick: async () => { try { remoteInfo = await Bridge.call('remote.kick', { id: d.id }); renderRemote(); } catch (e) { toast(e.message, 'err'); } } }, 'Sacar'),
-        h('button.mini.danger', { title: 'Desconectarlo y no dejarlo entrar nunca más (aunque escanee un QR nuevo)', onclick: async () => { if (!(await confirmBox(`¿Bloquear «${d.name}»?`, 'Se desconecta y no podrá volver a entrar hasta que lo desbloquees.'))) return; try { remoteInfo = await Bridge.call('remote.block', { id: d.id }); renderRemote(); } catch (e) { toast(e.message, 'err'); } } }, 'Bloquear')))) : h('div.integ-empty', 'Nadie conectado todavía.'));
-    }
-    if (r.blocked.length) {
-      body.push(h('div.remote-sub', `Bloqueados (${r.blocked.length})`));
-      body.push(h('div.remote-list', r.blocked.map((b) => h('div.remote-dev',
+        h('button.mini', { title: 'Desconectarlo ahora (sigue aprobado: puede volver a entrar con el QR)', onclick: async () => { try { remoteInfo = await Bridge.call('remote.kick', { id: d.id }); renderRemote(); } catch (e) { toast(e.message, 'err'); } } }, 'Sacar'),
+        h('button.mini.danger', { title: 'Desconectarlo y no dejarlo entrar nunca más (aunque escanee un QR nuevo)', onclick: async () => { if (!(await confirmBox(`¿Bloquear «${d.name}»?`, 'Se desconecta y no podrá volver a entrar hasta que lo desbloquees.'))) return; try { remoteInfo = await Bridge.call('remote.block', { id: d.id }); renderRemote(); } catch (e) { toast(e.message, 'err'); } } }, 'Bloquear')), 'Nadie conectado todavía.') : h('div.integ-empty', 'El acceso remoto está apagado.'));
+    else if (tab === 'appr') body.push(devList(r.approved || [], (b) => h('div.remote-dev',
+        h('span', { class: `remote-on${b.online ? ' on' : ''}`, title: b.online ? 'Conectado ahora' : 'No conectado' }),
+        h('div.remote-devn', h('b', b.name), h('div.muted', `${[b.model, b.os].filter(Boolean).join(' · ') || b.label} · aprobado ${new Date(b.at).toLocaleDateString('es', { day: 'numeric', month: 'short' })}`)),
+        h('button.mini', { title: 'Quitar la aprobación: si está conectado sale, y la próxima vez tendrá que pedir permiso', onclick: async () => { try { remoteInfo = await Bridge.call('remote.revoke', { id: b.id }); renderRemote(); toast(`A ${b.name} se le quitó la aprobación`, 'ok'); } catch (e) { toast(e.message, 'err'); } } }, 'Quitar aprobación'),
+        h('button.mini.danger', { title: 'No dejarlo entrar nunca más', onclick: async () => { if (!(await confirmBox(`¿Bloquear «${b.name}»?`, 'Pierde la aprobación y no podrá volver a entrar hasta que lo desbloquees.'))) return; try { remoteInfo = await Bridge.call('remote.block', { id: b.id }); renderRemote(); } catch (e) { toast(e.message, 'err'); } } }, 'Bloquear')), 'Todavía no has aprobado ningún dispositivo.'));
+    else body.push(devList(r.blocked, (b) => h('div.remote-dev',
         h('div.remote-devn', h('b', b.name), h('div.muted', `bloqueado ${new Date(b.at).toLocaleDateString('es', { day: 'numeric', month: 'short' })}`)),
-        h('button.mini', { onclick: async () => { try { remoteInfo = await Bridge.call('remote.unblock', { id: b.id }); renderRemote(); toast(`${b.name} desbloqueado`, 'ok'); } catch (e) { toast(e.message, 'err'); } } }, 'Desbloquear')))));
-    }
+        h('button.mini', { onclick: async () => { try { remoteInfo = await Bridge.call('remote.unblock', { id: b.id }); renderRemote(); toast(`${b.name} desbloqueado`, 'ok'); } catch (e) { toast(e.message, 'err'); } } }, 'Desbloquear')), 'Nadie bloqueado.'));
     return [head, h('div.remote-body', body)];
   }
   setInterval(() => { if (remoteInfo && remoteInfo.on && !document.hidden) renderRemote(); }, 30000);

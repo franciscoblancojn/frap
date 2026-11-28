@@ -19,6 +19,7 @@
 - [x] Pendientes: al marcar uno como hecho, su sesión de IA (si sigue abierta) recibe un aviso con lo que quedó desbloqueado
 - [x] Módulo «Mensajes» (pestaña del panel derecho): mensajes para personas y de PR (review, aprobado, cambios, comentario, merge) que la IA guarda con `frap-msg` (skill `frap-mensajes`), vinculados a su sesión; filtros por persona, sesión, tipo, sección y enviados; editar, copiar (WhatsApp) y marcar enviado. Reemplaza el «Copiar mensaje» encima de «Hablar»
 - [x] Notas: cada sección guardada por la IA lleva el ícono y el nombre de su sesión (`frap-team sesion`); la skill frap-notes se actualiza sola al arrancar el bridge
+- [x] 📱 Remoto: aprobación de cada dispositivo en la laptop (modal con sus datos), guardada para siempre (quitar aprobación / bloquear); se retoma al reiniciar el bridge con el mismo QR; imágenes desde el celular
 - [x] 📱 Módulo «Remoto»: FRAP desde el celular con un QR (Wi-Fi local o túnel), clave nueva en cada encendido, apagado sin uso (5 min por defecto), conectados (sacar/bloquear) y bloqueados; página móvil con sesiones, chat de la IA (permisos, segundo plano, mensajes guardados) y Mensajes
 - [x] 📖 En la vista de lectura: barra con el estado de claude y los procesos en segundo plano (⏳/✓, resumen y «Ver salida»)
 - [x] 📖 En la vista de lectura: «escribiendo…» mientras claude trabaja y los menús de claude (permisos, preguntas) como tarjeta con un botón por opción

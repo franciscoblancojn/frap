@@ -1782,9 +1782,11 @@ const ops = {
   'remote.stop': () => remote.stop('apagado'),
   /** Modo y apagado automático (sin encender). */
   'remote.config': (a = {}) => remote.config({ mode: a.mode, autoOff: a.autoOff }),
-  /** Aceptar a un dispositivo que espera aprobación (entra y no se le vuelve a preguntar en este encendido). */
+  /** Aceptar a un dispositivo que espera aprobación (entra y queda aprobado para siempre, hasta quitarla o bloquearlo). */
   'remote.approve': ({ id }) => remote.approve(String(id || '')),
   'remote.kick': ({ id }) => remote.kick(String(id || '')),
+  /** Quitar la aprobación guardada (si está conectado, sale; la próxima vez tendrá que pedirla). */
+  'remote.revoke': ({ id }) => remote.revoke(String(id || '')),
   'remote.block': ({ id }) => remote.block(String(id || '')),
   'remote.unblock': ({ id }) => remote.unblock(String(id || '')),
   'remote.rename': ({ id, name }) => remote.rename(String(id || ''), name),
@@ -2270,6 +2272,8 @@ remote.init({
   tunnels,
   notify: (ev) => broadcast(ev),
 });
+// si Remoto quedó encendido (el bridge se reinició), se retoma con la misma clave y el mismo puerto
+remote.resume().catch((e) => { if (!process.env.FRAP_QUIET) console.error(`Remoto: no se pudo retomar (${e.message})`); });
 rediscoverSessions().then((n) => { recovered = n; }, () => {}).then(() => scanAgentSessions().catch(() => {})).then(watchNotices).then(() => server.listen(PORT, HOST, () => {
   const page = path.resolve(__dirname, '..', 'src', 'index.html');
   const url = `file://${page}#port=${PORT}&token=${TOKEN}`;

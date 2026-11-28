@@ -93,6 +93,13 @@ details.tool pre { margin: 4px 0 6px 18px; max-height: 260px; overflow: auto; ba
 .compose textarea { flex: 1; resize: none; min-height: 42px; max-height: 160px; padding: 10px 12px; border-radius: 20px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font: 16px/1.35 var(--sans); }
 .compose button { height: 42px; min-width: 42px; border-radius: 21px; padding: 0 12px; }
 .compose .send { background: var(--accent); color: #111; border: none; font-weight: 700; }
+.compose .clip { font-size: 18px; padding: 0; width: 42px; }
+.atts { display: flex; gap: 8px; padding: 8px 10px 0; background: var(--bg-2); overflow-x: auto; }
+.att { position: relative; flex: none; }
+.att img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); display: block; }
+.att.up img { opacity: .4; }
+.att button { position: absolute; top: -6px; right: -6px; width: 22px; height: 22px; padding: 0; border-radius: 50%; font-size: 12px; line-height: 1; }
+.u img { max-width: 160px; max-height: 160px; border-radius: 8px; display: block; margin-top: 6px; }
 /* mensajes */
 .msg { margin: 8px 12px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
 .msg.sent { opacity: .55; }
@@ -150,6 +157,19 @@ details.tool pre { margin: 4px 0 6px 18px; max-height: 260px; overflow: auto; ba
     if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(t).catch(() => fallback()); return; }
     fallback();
     function fallback() { const ta = h('textarea', { style: 'position:fixed;top:-1000px' }); ta.value = t; document.body.append(ta); ta.select(); try { document.execCommand('copy'); } catch (_) { /* sin portapapeles */ } ta.remove(); }
+  }
+  /** Achica una imagen (lado mayor 2048 px, JPEG 0,85) para que suba rápido; si no se puede, la original. */
+  async function shrink(file) {
+    try {
+      const bmp = await createImageBitmap(file);
+      const k = Math.min(1, 2048 / Math.max(bmp.width, bmp.height));
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
+      cv.getContext('2d').drawImage(bmp, 0, 0, cv.width, cv.height);
+      const blob = await new Promise((res) => cv.toBlob(res, 'image/jpeg', 0.85));
+      if (blob && blob.size < file.size) return blob;
+    } catch (_) { /* formato no soportado: se sube tal cual */ }
+    return file;
   }
   const LOGO = { '@shopify': '🛍️', '@wp': '🌐' };
   const icon = (ic) => LOGO[ic] || ic || '';
@@ -221,7 +241,7 @@ details.tool pre { margin: 4px 0 6px 18px; max-height: 260px; overflow: auto; ba
   if (!/^[\w-]{8,64}$/.test(DEV)) { DEV = 'dev-' + Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join(''); try { localStorage.setItem('frap.remote.device', DEV); } catch (_) { /* sin storage */ } }
   const ua = navigator.userAgent;
   const LABEL = `${/iPhone|iPad/.test(ua) ? 'iPhone' : /Android/.test(ua) ? 'Android' : 'Navegador'} · ${/CriOS|Chrome/.test(ua) ? 'Chrome' : /Firefox|FxiOS/.test(ua) ? 'Firefox' : /Safari/.test(ua) ? 'Safari' : 'Web'}`;
-  let sock = null, ready = false, seq = 0, ended = false, retries = 0;
+  let sock = null, ready = false, seq = 0, ended = false, retries = 0, lostAt = 0;
   const pend = new Map();
   function call(op, args) {
     return new Promise((resolve, reject) => {
@@ -247,7 +267,7 @@ details.tool pre { margin: 4px 0 6px 18px; max-height: 260px; overflow: auto; ba
     $('#off').classList.remove('hidden');
     $('#dot').classList.remove('on');
   }
-  $('#retry').addEventListener('click', () => { retries = 0; ended = false; $('#off').classList.add('hidden'); connect(); });
+  $('#retry').addEventListener('click', () => { retries = 0; lostAt = 0; ended = false; $('#off').classList.add('hidden'); connect(); });
   function connect() {
     if (!KEY) { offline('Abre esta página escaneando el QR del módulo Remoto en la laptop.', false); ended = true; return; }
     sock = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
@@ -262,7 +282,7 @@ details.tool pre { margin: 4px 0 6px 18px; max-height: 260px; overflow: auto; ba
     sock.onmessage = (e) => {
       const m = JSON.parse(e.data);
       if (m.re != null) { const p = pend.get(m.re); if (p) { pend.delete(m.re); m.ok ? p.resolve(m.data) : p.reject(new Error(m.error)); } return; }
-      if (m.ev === 'hello') { ready = true; retries = 0; $('#off').classList.add('hidden'); $('#dot').classList.add('on'); loadState(); ping(); if (view.sid) openChat(view.sid, true); return; }
+      if (m.ev === 'hello') { ready = true; retries = 0; lostAt = 0; $('#off').classList.add('hidden'); $('#dot').classList.add('on'); loadState(); ping(); if (view.sid) openChat(view.sid, true); return; }
       if (m.ev === 'pending') { ended = false; ready = false; waiting(m.reason); return; }
       if (m.ev === 'bye') { ended = true; ready = false; offline(m.reason || 'El acceso remoto se apagó en la laptop.', false); return; }
       onEvent(m);
@@ -271,7 +291,9 @@ details.tool pre { margin: 4px 0 6px 18px; max-height: 260px; overflow: auto; ba
       const was = ready; ready = false;
       for (const p of pend.values()) p.reject(new Error('Sin conexión')); pend.clear();
       if (ended) return;
-      if (retries++ < 5) { offline(was ? 'Se perdió la conexión con la laptop. Reintentando…' : 'Conectando…', false); setTimeout(connect, 2500); }
+      // reintenta hasta 2 minutos (lo que tarda reiniciar el bridge); con la misma clave entra solo
+      if (!lostAt) lostAt = Date.now();
+      if (Date.now() - lostAt < 120000) { retries++; offline(was || retries > 1 ? 'Se perdió la conexión con la laptop. Reconectando…' : 'Conectando…', false); setTimeout(connect, retries < 4 ? 2000 : 4000); }
       else offline('No hay conexión con la laptop: el acceso remoto se apagó o cambió de red.', true);
     };
   }
@@ -332,20 +354,49 @@ details.tool pre { margin: 4px 0 6px 18px; max-height: 260px; overflow: auto; ba
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !/Android|iPhone|iPad/.test(ua)) { e.preventDefault(); send(); } });
     const bgList = h('div', { id: 'bglist', class: 'hidden' });
     const bgBar = h('div', { id: 'bgbar', class: 'hidden' });
-    Object.assign(chat, { sid, list, input, bgList, bgBar, next: undefined, seen: new Set(), tools: new Map(), cards: new Map(), bg: new Map(), pending: [], lastTools: null, stick: true, lastOut: 0 });
+    // imágenes: se achican en el celular y se suben a la laptop; su ruta va en el mensaje (la IA la abre al leerlo)
+    const atts = h('div', { class: 'atts hidden' });
+    const fileIn = h('input', { type: 'file', accept: 'image/*', multiple: true, class: 'hidden' });
+    fileIn.addEventListener('change', async () => {
+      const files = [...fileIn.files].slice(0, 4);
+      fileIn.value = '';
+      for (const f of files) attach(f);
+    });
+    Object.assign(chat, { sid, list, input, bgList, bgBar, files: [], next: undefined, seen: new Set(), tools: new Map(), cards: new Map(), bg: new Map(), pending: [], lastTools: null, stick: true, lastOut: 0 });
     chat.typing = h('div', { class: 'typing hidden' }, h('span'), h('span'), h('span'));
     $('#main').replaceChildren(h('div', { id: 'chat' },
       h('div', { class: 'chat-head' }, h('button', { onclick: () => { view.sid = null; stopChat(); loadState(); } }, '←'), h('span', { class: 't' }, `${icon(s.icon)} ${s.title.replace(/^[^\p{L}\p{N}]+/u, '')}`)),
-      list, bgList, bgBar,
-      h('div', { class: 'compose' }, input,
+      list, bgList, bgBar, atts,
+      h('div', { class: 'compose' },
+        h('button', { class: 'clip', title: 'Enviar una imagen (galería o cámara)', onclick: () => fileIn.click() }, '📎'), fileIn, input,
         h('button', { title: 'Interrumpir (Esc)', onclick: () => call('input', { sid, data: '\x1b' }).catch((e) => toast(e.message)) }, '■'),
         h('button', { class: 'send', onclick: send }, '➤'))));
+    function paintAtts() {
+      fill(atts, chat.files.map((a) => h('div', { class: 'att' + (a.path ? '' : ' up') }, h('img', { src: a.url, alt: '' }), h('button', { title: 'Quitar', onclick: () => { chat.files = chat.files.filter((x) => x !== a); paintAtts(); } }, '✕'))));
+      atts.classList.toggle('hidden', !chat.files.length);
+    }
+    async function attach(file) {
+      const a = { url: URL.createObjectURL(file), path: null };
+      chat.files.push(a); paintAtts();
+      try {
+        const blob = await shrink(file);
+        const data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = rej; r.readAsDataURL(blob); });
+        const up = await call('upload', { name: file.name || 'imagen', data });
+        a.path = up.path;
+      } catch (e) { toast(`No se pudo subir la imagen: ${e.message}`); chat.files = chat.files.filter((x) => x !== a); }
+      paintAtts();
+    }
     function send() {
-      const t = input.value.replace(/\s+$/, '');
+      if (chat.files.some((a) => !a.path)) { toast('Espera a que terminen de subir las imágenes'); return; }
+      let t = input.value.replace(/\s+$/, '');
+      const imgs = chat.files.map((a) => a.path);
+      if (imgs.length) t = `${t || (imgs.length > 1 ? 'Mira estas imágenes:' : 'Mira esta imagen:')}\n${imgs.join('\n')}`;
+      const shown = chat.files.map((a) => a.url);
+      chat.files = []; paintAtts();
       if (!t) return;
       call('input', { sid, data: t.includes('\n') ? `\x1b[200~${t}\x1b[201~` : t }).then(() => setTimeout(() => call('input', { sid, data: '\r' }), 80)).catch((e) => toast(e.message));
       input.value = ''; input.style.height = 'auto';
-      const el = h('div', { class: 'u pending' }, t);
+      const el = h('div', { class: 'u pending' }, t, shown.map((u) => h('img', { src: u, alt: '' })));
       chat.pending.push({ text: t, el }); list.append(el); chat.stick = true; list.scrollTop = list.scrollHeight;
     }
     try {
@@ -384,8 +435,9 @@ details.tool pre { margin: 4px 0 6px 18px; max-height: 260px; overflow: auto; ba
         const running = (chat.bg.get(it.id) || {}).status === 'running';
         t.el.classList.add(it.err ? 'err' : running ? 'bg' : 'ok'); t.st.textContent = it.err ? '✗' : running ? '⏳' : '✓';
         t.el.append(h('pre', it.text || '(sin salida)'));
-        const mid = !it.err && t.it.name === 'Bash' && /frap-msg/.test(t.it.input || '') ? (String(it.text).match(/^(?:Guardado el mensaje|Actualizado el mensaje|Importado: mensaje|Ya estaba: mensaje) #(\d+)/m) || [])[1] : null;
-        if (mid) msgCard(Number(mid), t.el.parentElement);
+        if (!it.err && t.it.name === 'Bash' && /frap-msg/.test(t.it.input || '')) {
+          for (const mm of String(it.text).matchAll(/^(?:Guardado el mensaje|Actualizado el mensaje|Importado: mensaje|Ya estaba: mensaje) #(\d+)/gm)) msgCard(Number(mm[1]), t.el.parentElement);
+        }
         continue;
       }
       if (it.k === 'tool') {
@@ -396,7 +448,7 @@ details.tool pre { margin: 4px 0 6px 18px; max-height: 260px; overflow: auto; ba
         chat.tools.set(it.id, { el, st, it }); chat.lastTools.append(el);
         continue;
       }
-      if (it.k === 'user') { const p = chat.pending.findIndex((x) => x.text.trim() === it.text.trim()); if (p >= 0) { chat.pending[p].el.remove(); chat.pending.splice(p, 1); } L.append(h('div', { class: 'u' }, it.text)); continue; }
+      if (it.k === 'user') { const p = chat.pending.findIndex((x) => { const a = x.text.trim(), b = it.text.trim(); return a === b || b.startsWith(a.split('\n')[0].slice(0, 40)); }); if (p >= 0) { chat.pending[p].el.remove(); chat.pending.splice(p, 1); } L.append(h('div', { class: 'u' }, it.text)); continue; }
       L.append(h('div', { class: 'ai' }, md(it.text)));
     }
     for (const p of chat.pending) L.append(p.el);
@@ -419,7 +471,7 @@ details.tool pre { margin: 4px 0 6px 18px; max-height: 260px; overflow: auto; ba
   }
   async function msgCard(id, after) {
     let card = chat.cards.get(id);
-    if (!card) { card = h('div', { class: 'card' }); chat.cards.set(id, card); if (after && after.parentElement === chat.list) after.after(card); else chat.list.append(card); }
+    if (!card) { card = h('div', { class: 'card' }); chat.cards.set(id, card); let at = after; while (at && at.nextElementSibling && at.nextElementSibling.classList.contains('card')) at = at.nextElementSibling; if (at && at.parentElement === chat.list) at.after(card); else chat.list.append(card); }
     if (!MSGS.some((x) => x.id === id)) await loadMsgs();
     paintCard(card, id);
   }

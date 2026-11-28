@@ -349,6 +349,7 @@ test('remote.*: puerta para el celular (QR): clave por encendido, Origin, dispos
   const ask = (await askEv).request;
   assert.deepEqual([ask.label, ask.ip], ['Android · Chrome', '127.0.0.1']);
   await assert.rejects(p1.call('state', {}), /apruebe tu conexión/);
+  await assert.rejects(p1.call('upload', { data: 'iVBORw0KGgo=' }), /apruebe tu conexión/);
   st = await client.call('remote.status');
   assert.deepEqual([st.connected.length, st.pending.map((x) => x.id)], [0, ['dispositivo-0001']]);
   st = await client.call('remote.approve', { id: 'dispositivo-0001' });
@@ -373,17 +374,33 @@ test('remote.*: puerta para el celular (QR): clave por encendido, Origin, dispos
     await p1b.wait((e) => e.ev === 'out' && e.sid === ai.sid && /DESDE-EL-CEL/.test(e.d));
     await client.waitOutput(ai.sid, /DESDE-EL-CEL/);
     assert.equal((await p1b.call('transcript', { sid: ai.sid })).file, null);
+    // imágenes desde el celular: solo imágenes de verdad, hasta 8 MB, guardadas en FRAP_HOME/remote-uploads (0600)
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    const up = await p1b.call('upload', { name: 'captura error.png', data: png });
+    assert.match(up.path, /remote-uploads\/\d{4}-\d{2}-\d{2}\/\d{6}-[0-9a-f]{6}-captura-error\.png$/);
+    assert.equal(fs.statSync(up.path).mode & 0o777, 0o600);
+    assert.deepEqual(fs.readFileSync(up.path), Buffer.from(png, 'base64'));
+    await assert.rejects(p1b.call('upload', { name: 'x.sh', data: Buffer.from('#!/bin/sh\nrm -rf /').toString('base64') }), /Solo se pueden enviar imágenes/);
+    await assert.rejects(p1b.call('upload', { name: 'x', data: '' }), /vacía/);
+    await assert.rejects(p1b.call('upload', { name: 'x', data: 'A'.repeat(Math.floor(11.5 * 1024 * 1024)) }), /8 MB/);
     // sacar: sale ahora, pero puede volver con el mismo QR
     await client.call('remote.kick', { id: 'dispositivo-0001' });
     assert.match((await p1b.wait((e) => e.ev === 'bye')).reason, /te desconectó/);
     const p2 = await phone('dispositivo-0001');
-    await p2.wait((e) => e.ev === 'pending'); // al sacarlo se le quita la aprobación
+    await p2.wait((e) => e.ev === 'hello'); // sacarlo no le quita la aprobación: entra directo
+    assert.deepEqual((await client.call('remote.status')).approved.map((b) => [b.id, b.online]), [['dispositivo-0001', true]]);
+    // quitarle la aprobación: sale y la próxima vez tiene que pedirla
+    await client.call('remote.revoke', { id: 'dispositivo-0001' });
+    assert.match((await p2.wait((e) => e.ev === 'bye')).reason, /quitó la aprobación/);
+    const p2b = await phone('dispositivo-0001');
+    await p2b.wait((e) => e.ev === 'pending');
     await client.call('remote.approve', { id: 'dispositivo-0001' });
-    await p2.wait((e) => e.ev === 'hello');
+    await p2b.wait((e) => e.ev === 'hello');
     // bloquear: para siempre (también con un QR nuevo) hasta desbloquearlo
     await client.call('remote.rename', { id: 'dispositivo-0001', name: 'Mi celular' });
     st = await client.call('remote.block', { id: 'dispositivo-0001' });
-    assert.match((await p2.wait((e) => e.ev === 'bye')).reason, /bloqueado/);
+    assert.match((await p2b.wait((e) => e.ev === 'bye')).reason, /bloqueado/);
+    assert.equal(st.approved.length, 0, 'bloquear le quita la aprobación');
     assert.deepEqual(st.blocked.map((b) => [b.id, b.name]), [['dispositivo-0001', 'Mi celular']]);
     const p3 = await phone('dispositivo-0001');
     assert.match((await p3.wait((e) => e.ev === 'bye')).reason, /bloqueado/);
@@ -392,6 +409,12 @@ test('remote.*: puerta para el celular (QR): clave por encendido, Origin, dispos
     await p4.wait((e) => e.ev === 'pending');
     await client.call('remote.approve', { id: 'dispositivo-0001' });
     await p4.wait((e) => e.ev === 'hello');
+    // un mensaje gigante (más de 12 MB) corta la conexión sin llenar la memoria
+    const big = await phone('dispositivo-0009');
+    await big.wait((e) => e.ev === 'pending');
+    const closed = new Promise((res) => big.c.on('close', res));
+    big.c.send('x'.repeat(13 * 1024 * 1024));
+    await closed;
     // bloquear a uno que espera aprobación
     const p5 = await phone('dispositivo-0005');
     await p5.wait((e) => e.ev === 'pending');
@@ -406,6 +429,9 @@ test('remote.*: puerta para el celular (QR): clave por encendido, Origin, dispos
     assert.notEqual(key2, key);
     const old = await (async () => { const c = await ws.connect(Number(port2), '/ws', { Origin: `http://127.0.0.1:${port2}` }); const evs = []; c.on('message', (raw) => evs.push(JSON.parse(raw))); c.send(JSON.stringify({ op: 'hello', key, device: { id: 'dispositivo-0002' } })); await new Promise((res) => setTimeout(res, 300)); return evs; })();
     assert.ok(old.some((e) => e.ev === 'bye'), 'la clave vieja no entra');
+    // la aprobación sobrevive a apagar y encender: con el QR nuevo entra directo
+    const again = await (async () => { const c = await ws.connect(Number(port2), '/ws', { Origin: `http://127.0.0.1:${port2}` }); const evs = []; c.on('message', (raw) => evs.push(JSON.parse(raw))); c.send(JSON.stringify({ op: 'hello', key: key2, device: { id: 'dispositivo-0001' } })); await new Promise((res) => setTimeout(res, 300)); c.close(); return evs; })();
+    assert.ok(again.some((e) => e.ev === 'hello'), 'aprobado: entra sin volver a pedir permiso');
     // apagado automático: 0,01 min sin uso
     await client.waitFor((e) => e.ev === 'remote' && e.status && !e.status.on && e.status.reason === 'inactividad', 5000);
     assert.equal((await client.call('remote.status')).on, false);
@@ -414,6 +440,53 @@ test('remote.*: puerta para el celular (QR): clave por encendido, Origin, dispos
     await client.call('session.kill', { sid: shell.sid }).catch(() => {});
     await client.call('session.kill', { sid: ai.sid }).catch(() => {});
   }
+});
+
+test('remote: al reiniciar el bridge con Remoto encendido se retoma con la misma clave y puerto (mismo QR) y el aprobado entra directo', async () => {
+  const home = path.join(root, 'remote-persist-cfg');
+  const env = { ...process.env, FRAP_PORT: '0', FRAP_TOKEN: TOKEN, FRAP_HOME: home, FRAP_FS_ROOT: root, FRAP_LOCAL: path.join(root, 'local'), FRAP_QUIET: '1', SHELL: '/bin/sh', HOME: root, FRAP_REMOTE_HOST: '127.0.0.1', FRAP_REMOTE_PORT: '0' };
+  const start = () => new Promise((resolve, reject) => {
+    const b = fork(path.join(__dirname, '..', 'bridge', 'frap-bridge.js'), [], { env, stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+    b.on('message', async (m) => { if (!m.ready) return; try { resolve({ b, c: rpcClient(await ws.connect(m.port, `/?token=${TOKEN}`, { Origin: 'null' })) }); } catch (e) { reject(e); } });
+    b.on('error', reject);
+  });
+  const stop = (b) => new Promise((r) => { b.once('exit', r); b.kill('SIGTERM'); });
+  const phone = async (url, dev) => {
+    const [, port, key] = url.match(/:(\d+)\/m#k=([\w-]+)$/);
+    const c = await ws.connect(Number(port), '/ws', { Origin: `http://127.0.0.1:${port}` });
+    const evs = []; c.on('message', (raw) => evs.push(JSON.parse(raw)));
+    c.send(JSON.stringify({ op: 'hello', key, device: { id: dev, label: 'Android · Chrome' } }));
+    const wait = async (fn) => { const end = Date.now() + 4000; while (Date.now() < end) { const e = evs.find(fn); if (e) return e; await new Promise((r) => setTimeout(r, 30)); } throw new Error('timeout'); };
+    return { c, wait };
+  };
+  let { b, c } = await start();
+  let st = await c.call('remote.start', { mode: 'local', autoOff: { on: false, minutes: 5 } });
+  const url = st.url;
+  const p = await phone(url, 'telefono-persist-01');
+  await p.wait((e) => e.ev === 'pending');
+  await c.call('remote.approve', { id: 'telefono-persist-01' });
+  await p.wait((e) => e.ev === 'hello');
+  assert.equal(fs.statSync(path.join(home, 'remote.json')).mode & 0o777, 0o600);
+  await stop(b); // reiniciar el bridge
+  ({ b, c } = await start());
+  try {
+    for (let i = 0; i < 50 && !(st = await c.call('remote.status')).on; i++) await new Promise((r) => setTimeout(r, 100));
+    assert.equal(st.on, true, 'Remoto se retoma solo');
+    assert.equal(st.url, url, 'misma URL y clave: el QR no cambia');
+    const p2 = await phone(url, 'telefono-persist-01');
+    await p2.wait((e) => e.ev === 'hello'); // aprobado: entra directo
+    p2.c.close();
+    // apagarlo a mano sí cambia el QR la próxima vez (y ya no se retoma)
+    await c.call('remote.stop', {});
+  } finally { await stop(b); }
+  ({ b, c } = await start());
+  try {
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal((await c.call('remote.status')).on, false, 'apagado a mano: no se retoma');
+    st = await c.call('remote.start', { mode: 'local' });
+    assert.notEqual(st.url, url, 'al encenderlo a mano, QR nuevo');
+    await c.call('remote.stop', {});
+  } finally { await stop(b); }
 });
 
 test('alerts.*: la IA pide alertas (frap-alert) solo con el interruptor «IA»; el bridge las entrega a la UI', async () => {

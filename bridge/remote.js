@@ -5,8 +5,9 @@
 //   - modo «remoto»: escucha en 127.0.0.1 y la publica un túnel (tunnels.js: cloudflared / localhost.run / ngrok).
 // Cada encendido crea una clave nueva (va en el QR, en el fragmento #k=… para que no viaje en la URL); apagar la invalida
 // y desconecta a todos. Cada celular se identifica con un id al azar que guarda su navegador. No entra directo: queda
-// «esperando aprobación» hasta que el administrador lo acepta en la laptop (vale mientras siga encendido); se puede
-// sacar (ahora) o bloquear (para siempre). Se apaga sola tras N minutos sin uso (por defecto 5).
+// «esperando aprobación» hasta que el administrador lo acepta en la laptop; la aprobación se guarda (hasta quitarla o
+// bloquearlo). Se puede sacar (ahora), quitarle la aprobación o bloquear (para siempre). Si el bridge se reinicia con
+// Remoto encendido, se retoma con la misma clave y puerto (mismo QR en modo Wi-Fi). Se apaga sola tras N minutos sin uso (por defecto 5).
 // El celular solo puede lo de la IA en las sesiones que ya existen: ver la conversación, escribirle, aprobar permisos,
 // interrumpir, ver lo que corre en segundo plano y los Mensajes. No crea, cierra ni edita carpetas, secciones,
 // sesiones ni módulos; nada de shell, BD, SSH ni archivos sueltos (lista blanca en `handle`).
@@ -28,7 +29,6 @@ let deps = null; // {frapHome, srcDir, sessions(), sessionInfo(s), attach(sid), 
 const R = {
   on: false, mode: 'local', key: null, server: null, port: 0, url: null, host: null, status: 'off', error: null, reason: null,
   startedAt: 0, lastActivity: 0, timer: null, clients: new Map(), // id → {conn, device, since, last, watch: Set, pending}
-  approved: new Set(), // dispositivos aprobados en este encendido (al apagar o sacarlos, se vuelve a pedir)
 };
 
 // ---------- configuración (FRAP_HOME/remote.json): modo, apagado automático, bloqueados y nombres ----------
@@ -41,7 +41,11 @@ function loadCfg() {
     mode: d.mode === 'remote' ? 'remote' : 'local',
     autoOff: { on: autoOff.on !== false, minutes: Number(autoOff.minutes) > 0 ? Math.min(24 * 60, Number(autoOff.minutes)) : 5 },
     blocked: Array.isArray(d.blocked) ? d.blocked.filter((b) => b && /^[\w-]{8,64}$/.test(b.id)) : [],
+    // aprobados para siempre (hasta quitarles la aprobación o bloquearlos)
+    approved: Array.isArray(d.approved) ? d.approved.filter((b) => b && /^[\w-]{8,64}$/.test(b.id)) : [],
     names: d.names && typeof d.names === 'object' ? d.names : {},
+    // encendido en curso: al reiniciar el bridge se retoma con la misma clave y el mismo puerto (mismo QR en Wi-Fi)
+    active: d.active && typeof d.active === 'object' && /^[\w-]{20,}$/.test(String(d.active.key || '')) ? d.active : null,
   };
 }
 function saveCfg(c) {
@@ -71,6 +75,7 @@ function status() {
     connected: [...R.clients.values()].filter((cl) => !cl.pending).map((cl) => ({ id: cl.device.id, label: cl.device.label, name: name(cl.device.id, cl.device.label), since: cl.since, last: cl.last, ip: cl.device.ip })),
     pending: [...R.clients.values()].filter((cl) => cl.pending).map((cl) => ({ ...cl.device, name: name(cl.device.id, cl.device.label), since: cl.since })),
     blocked: c.blocked.map((b) => ({ ...b, name: name(b.id, b.label) })),
+    approved: c.approved.map((b) => ({ ...b, name: name(b.id, b.label), online: R.clients.has(b.id) && !R.clients.get(b.id).pending })),
     lan: lanIp(),
   };
 }
@@ -82,10 +87,11 @@ async function start(opts = {}) {
   if (opts.mode) c.mode = opts.mode === 'remote' ? 'remote' : 'local';
   if (opts.autoOff) c.autoOff = { on: opts.autoOff.on !== false, minutes: Number(opts.autoOff.minutes) > 0 ? Math.min(24 * 60, Number(opts.autoOff.minutes)) : c.autoOff.minutes };
   saveCfg(c);
-  if (R.on) stop('reinicio', { silent: true });
-  R.mode = c.mode;
-  R.key = crypto.randomBytes(24).toString('base64url'); // clave nueva en cada encendido (la del QR)
-  R.approved = new Set();
+  if (R.on) stop('reinicio', { silent: true, keepActive: !!opts.resume });
+  const resume = opts.resume && c.active ? c.active : null;
+  R.mode = resume ? (resume.mode === 'remote' ? 'remote' : 'local') : c.mode;
+  // clave nueva en cada encendido (la del QR); al retomar tras reiniciar el bridge, la misma
+  R.key = resume ? String(resume.key) : crypto.randomBytes(24).toString('base64url');
   R.error = null; R.reason = null; R.url = null; R.status = 'starting';
   R.on = true;
   R.startedAt = Date.now();
@@ -95,7 +101,8 @@ async function start(opts = {}) {
   const host = opts.host || FORCE_HOST || (R.mode === 'local' ? '0.0.0.0' : '127.0.0.1');
   const listen = (port) => new Promise((res, rej) => { R.server.once('error', rej); R.server.listen(port, host, () => { R.server.removeAllListeners('error'); res(); }); });
   try {
-    try { await listen(opts.port != null ? opts.port : R.mode === 'local' ? DEFAULT_PORT : 0); } catch (e) { if (e.code === 'EADDRINUSE') await listen(0); else throw e; }
+    const want = opts.port != null ? opts.port : resume && resume.port ? Number(resume.port) : R.mode === 'local' ? DEFAULT_PORT : 0;
+    try { await listen(want); } catch (e) { if (e.code === 'EADDRINUSE') await listen(0); else throw e; }
     R.port = R.server.address().port;
     if (R.mode === 'local') {
       const ip = host !== '0.0.0.0' ? host : lanIp();
@@ -109,6 +116,7 @@ async function start(opts = {}) {
       R.url = `${info.url}/m#k=${R.key}`;
     }
     R.status = 'online';
+    { const c2 = loadCfg(); c2.active = { mode: R.mode, key: R.key, port: R.port, since: R.startedAt }; saveCfg(c2); }
     clearInterval(R.timer);
     R.timer = setInterval(checkIdle, Number(process.env.FRAP_REMOTE_TICK_MS) || 5000);
     if (R.timer.unref) R.timer.unref();
@@ -121,8 +129,9 @@ async function start(opts = {}) {
   changed();
   return status();
 }
-function stop(reason = 'apagado', { silent = false } = {}) {
+function stop(reason = 'apagado', { silent = false, keepActive = false } = {}) {
   const wasOn = R.on;
+  if (!keepActive && deps) { const c = loadCfg(); if (c.active) { c.active = null; saveCfg(c); } } // apagado de verdad: la próxima vez, QR nuevo
   R.on = false;
   R.status = 'off';
   R.reason = wasOn ? reason : R.reason;
@@ -131,7 +140,7 @@ function stop(reason = 'apagado', { silent = false } = {}) {
   R.clients.clear();
   if (R.server) { try { R.server.close(); } catch (_) { /* ya cerrado */ } if (R.server.closeAllConnections) R.server.closeAllConnections(); R.server = null; }
   if (R.mode === 'remote' && deps && deps.tunnels) { try { deps.tunnels.stop('frap-remote'); } catch (_) { /* sin túnel */ } }
-  R.key = null; R.url = null; R.port = 0; R.approved = new Set();
+  R.key = null; R.url = null; R.port = 0;
   if (!silent) changed();
   return status();
 }
@@ -155,7 +164,6 @@ function bye(cl, reason) {
 }
 function kick(id) {
   const cl = R.clients.get(id);
-  R.approved.delete(id); // la próxima vez hay que aprobarlo otra vez
   if (cl) { bye(cl, cl.pending ? 'La laptop no aprobó tu conexión.' : 'La laptop te desconectó. Escanea el QR otra vez para volver a entrar.'); R.clients.delete(id); }
   changed();
   return status();
@@ -163,19 +171,22 @@ function kick(id) {
 function block(id) {
   const c = loadCfg();
   const cl = R.clients.get(id);
-  if (!c.blocked.some((b) => b.id === id)) c.blocked.push({ id, label: cl ? cl.device.label : 'Dispositivo', at: new Date().toISOString() });
+  const prevA = c.approved.find((b) => b.id === id);
+  if (!c.blocked.some((b) => b.id === id)) c.blocked.push({ id, label: cl ? cl.device.label : prevA ? prevA.label : 'Dispositivo', at: new Date().toISOString() });
+  c.approved = c.approved.filter((b) => b.id !== id); // bloquear le quita la aprobación
   saveCfg(c);
-  R.approved.delete(id);
   if (cl) { bye(cl, 'Este dispositivo está bloqueado en la laptop.'); R.clients.delete(id); }
   changed();
   return status();
 }
-/** Aceptar a un dispositivo que espera aprobación: entra y no se le vuelve a preguntar en este encendido. */
+/** Aceptar a un dispositivo que espera aprobación: entra y queda aprobado para siempre (hasta quitarle la aprobación). */
 function approve(id) {
   const cl = R.clients.get(id);
   if (!cl || !cl.pending) throw new Error('Ese dispositivo ya no está esperando');
   cl.pending = false;
-  R.approved.add(id);
+  const c = loadCfg();
+  if (!c.approved.some((b) => b.id === id)) c.approved.push({ id, label: cl.device.label, model: cl.device.model || '', os: cl.device.os || '', at: new Date().toISOString() });
+  saveCfg(c);
   R.lastActivity = Date.now();
   welcome(cl);
   changed();
@@ -184,6 +195,22 @@ function approve(id) {
 function welcome(cl) {
   cl.conn.send(JSON.stringify({ ev: 'hello', device: { id: cl.device.id, label: cl.device.label }, autoOff: loadCfg().autoOff }));
   if (deps) deps.notify({ ev: 'remote', status: status(), joined: { id: cl.device.id, label: cl.device.label, name: loadCfg().names[cl.device.id] || cl.device.label } });
+}
+/** Quitar la aprobación: si está conectado sale, y la próxima vez tendrá que pedirla otra vez. */
+function revoke(id) {
+  const c = loadCfg();
+  c.approved = c.approved.filter((b) => b.id !== id);
+  saveCfg(c);
+  const cl = R.clients.get(id);
+  if (cl) { bye(cl, 'La laptop te quitó la aprobación. Escanea el QR y pide entrar otra vez.'); R.clients.delete(id); }
+  changed();
+  return status();
+}
+/** Al arrancar el bridge: si Remoto quedó encendido, se retoma (misma clave y puerto). */
+async function resume() {
+  const c = loadCfg();
+  if (!c.active || R.on) return status();
+  try { return await start({ resume: true }); } catch (e) { const c2 = loadCfg(); c2.active = null; saveCfg(c2); throw e; }
 }
 function unblock(id) {
   const c = loadCfg();
@@ -204,7 +231,7 @@ function rename(id, name) {
 // ---------- HTTP: la página móvil y xterm (para leer los menús de claude) ----------
 const SEC_HEADERS = {
   'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
-  'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:",
+  'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data: blob:",
 };
 function serveHttp(req, res) {
   const u = new URL(req.url, 'http://x');
@@ -233,6 +260,7 @@ function onUpgrade(req, socket, head) {
   const okHosts = [req.headers.host].concat(R.mode === 'remote' && req.headers['x-forwarded-host'] ? [String(req.headers['x-forwarded-host']).split(',')[0].trim()] : []);
   if (!R.on || u.pathname !== '/ws' || !originHost || !okHosts.includes(originHost)) { socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
   const conn = ws.upgrade(req, socket, head);
+  conn.maxPayload = 12 * 1024 * 1024; // una imagen de hasta 8 MB en base64, y nada más grande
   let cl = null;
   const hello = setTimeout(() => { if (!cl) conn.close(); }, 8000);
   conn.on('message', (raw) => {
@@ -256,7 +284,7 @@ function onUpgrade(req, socket, head) {
         ua: str(d.ua || req.headers['user-agent'], 300), model: str(d.model, 80), os: str(d.os, 80),
         lang: str(d.lang, 40), screen: str(d.screen, 40), tz: str(d.tz, 60),
       };
-      cl = { conn, device, since: Date.now(), last: Date.now(), watch: new Set(), pending: !R.approved.has(id) };
+      cl = { conn, device, since: Date.now(), last: Date.now(), watch: new Set(), pending: !loadCfg().approved.some((b) => b.id === id) };
       R.clients.set(id, cl);
       if (cl.pending) {
         // no entra hasta que el administrador lo apruebe en la laptop
@@ -279,7 +307,7 @@ function onUpgrade(req, socket, head) {
 }
 
 // ---------- lo que puede pedir el celular (lista blanca) ----------
-const USER_OPS = new Set(['input', 'watch', 'msgSave', 'state']); // las que cuentan como uso (para el apagado automático)
+const USER_OPS = new Set(['input', 'watch', 'msgSave', 'state', 'upload']); // las que cuentan como uso (para el apagado automático)
 function agentSession(sid) {
   const s = deps.sessions().find((x) => x.sid === sid && !x.closing);
   if (!s) throw new Error('Esa sesión ya no existe');
@@ -336,6 +364,7 @@ function handle(cl, op, a) {
       return deps.transcript(conv, m.cwd || '', Number.isInteger(a.since) ? a.since : undefined);
     }
     case 'taskOutput': return deps.taskOutput(String(a.file || ''));
+    case 'upload': return saveUpload(a);
     case 'msgs': return { mensajes: deps.messages.list() };
     case 'msgSave': {
       // solo marcar enviado / pendiente y «copiado»
@@ -350,6 +379,44 @@ function handle(cl, op, a) {
     default: throw new Error(`Acción no permitida desde el celular: ${op}`);
   }
 }
+// ---------- imágenes desde el celular (captura de un error, una foto…) ----------
+// Se guardan en FRAP_HOME/remote-uploads/AAAA-MM-DD/ (0600) y se devuelve la ruta: el celular la agrega a su mensaje y
+// la IA la abre al leerlo. Solo imágenes (se revisa la firma del archivo), hasta 8 MB. Las de más de 7 días se borran.
+const IMG_MAGIC = [
+  ['png', (b) => b.length > 8 && b[0] === 0x89 && b.toString('latin1', 1, 4) === 'PNG'],
+  ['jpg', (b) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff],
+  ['gif', (b) => b.length > 6 && b.toString('latin1', 0, 4) === 'GIF8'],
+  ['webp', (b) => b.length > 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP'],
+];
+const uploadsDir = () => path.join(deps.frapHome, 'remote-uploads');
+function saveUpload(a) {
+  const data = String(a.data || '').replace(/^data:[^,]*,/, '');
+  if (!data || data.length > 11 * 1024 * 1024 || !/^[A-Za-z0-9+/=\s]+$/.test(data)) throw new Error('Imagen vacía, demasiado grande (máx. 8 MB) o inválida');
+  const buf = Buffer.from(data, 'base64');
+  if (!buf.length || buf.length > 8 * 1024 * 1024) throw new Error('La imagen supera los 8 MB');
+  const kind = IMG_MAGIC.find(([, ok]) => ok(buf));
+  if (!kind) throw new Error('Solo se pueden enviar imágenes (PNG, JPG, GIF o WebP)');
+  const now = new Date();
+  const p2 = (n) => String(n).padStart(2, '0');
+  const day = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())}`;
+  const dir = path.join(uploadsDir(), day);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const base = String(a.name || 'imagen').replace(/\.[^.]*$/, '').normalize('NFD').replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'imagen';
+  const file = path.join(dir, `${p2(now.getHours())}${p2(now.getMinutes())}${p2(now.getSeconds())}-${crypto.randomBytes(3).toString('hex')}-${base}.${kind[0]}`);
+  fs.writeFileSync(file, buf, { mode: 0o600 });
+  cleanUploads();
+  return { path: file, size: buf.length, type: kind[0] };
+}
+function cleanUploads() {
+  const limit = Date.now() - 7 * 86400000;
+  let days = [];
+  try { days = fs.readdirSync(uploadsDir()); } catch (_) { return; }
+  for (const d of days) {
+    const dir = path.join(uploadsDir(), d);
+    try { if (/^\d{4}-\d{2}-\d{2}$/.test(d) && fs.statSync(dir).mtimeMs < limit) fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* sigue */ }
+  }
+}
+
 /** Eventos del bridge que interesan al celular: salida de la sesión que mira y cambios en las sesiones/mensajes. */
 function forward(msg) {
   if (!R.on || !R.clients.size || !msg || !msg.ev) return;
@@ -361,6 +428,6 @@ function forward(msg) {
 }
 
 module.exports = {
-  init: (d) => { deps = d; }, status, start, stop, config, kick, block, unblock, approve, rename, forward, handle, lanIp,
+  init: (d) => { deps = d; }, status, start, stop, config, kick, block, unblock, approve, revoke, resume, rename, forward, handle, lanIp,
   _state: R,
 };
