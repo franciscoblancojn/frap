@@ -10,6 +10,7 @@ FRAP es una alternativa ligera a Warp que corre en el navegador: 3 paneles (proy
 2. **Cero dependencias npm** en runtime y en tests. El bridge usa solo la librería estándar de Node 18+ y Python 3.
 3. **Nunca `innerHTML`** en `src/index.js`: se muestra contenido de archivos del usuario. Usa `h()` (crea nodos con `textContent`).
 4. **Seguridad del bridge**: escucha solo en `127.0.0.1`, exige token y rechaza Origins `http(s)` (salvo los de `FRAP_ALLOW_ORIGINS`). `fs.*` queda limitado a `FRAP_FS_ROOT` (por defecto `$HOME`) más las carpetas extra que el usuario permite (`FRAP_FS_EXTRA` o `FRAP_HOME/fs-roots`, p. ej. `/var/www`; `checkExtraRoot` rechaza `/`, carpetas del sistema y genéricas como `/var` o `/usr`), y `proc.kill` solo a descendientes de sesiones FRAP. No relajes esto: cualquier cambio en las raíces necesita test.
+   - **Excepción: módulo Remoto** (`bridge/remote.js`). Es una puerta aparte, apagada por defecto, que solo existe mientras el usuario la enciende: escucha en la IP de la Wi-Fi (modo local) o en 127.0.0.1 detrás de un túnel (modo remoto). Exige la clave del QR (nueva en cada encendido), acepta solo su propio Origin, se apaga sola sin uso y respeta los bloqueos. El celular solo puede lo de la lista blanca de `handle` (IA en sesiones existentes, Mensajes): nada de crear/cerrar/editar carpetas, sesiones o módulos, ni shell, BD, SSH o archivos. No amplíes esa lista ni relajes la clave, el Origin o el apagado sin un test en `tests/bridge.test.js`.
 5. **Git**: `git.run` solo ejecuta el binario `git` con la lista blanca `GIT_ALLOWED`. No agregues subcomandos ni opciones que ejecuten código (`config`, `-c`, `--upload-pack`, `--exec`) sin un test que lo cubra.
 6. **Bases de datos**:
    - Las contraseñas solo viven en `FRAP_HOME/databases.env` (0600): nunca en el estado de la UI, en localStorage ni en las respuestas del bridge (usa `publicConn`).
@@ -32,6 +33,7 @@ src/index.css    tema oscuro (variables CSS en :root)
 src/index.js     toda la UI (IIFE): Bridge RPC, terminales xterm, paneles, modales, atajos
 src/vendor/      xterm.js + addon-fit + codemirror/ + icons/ (no editar)
 src/favicon.svg  favicon de FRAP
+src/qr.js        generador de QR propio (script clásico: window.FrapQR) para el módulo Remoto
 bridge/frap-bridge.js  servidor WS: sesiones PTY, fs, ps, escaneo de config, estado
 bridge/ws.js           WebSocket RFC 6455 mínimo (servidor + cliente para tests)
 bridge/frap_pty.py     sesión PTY persistente (Python stdlib, desligada del bridge, socket Unix). NO renombrar a pty.py: tapa el módulo stdlib
@@ -58,6 +60,8 @@ bridge/todos.js        módulo "Pendientes": local/pendientes/pendientes.json (p
 bridge/frap-todo.js    CLI para agentes (skill frap-pendientes): add (queda vinculado a su sesión) / list / show / estado / edit
 bridge/messages.js     módulo "Mensajes" (pestaña del panel derecho): local/mensajes/mensajes.json, para personas y de PR (url + acción), estado pendiente/enviado, sesión de IA, skill frap-mensajes
 bridge/frap-msg.js     CLI para agentes (skill frap-mensajes): add / pr / list / show / edit / enviado
+bridge/remote.js       módulo «Remoto» (celular por QR): puerta aparte (Wi-Fi local o túnel), clave por encendido, dispositivos (sacar/bloquear), apagado sin uso, lista blanca de acciones
+bridge/remote-page.html  la página móvil que sirve esa puerta (sesiones, chat de la IA con permisos y segundo plano, Mensajes); sin innerHTML
 bridge/alerts.js       alertas que pide la IA (pestaña Alertas, interruptor «IA» en FRAP_HOME/alerts/ai.json): bandeja FRAP_HOME/alerts/inbox → evento `alert` a la UI, skill frap-alertas
 bridge/frap-alert.js   CLI para agentes (skill frap-alertas): ya / en / a-las / diaria / list
 integrations/wordpress/frap-wordpress/  plugin de WordPress (PHP) del lado del sitio: se publica en su propio repo con git subtree (ver su README)

@@ -13,7 +13,7 @@ const fail = (msg) => { failed++; console.error(`✗ ${msg}`); };
 const ok = (msg) => console.log(`✓ ${msg}`);
 
 // 1. Sintaxis JS
-for (const f of ['src/index.js', 'bridge/frap-bridge.js', 'bridge/ws.js', 'bridge/db.js', 'bridge/frap-db.js', 'bridge/ssh.js', 'bridge/frap-ssh.js', 'bridge/frap-askpass.js', 'bridge/wordpress.js', 'bridge/frap-wp.js', 'bridge/aveonline.js', 'bridge/frap-ave.js', 'bridge/api.js', 'bridge/frap-api.js', 'bridge/team.js', 'bridge/frap-team.js', 'bridge/todos.js', 'bridge/frap-todo.js', 'bridge/messages.js', 'bridge/frap-msg.js', 'bridge/alerts.js', 'bridge/frap-alert.js', 'scripts/check.js', 'tests/bridge.test.js', 'tests/db.test.js', 'tests/ssh.test.js']) {
+for (const f of ['src/index.js', 'bridge/frap-bridge.js', 'bridge/ws.js', 'bridge/db.js', 'bridge/frap-db.js', 'bridge/ssh.js', 'bridge/frap-ssh.js', 'bridge/frap-askpass.js', 'bridge/wordpress.js', 'bridge/frap-wp.js', 'bridge/aveonline.js', 'bridge/frap-ave.js', 'bridge/api.js', 'bridge/frap-api.js', 'bridge/team.js', 'bridge/frap-team.js', 'bridge/todos.js', 'bridge/frap-todo.js', 'bridge/messages.js', 'bridge/frap-msg.js', 'bridge/alerts.js', 'bridge/frap-alert.js', 'bridge/remote.js', 'src/qr.js', 'scripts/check.js', 'tests/bridge.test.js', 'tests/db.test.js', 'tests/ssh.test.js']) {
   try { execFileSync(process.execPath, ['--check', path.join(ROOT, f)], { stdio: 'pipe' }); ok(`sintaxis ${f}`); } catch (e) { fail(`sintaxis ${f}\n${e.stderr}`); }
 }
 
@@ -43,6 +43,7 @@ else ok('src/index.js es script clásico');
 
 if (/\.innerHTML\s*=/.test(js)) fail('src/index.js usa innerHTML (usa h()/textContent para evitar XSS con contenido de archivos)');
 else ok('sin innerHTML');
+for (const f of ['bridge/remote-page.html', 'src/qr.js']) { if (/\.innerHTML\s*=|insertAdjacentHTML|document\.write\(/.test(fs.readFileSync(path.join(ROOT, f), 'utf8'))) fail(`${f} usa innerHTML/insertAdjacentHTML (usa nodos con textContent)`); else ok(`${f}: sin innerHTML`); }
 
 if (/\bfetch\s*\(\s*['"`]https?:/.test(js)) fail('src/index.js hace fetch a red externa');
 

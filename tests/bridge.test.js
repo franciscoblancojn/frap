@@ -110,7 +110,7 @@ test.before(async () => {
       ...process.env,
       FRAP_PORT: '0', FRAP_TOKEN: TOKEN, HOME: root, CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', FRAP_HOME: path.join(root, 'cfg'),
       FRAP_TEST_SFTP_SERVER: SFTP_SERVER || '', FRAP_TEST_SFTP_LOG: path.join(root, 'sftp.log'),
-      FRAP_FS_ROOT: root, FRAP_LOCAL: path.join(root, 'local'), FRAP_QUIET: '1', FRAP_KILL_GRACE_MS: '800', FRAP_AGENT_SCAN_MS: '300', SHELL: '/bin/sh', PATH: `${path.join(root, 'fakebin')}${path.delimiter}${process.env.PATH}`,
+      FRAP_FS_ROOT: root, FRAP_LOCAL: path.join(root, 'local'), FRAP_QUIET: '1', FRAP_KILL_GRACE_MS: '800', FRAP_AGENT_SCAN_MS: '300', FRAP_REMOTE_HOST: '127.0.0.1', FRAP_REMOTE_PORT: '0', FRAP_REMOTE_TICK_MS: '200', SHELL: '/bin/sh', PATH: `${path.join(root, 'fakebin')}${path.delimiter}${process.env.PATH}`,
       GIT_AUTHOR_NAME: 'FRAP Test', GIT_AUTHOR_EMAIL: 'test@frap.local', GIT_COMMITTER_NAME: 'FRAP Test', GIT_COMMITTER_EMAIL: 'test@frap.local',
     },
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
@@ -310,6 +310,88 @@ test('todos.*: pendientes en local/pendientes, orden por dependencias y priorida
   assert.match(fs.readFileSync(skill, 'utf8'), /frap-todo\.js add/);
   await client.call('todos.setSkill', { on: false });
   assert.ok(!fs.existsSync(skill));
+});
+
+test('remote.*: puerta para el celular (QR): clave por encendido, Origin, dispositivos, bloqueos, lista blanca y apagado automático', async () => {
+  const http = require('http');
+  let st = await client.call('remote.status');
+  assert.equal(st.on, false);
+  st = await client.call('remote.start', { mode: 'local', autoOff: { on: false, minutes: 5 } });
+  assert.equal(st.on, true);
+  const m = st.url.match(/^http:\/\/127\.0\.0\.1:(\d+)\/m#k=([\w-]{20,})$/);
+  assert.ok(m, st.url);
+  const [, rport, key] = m;
+  const get = (p) => new Promise((resolve) => http.get({ host: '127.0.0.1', port: rport, path: p }, (r) => { let b = ''; r.on('data', (d) => (b += d)); r.on('end', () => resolve({ status: r.statusCode, body: b, headers: r.headers })); }));
+  let r = await get('/m');
+  assert.equal(r.status, 200);
+  assert.match(r.body, /<html/i);
+  assert.equal(r.headers['x-frame-options'], 'DENY');
+  assert.equal((await get('/vendor/xterm.js')).status, 200);
+  assert.equal((await get('/../bridge/frap-bridge.js')).status, 404);
+  // WebSocket: solo desde la propia página (mismo Origin) y con la clave
+  await assert.rejects(ws.connect(Number(rport), '/ws', {}), /403/);
+  await assert.rejects(ws.connect(Number(rport), '/ws', { Origin: 'http://evil.com' }), /403/);
+  const phone = async (dev, k = key) => {
+    const c = await ws.connect(Number(rport), '/ws', { Origin: `http://127.0.0.1:${rport}` });
+    const evs = [];
+    let seq = 0; const pend = new Map();
+    c.on('message', (raw) => { const x = JSON.parse(raw); if (x.re != null && pend.has(x.re)) { const p = pend.get(x.re); pend.delete(x.re); x.ok ? p.resolve(x.data) : p.reject(new Error(x.error)); } else evs.push(x); });
+    c.send(JSON.stringify({ op: 'hello', key: k, device: { id: dev, label: 'Android · Chrome' } }));
+    const wait = async (fn, ms = 4000) => { const end = Date.now() + ms; while (Date.now() < end) { const e = evs.find(fn); if (e) return e; await new Promise((res) => setTimeout(res, 30)); } throw new Error('timeout'); };
+    return { c, evs, wait, call: (op, args) => new Promise((resolve, reject) => { const id = ++seq; pend.set(id, { resolve, reject }); c.send(JSON.stringify({ id, op, args })); }) };
+  };
+  const bad = await phone('dispositivo-0001', 'clave-incorrecta-0000000000');
+  assert.match((await bad.wait((e) => e.ev === 'bye')).reason, /QR ya no sirve/);
+  const p1 = await phone('dispositivo-0001');
+  await p1.wait((e) => e.ev === 'hello');
+  st = await client.call('remote.status');
+  assert.deepEqual(st.connected.map((x) => [x.id, x.label]), [['dispositivo-0001', 'Android · Chrome']]);
+  // lista blanca: solo sesiones de IA; nada de fs, ni crear/cerrar
+  const shell = await client.call('session.create', { cwd: root, meta: { kind: 'shell', projectId: 'p1', title: 'shell' } });
+  const ai = await client.call('session.create', { cwd: root, cmd: ['/bin/sh'], meta: { kind: 'claude', projectId: 'p1', title: 'IA remota', agent: { tool: 'claude', session: '11111111-1111-4111-8111-111111111111' } } });
+  try {
+    const state = await p1.call('state', {});
+    assert.ok(state.sessions.some((x) => x.sid === ai.sid && x.agent && x.title === 'IA remota'));
+    await assert.rejects(p1.call('input', { sid: shell.sid, data: 'ls\r' }), /solo se usan las sesiones de IA/);
+    for (const op of ['fs.read', 'session.create', 'session.kill', 'remote.stop', 'git.run']) await assert.rejects(p1.call(op, {}), /no permitida/);
+    // mira la sesión: recibe su salida en vivo; lo que escribe llega a la terminal
+    const w = await p1.call('watch', { sid: ai.sid });
+    assert.equal(typeof w.buffer, 'string');
+    await p1.call('input', { sid: ai.sid, data: 'echo DESDE-EL-CEL\r' });
+    await p1.wait((e) => e.ev === 'out' && e.sid === ai.sid && /DESDE-EL-CEL/.test(e.d));
+    await client.waitOutput(ai.sid, /DESDE-EL-CEL/);
+    assert.equal((await p1.call('transcript', { sid: ai.sid })).file, null);
+    // sacar: sale ahora, pero puede volver con el mismo QR
+    await client.call('remote.kick', { id: 'dispositivo-0001' });
+    assert.match((await p1.wait((e) => e.ev === 'bye')).reason, /te desconectó/);
+    const p2 = await phone('dispositivo-0001');
+    await p2.wait((e) => e.ev === 'hello');
+    // bloquear: para siempre (también con un QR nuevo) hasta desbloquearlo
+    await client.call('remote.rename', { id: 'dispositivo-0001', name: 'Mi celular' });
+    st = await client.call('remote.block', { id: 'dispositivo-0001' });
+    assert.match((await p2.wait((e) => e.ev === 'bye')).reason, /bloqueado/);
+    assert.deepEqual(st.blocked.map((b) => [b.id, b.name]), [['dispositivo-0001', 'Mi celular']]);
+    const p3 = await phone('dispositivo-0001');
+    assert.match((await p3.wait((e) => e.ev === 'bye')).reason, /bloqueado/);
+    await client.call('remote.unblock', { id: 'dispositivo-0001' });
+    const p4 = await phone('dispositivo-0001');
+    await p4.wait((e) => e.ev === 'hello');
+    // apagar: todos fuera; al volver a encender la clave cambia y la vieja no sirve
+    await client.call('remote.stop', {});
+    assert.match((await p4.wait((e) => e.ev === 'bye')).reason, /se apagó/);
+    st = await client.call('remote.start', { mode: 'local', autoOff: { on: true, minutes: 0.01 } });
+    const [, port2, key2] = st.url.match(/:(\d+)\/m#k=([\w-]+)$/);
+    assert.notEqual(key2, key);
+    const old = await (async () => { const c = await ws.connect(Number(port2), '/ws', { Origin: `http://127.0.0.1:${port2}` }); const evs = []; c.on('message', (raw) => evs.push(JSON.parse(raw))); c.send(JSON.stringify({ op: 'hello', key, device: { id: 'dispositivo-0002' } })); await new Promise((res) => setTimeout(res, 300)); return evs; })();
+    assert.ok(old.some((e) => e.ev === 'bye'), 'la clave vieja no entra');
+    // apagado automático: 0,01 min sin uso
+    await client.waitFor((e) => e.ev === 'remote' && e.status && !e.status.on && e.status.reason === 'inactividad', 5000);
+    assert.equal((await client.call('remote.status')).on, false);
+  } finally {
+    await client.call('remote.stop', {}).catch(() => {});
+    await client.call('session.kill', { sid: shell.sid }).catch(() => {});
+    await client.call('session.kill', { sid: ai.sid }).catch(() => {});
+  }
 });
 
 test('alerts.*: la IA pide alertas (frap-alert) solo con el interruptor «IA»; el bridge las entrega a la UI', async () => {

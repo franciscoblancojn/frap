@@ -107,6 +107,21 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 
 /* ---------- integraciones (abajo del panel izquierdo) ---------- */
 .integrations { flex-shrink: 0; max-height: 45%; overflow-y: auto; border-top: 1px solid var(--line); padding: 4px 6px 6px; font-size: 12px; }
+.remote-body { display: flex; flex-direction: column; gap: 7px; padding: 4px 4px 2px; }
+.remote-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.remote-row .mini.on { color: var(--accent); border-color: var(--accent); }
+.remote-min { width: 58px; padding: 2px 4px; font-size: 12px; }
+.remote-qrbox { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); }
+.remote-qr { width: 190px; height: 190px; image-rendering: pixelated; border-radius: 6px; }
+.remote-url { display: flex; align-items: center; gap: 4px; max-width: 100%; }
+.remote-url .mono { font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remote-hint { font-size: 11px; text-align: center; }
+.remote-err { color: var(--err, #f7768e); font-size: 11.5px; }
+.remote-sub { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--fg-2); margin-top: 4px; }
+.remote-list { display: flex; flex-direction: column; gap: 4px; }
+.remote-dev { display: flex; align-items: center; gap: 5px; padding: 5px 6px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); }
+.remote-devn { flex: 1; min-width: 0; overflow: hidden; }
+.remote-devn .muted { font-size: 10.5px; }
 /* Mensajes (pestaña del panel derecho): para personas y de PR */
 .msg-filters { display: flex; flex-direction: column; gap: 4px; margin: 2px 2px 6px; }
 .msg-frow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; }

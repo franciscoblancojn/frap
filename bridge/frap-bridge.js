@@ -30,6 +30,7 @@ const team = require('./team');
 const todos = require('./todos');
 const messages = require('./messages');
 const alerts = require('./alerts');
+const remote = require('./remote');
 
 const VERSION = '1.3.0';
 const STARTED_AT = Date.now();
@@ -315,6 +316,7 @@ const NOTICE_KINDS = new Set(['done', 'waiting']);
 function broadcast(msg) {
   const s = JSON.stringify(msg);
   for (const c of clients) c.send(s);
+  remote.forward(msg); // el celular (módulo Remoto) recibe la salida de la sesión que mira y los cambios
 }
 function sessionInfo(s) {
   return {
@@ -1215,6 +1217,7 @@ const ops = {
   },
   'session.resize': ({ sid, cols, rows }) => {
     const s = getSession(sid);
+    s.cols = cols | 0; s.rows = rows | 0; // el celular lee los menús de claude con una terminal del mismo tamaño
     if (s.alive && s.sock && !s.sock.destroyed) s.sock.write(frame('R', `${rows | 0} ${cols | 0}`));
     return true;
   },
@@ -1771,6 +1774,18 @@ const ops = {
   'claude.conversations': ({ cwd, limit }) => claudeConversations(safePath(cwd), limit),
   'todos.skill': () => todos.skillStatus(),
   'todos.setSkill': ({ on }) => todos.setSkill(!!on),
+  // ----- módulo Remoto: usar FRAP desde el celular (QR). Puerta aparte, apagada por defecto -----
+  /** {on, status, mode, url, error, reason, autoOff: {on, minutes}, offAt, connected: [...], blocked: [...], lan} */
+  'remote.status': () => remote.status(),
+  /** Enciende (clave y QR nuevos): {mode: 'local'|'remote', autoOff?}. */
+  'remote.start': (a = {}) => remote.start({ mode: a.mode, autoOff: a.autoOff }),
+  'remote.stop': () => remote.stop('apagado'),
+  /** Modo y apagado automático (sin encender). */
+  'remote.config': (a = {}) => remote.config({ mode: a.mode, autoOff: a.autoOff }),
+  'remote.kick': ({ id }) => remote.kick(String(id || '')),
+  'remote.block': ({ id }) => remote.block(String(id || '')),
+  'remote.unblock': ({ id }) => remote.unblock(String(id || '')),
+  'remote.rename': ({ id, name }) => remote.rename(String(id || ''), name),
   // ----- módulo Alertas: la IA puede pedir alertas (frap-alert) si el usuario lo permite -----
   /** {ai, module, allowed, cli, skill} */
   'alerts.status': () => { const f = alerts.readFlag(FRAP_HOME); return { ...f, allowed: f.ai && f.module, cli: alerts.CLI, skill: alerts.skillStatus() }; },
@@ -2238,6 +2253,21 @@ process.on('SIGTERM', shutdown);
 
 // primero se reconecta a las terminales que siguen vivas; luego acepta a la UI
 let recovered = 0;
+remote.init({
+  frapHome: FRAP_HOME,
+  srcDir: path.resolve(__dirname, '..', 'src'),
+  sessions: () => [...sessions.values()],
+  sessionInfo,
+  attach: (sid) => { const s = getSession(sid); const all = s.chunks.join(''); return all.slice(0, Math.max(0, all.length - s.pending.length)); },
+  write: (sid, data) => write(getSession(sid), data),
+  transcript: (conv, cwd, since) => claudeTranscript(conv, cwd, since),
+  taskOutput: (file) => claudeTaskOutput(file),
+  messages,
+  people: () => team.load().people,
+  readState: () => { try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch (_) { return {}; } },
+  tunnels,
+  notify: (ev) => broadcast(ev),
+});
 rediscoverSessions().then((n) => { recovered = n; }, () => {}).then(() => scanAgentSessions().catch(() => {})).then(watchNotices).then(() => server.listen(PORT, HOST, () => {
   const page = path.resolve(__dirname, '..', 'src', 'index.html');
   const url = `file://${page}#port=${PORT}&token=${TOKEN}`;

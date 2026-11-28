@@ -436,7 +436,7 @@
 
   // Operaciones del bridge que usa esta versión de la UI. Si el bridge en ejecución no las
   // tiene, es un proceso viejo (Node carga el código al arrancar): hay que reiniciarlo.
-  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'alerts.status', 'alerts.set', 'msgs.list', 'msgs.save', 'msgs.delete', 'msgs.importFile', 'msgs.importPr', 'msgs.setSkill', 'claude.transcript', 'claude.taskOutput', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
+  const REQUIRED_OPS = ['session.create', 'session.seen', 'session.clear', 'config.scan', 'db.list', 'db.save', 'db.toggle', 'db.check', 'db.query', 'ssh.list', 'ssh.save', 'ssh.toggle', 'ssh.connect', 'sftp.list', 'sftp.get', 'sftp.put', 'sftp.mkdir', 'sftp.rename', 'sftp.remove', 'sftp.cancel', 'notes.skill', 'notes.installSkill', 'tunnel.status', 'tunnel.ports', 'tunnel.start', 'tunnel.stop', 'scripts.list', 'scripts.set', 'scripts.create', 'scripts.command', 'scripts.skill', 'scripts.setModule', 'issues.list', 'issues.create', 'issues.setPriority', 'wp.list', 'wp.save', 'wp.toggle', 'wp.delete', 'wp.check', 'wp.setSkill', 'ave.list', 'ave.save', 'ave.paste', 'ave.toggle', 'ave.delete', 'ave.check', 'ave.orders', 'ave.setSkill', 'issues.importDir', 'issues.skill', 'issues.setSkill', 'local.export', 'local.import', 'fs.stat', 'fs.mkdir', 'fs.rename', 'fs.trash', 'fs.roots', 'fs.addRoot', 'fs.removeRoot', 'code.files', 'code.search', 'voice.status', 'voice.transcribe', 'export.creds', 'import.creds', 'git.run', 'git.findRepos', 'git.release', 'api.tree', 'api.read', 'api.save', 'api.mkdir', 'api.rename', 'api.delete', 'api.vars', 'api.setVars', 'api.send', 'api.setSkill', 'team.list', 'team.save', 'team.delete', 'team.import', 'team.setSkill', 'todos.list', 'todos.save', 'todos.delete', 'todos.setSkill', 'alerts.status', 'alerts.set', 'remote.status', 'remote.start', 'remote.stop', 'remote.config', 'remote.kick', 'remote.block', 'remote.unblock', 'remote.rename', 'msgs.list', 'msgs.save', 'msgs.delete', 'msgs.importFile', 'msgs.importPr', 'msgs.setSkill', 'claude.transcript', 'claude.taskOutput', 'claude.conversations', 'music.ytInfo', 'paths.check', 'open.editor', 'open.folder'];
   function checkBridgeVersion(info) {
     // bridges anteriores a 1.1 no anuncian sus operaciones: se tratan como desactualizados
     const missing = info.ops ? REQUIRED_OPS.filter((op) => !info.ops.includes(op)) : null;
@@ -2292,6 +2292,7 @@
     procs: renderProcs,
     todos: () => renderTodosTab(),
     msgs: () => renderMsgsTab(),
+    remote: () => renderRemoteTab(),
     prompts: renderPrompts,
     actions: renderActions,
     pages: renderPages,
@@ -10241,6 +10242,107 @@
     save();
     renderIntegrations();
   }
+  // ---------- 📱 Remoto: usar FRAP desde el celular (QR) ----------
+  // La puerta la abre el bridge (remote.*) solo mientras el interruptor está encendido; cada encendido cambia la clave
+  // (y el QR). Aquí: interruptor, modo (Wi-Fi local / túnel), apagado automático sin uso, el QR, los conectados
+  // (sacar o bloquear) y los bloqueados (desbloquear).
+  let remoteInfo = null;
+  let remoteBusy = false;
+  const remoteOn = () => rtabOn('remote');
+  async function loadRemote() {
+    if (!Bridge.ready || !remoteOn()) { renderRemote(); return; }
+    try { remoteInfo = await Bridge.call('remote.status'); } catch (_) { remoteInfo = null; }
+    renderRemote();
+  }
+  Bridge.on('remote', (m) => {
+    remoteInfo = m.status || remoteInfo;
+    if (m.joined) toast(`📱 Se conectó al acceso remoto: ${m.joined.name}`, 'ok');
+    if (m.status && !m.status.on && m.status.reason === 'inactividad') toast('📱 El acceso remoto se apagó por inactividad', 'ok');
+    renderRemote();
+  });
+  async function remoteToggle() {
+    if (remoteBusy) return;
+    const cfg = remoteInfo || {};
+    remoteBusy = true;
+    renderRemote();
+    try {
+      remoteInfo = cfg.on ? await Bridge.call('remote.stop', {}) : await Bridge.call('remote.start', { mode: cfg.mode || 'local', autoOff: cfg.autoOff });
+      if (remoteInfo.on) toast('📱 Acceso remoto encendido: escanea el QR con el celular', 'ok');
+    } catch (e) { toast(`Remoto: ${e.message}`, 'err'); await loadRemote(); }
+    remoteBusy = false;
+    renderRemote();
+  }
+  async function remoteSet(patch) {
+    try {
+      const cur = remoteInfo || {};
+      // cambiar el modo con la puerta abierta la vuelve a abrir (QR nuevo)
+      remoteInfo = cur.on && patch.mode && patch.mode !== cur.mode ? await Bridge.call('remote.start', { mode: patch.mode, autoOff: cur.autoOff }) : await Bridge.call('remote.config', patch);
+    } catch (e) { toast(e.message, 'err'); }
+    renderRemote();
+  }
+  function remoteRename(d) {
+    const name = h('input', { value: d.name, placeholder: d.label, maxlength: '60' });
+    const go = async () => { try { remoteInfo = await Bridge.call('remote.rename', { id: d.id, name: name.value }); modalClose(true); renderRemote(); } catch (e) { toast(e.message, 'err'); } };
+    name.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+    openModal({ title: 'Nombre del dispositivo', body: [h('div.field', h('label', `Para reconocerlo (${d.label})`), name)], foot: [h('span.grow'), h('button', { onclick: () => modalClose(true) }, 'Cancelar'), h('button.primary', { onclick: go }, 'Guardar')] });
+    requestAnimationFrame(() => name.select());
+  }
+  function remoteQr(url) {
+    const m = window.FrapQR ? window.FrapQR.matrix(url) : null;
+    const cv = h('canvas.remote-qr', { title: 'Escanéalo con la cámara del celular' });
+    if (!m) return cv;
+    const quiet = 4, scale = Math.max(3, Math.floor(200 / (m.length + quiet * 2)));
+    const px = (m.length + quiet * 2) * scale;
+    cv.width = px; cv.height = px;
+    const g = cv.getContext('2d');
+    g.fillStyle = '#ffffff'; g.fillRect(0, 0, px, px);
+    g.fillStyle = '#000000';
+    m.forEach((row, y) => row.forEach((dark, x) => { if (dark) g.fillRect((x + quiet) * scale, (y + quiet) * scale, scale, scale); }));
+    return cv;
+  }
+  function renderRemote() { if (state.ui.rtab === 'remote' && !state.ui.hideRight) renderRight(); }
+  function renderRemoteTab() {
+    const r = remoteInfo;
+    const active = !!(r && r.on);
+    const sw = h('label.wp-sw.remote-sw', { title: active ? 'Apagar el acceso remoto (desconecta a todos)' : 'Encender el acceso remoto (QR nuevo)' },
+      h('button', { class: `switch ${active ? 'on' : 'off'}`, role: 'switch', 'aria-checked': String(active), disabled: remoteBusy || !r, onclick: (e) => { e.preventDefault(); remoteToggle(); } }), active ? 'Activo' : 'Apagado');
+    const head = section(`📱 Remoto${active ? ` · ${r.connected.length} conectado${r.connected.length === 1 ? '' : 's'}` : ''}`, sw);
+    if (!r) { if (Bridge.ready) loadRemote(); return [head, h('div.empty-list', Bridge.ready ? 'Cargando…' : 'Bridge desconectado.')]; }
+    const modeBtn = (m, label, title) => h(`button.mini${r.mode === m ? '.on' : ''}`, { title, disabled: remoteBusy, onclick: () => remoteSet({ mode: m }) }, label);
+    const mins = h('input.remote-min', { type: 'number', min: '1', max: '1440', value: String(r.autoOff.minutes), title: 'Minutos sin uso antes de apagarse' });
+    mins.addEventListener('change', () => remoteSet({ autoOff: { on: r.autoOff.on, minutes: Math.max(1, Number(mins.value) || 5) } }));
+    const autoSw = h('button', { class: `switch ${r.autoOff.on ? 'on' : 'off'}`, role: 'switch', 'aria-checked': String(r.autoOff.on), onclick: () => remoteSet({ autoOff: { on: !r.autoOff.on, minutes: r.autoOff.minutes } }) });
+    const left = r.offAt ? Math.max(0, Math.round((r.offAt - Date.now()) / 60000)) : null;
+    const body = [
+      h('div.remote-row', h('span.muted', 'Modo'), modeBtn('local', '🏠 Wi-Fi local', 'El celular en la misma red Wi-Fi que la laptop'), modeBtn('remote', '🌐 Túnel', 'Desde cualquier lugar, por un túnel https (módulo Túneles)')),
+      h('div.remote-row', h('label.wp-sw', autoSw, 'Apagar sin uso a los'), mins, h('span.muted', 'min')),
+    ];
+    if (remoteBusy && !active) body.push(h('div.integ-empty', r.mode === 'remote' ? 'Abriendo el túnel… (puede tardar unos segundos)' : 'Encendiendo…'));
+    if (r.error && !active) body.push(h('div.remote-err', `✗ ${r.error}`));
+    if (active && r.url) {
+      body.push(h('div.remote-qrbox', remoteQr(r.url),
+        h('div.remote-url', h('span.mono', r.url.replace(/#.*/, '')), h('button.icon.mini', { title: 'Copiar el enlace (con la clave)', onclick: () => { copyText(r.url); toast('Enlace copiado (lleva la clave: no lo compartas)', 'ok'); } }, '⧉')),
+        h('div.muted.remote-hint', `Escanéalo con la cámara del celular${r.mode === 'local' ? ' (en la misma Wi-Fi)' : ''}. Cada vez que enciendes, el QR cambia.${left != null && r.autoOff.on ? ` Se apaga en ~${left} min sin uso.` : ''}`)));
+    } else if (!active && !remoteBusy) body.push(h('div.muted.remote-hint', 'Apagado: no hay QR y nadie puede entrar. Al encenderlo se crea un QR nuevo.'));
+    if (active) {
+      body.push(h('div.remote-sub', `Conectados (${r.connected.length})`));
+      body.push(r.connected.length ? h('div.remote-list', r.connected.map((d) => h('div.remote-dev',
+        h('div.remote-devn', h('b', d.name), d.name !== d.label ? h('span.muted', ` · ${d.label}`) : null,
+          h('div.muted', `desde ${new Date(d.since).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })} · último uso ${new Date(d.last).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}`)),
+        h('button.icon.mini', { title: 'Ponerle un nombre', onclick: () => remoteRename(d) }, '✎'),
+        h('button.mini', { title: 'Desconectarlo ahora (puede volver a entrar con el QR)', onclick: async () => { try { remoteInfo = await Bridge.call('remote.kick', { id: d.id }); renderRemote(); } catch (e) { toast(e.message, 'err'); } } }, 'Sacar'),
+        h('button.mini.danger', { title: 'Desconectarlo y no dejarlo entrar nunca más (aunque escanee un QR nuevo)', onclick: async () => { if (!(await confirmBox(`¿Bloquear «${d.name}»?`, 'Se desconecta y no podrá volver a entrar hasta que lo desbloquees.'))) return; try { remoteInfo = await Bridge.call('remote.block', { id: d.id }); renderRemote(); } catch (e) { toast(e.message, 'err'); } } }, 'Bloquear')))) : h('div.integ-empty', 'Nadie conectado todavía.'));
+    }
+    if (r.blocked.length) {
+      body.push(h('div.remote-sub', `Bloqueados (${r.blocked.length})`));
+      body.push(h('div.remote-list', r.blocked.map((b) => h('div.remote-dev',
+        h('div.remote-devn', h('b', b.name), h('div.muted', `bloqueado ${new Date(b.at).toLocaleDateString('es', { day: 'numeric', month: 'short' })}`)),
+        h('button.mini', { onclick: async () => { try { remoteInfo = await Bridge.call('remote.unblock', { id: b.id }); renderRemote(); toast(`${b.name} desbloqueado`, 'ok'); } catch (e) { toast(e.message, 'err'); } } }, 'Desbloquear')))));
+    }
+    return [head, h('div.remote-body', body)];
+  }
+  setInterval(() => { if (remoteInfo && remoteInfo.on && !document.hidden) renderRemote(); }, 30000);
+
   function renderIntegrations() {
     const root = $('#integrations');
     if (!root) return;
@@ -10723,6 +10825,7 @@
       { key: 'right.commands', rtab: 'commands', icon: '⌘', name: 'Comandos', desc: 'Comandos / de las IA' },
       { key: 'right.hooks', rtab: 'hooks', icon: '🪝', name: 'Hooks', desc: 'Hooks de claude' },
       { key: 'right.memory', rtab: 'memory', icon: '🧠', name: 'Memoria', desc: 'CLAUDE.md / AGENTS.md' },
+      { key: 'right.remote', rtab: 'remote', icon: '📱', name: 'Remoto', desc: 'Usar FRAP desde el celular escaneando un QR (Wi-Fi local o túnel): chatear con la IA, aprobar permisos y Mensajes. Apagado por defecto' },
       { key: 'right.msgs', rtab: 'msgs', icon: '✉️', name: 'Mensajes', desc: 'Mensajes que la IA redacta para personas y de pull requests: filtrar, editar, copiar (WhatsApp) y marcar enviados (skill frap-mensajes)' },
       { key: 'right.todos', rtab: 'todos', icon: '📌', name: 'Pendientes', desc: 'Cosas por hacer con prioridad, estado y dependencias, vinculadas a su sesión de IA (skill frap-pendientes)' },
       { key: 'right.tunnels', rtab: 'tunnels', icon: '🚇', name: 'Túneles', desc: 'Compartir por URL pública un puerto, una IP o un archivo' },
@@ -10776,6 +10879,7 @@
     syncMsgsSkill();
     loadMsgs();
     alertsSync();
+    loadRemote();
     renderTeamChips();
   }
 
@@ -11391,6 +11495,7 @@
     msgsInfo = null;
     loadMsgs();
     alertsSync();
+    loadRemote();
     apiInfo = null;
     if (apiPane) { // al (re)conectar: lo que no pudo cargarse sin bridge
       for (const [k, d] of [...apiPane.docs]) if (d.error || d.loading) apiPane.docs.delete(k);
