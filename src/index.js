@@ -6211,6 +6211,8 @@
           h('button.mini', { title: 'Enviar a la terminal (Enter)', onclick: () => readerSend(t) }, '➤'),
           h('button.mini', { title: 'Interrumpir a claude (Esc en la terminal)', onclick: () => Bridge.send('session.input', { sid: t.sid, data: '\x1b' }) }, '■')));
       t.pane.append(r.el);
+      // «escribiendo…» como WhatsApp: tres puntos mientras claude trabaja (su indicador animado produce salida)
+      r.typing = h('div.tr-typing.hidden', { title: 'claude está trabajando…' }, h('span'), h('span'), h('span'));
     }
     r.el.classList.remove('hidden');
     readerPoll(t, true);
@@ -6297,8 +6299,9 @@
       }
       L.append(h('div.tr-ai.md-body', mdBlocks(it.text, dir)));
     }
-    // las pendientes (lo que escribiste) siempre al final
+    // las pendientes (lo que escribiste) siempre al final, y debajo el «escribiendo…»
     for (const p of r.pending || []) L.append(p.el);
+    if (r.typing) L.append(r.typing);
     while (L.childElementCount > READER_MAX) L.firstElementChild.remove();
     if (atBottom) { L.scrollTop = L.scrollHeight; r.stick = false; }
   }
@@ -6353,6 +6356,19 @@
       for (const [id, card] of r.cards) readerPaintCard(card, id);
     }
   }
+  setInterval(() => {
+    for (const t of terms.values()) {
+      const r = t.reader;
+      if (!r || !r.open || !r.typing || !r.list) continue;
+      const busy = isBusy(t);
+      if (r.typing.parentElement !== r.list || r.list.lastElementChild !== r.typing) r.list.append(r.typing);
+      if (busy === !r.typing.classList.contains('hidden')) continue;
+      const L = r.list;
+      const atBottom = L.scrollHeight - L.scrollTop - L.clientHeight < 60;
+      r.typing.classList.toggle('hidden', !busy);
+      if (atBottom) L.scrollTop = L.scrollHeight;
+    }
+  }, 400);
   function readerToolBody(tool) {
     if (!tool.body) { tool.body = h('div.tr-tbody'); tool.el.append(tool.body); }
     tool.body.replaceChildren(

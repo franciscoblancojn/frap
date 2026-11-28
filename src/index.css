@@ -1434,6 +1434,12 @@ li.CodeMirror-hint-active { background: var(--accent); color: var(--bg); }
 .tr-msg button.msg-copy.done { background: var(--orange, #ff9e64); }
 .tr-msg button.msg-sent { color: var(--fg-3); }
 .tr-msg button.msg-sent.on { color: var(--ok); }
+.tr-typing { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; padding: 10px 14px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px 12px 12px 3px; }
+.tr-typing.hidden { display: none; }
+.tr-typing span { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-3); animation: tr-typing 1.2s infinite ease-in-out; }
+.tr-typing span:nth-child(2) { animation-delay: .15s; }
+.tr-typing span:nth-child(3) { animation-delay: .3s; }
+@keyframes tr-typing { 0%, 60%, 100% { transform: translateY(0); opacity: .45; } 30% { transform: translateY(-4px); opacity: 1; } }
 .tr-compose { display: flex; gap: 6px; align-items: flex-end; padding: 8px 12px; border-top: 1px solid var(--line); background: var(--bg-2); }
 .tr-input { flex: 1; resize: none; min-height: 32px; max-height: 200px; font: 13px/1.4 var(--sans); padding: 6px 9px; }
 .term-person-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
